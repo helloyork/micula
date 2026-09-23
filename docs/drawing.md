@@ -145,6 +145,7 @@ Other icons can be written as escapes, for example `L"\uE74D"` for Delete.
 | `kNormal` | 0.250 s. Panels, flyouts, pages. |
 | `float Decel(float u)` | Ease-out for things arriving: cubic-bezier(0, 0, 0, 1). `u` from 0 to 1. |
 | `float Accel(float u)` | Ease-in for things leaving: cubic-bezier(1, 0, 1, 1). |
+| `float InOut(float u)` | Ease in and out, for something crossing a track: cubic-bezier(0.4, 0, 0.6, 1), the curve `KeySpline="0.4, 0.0, 0.6, 1.0"` draws. Solved numerically, unlike the two above. |
 | `bool Ramp(float *now, float want, float dt, float seconds)` | Moves `*now` linearly towards `want`, covering 0 to 1 in `seconds`. Returns true while still moving. For color fades. |
 
 `struct Track` animates one value along a curve:
@@ -158,6 +159,19 @@ Other icons can be written as escapes, for example `L"\uE74D"` for Delete.
 | `bool Step(float dt, float seconds, float (*ease)(float) = Decel)` | Advances by `dt`. Returns true while moving. |
 | `bool Moving() const` | True until the current movement ends. |
 | `bool Wants(float target) const` | True while moving, or while `target` differs from the current target. Use this in `Widget::Animating()`. |
+
+`struct Span` moves a marker between slots and stretches the interval it is drawn across:
+
+| Member | Description |
+|---|---|
+| `Span(float at = 0)` | Starts at rest on slot `at`. |
+| `float lead`, `float trail` | The two edges, in slots. Equal at rest. |
+| `float slide`, `float close` | Time constants, in seconds: 0.05 for the leading edge and 0.028 for the trailing one. Equal values weld the edges together. |
+| `void To(float at)` | The slot it belongs on. Aimed, not started: call it every frame. |
+| `void Set(float at)` | Jumps to `at` without animating. For a first layout. |
+| `bool Step(float dt)` | Advances by `dt`. Returns true while moving. |
+| `bool Wants(float at) const` | Anything left to do to reach `at`. Use this in `Animating()` and `AnimationWanted()`. |
+| `float Lo() const`, `float Hi() const` | The two edges, the lower one first: draw between them, in DIPs of one slot's pitch. |
 
 ## System
 

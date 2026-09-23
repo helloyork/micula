@@ -17,6 +17,11 @@ using namespace micula;
 namespace {
 
 constexpr float kNavW    = 184.0f;
+// The navigation rows: the first one's top, one row's height, and the distance between
+// two of them. Named because the accent bar is drawn from them as well as the buttons.
+constexpr float kNavTop   = kCaptionH + 12.0f;
+constexpr float kNavRowH  = 36.0f;
+constexpr float kNavPitch = 40.0f;
 constexpr float kCardH   = 68.0f;
 constexpr float kCardGap = 4.0f;
 constexpr float kInset   = 18.0f;   // card padding, left and right
@@ -102,9 +107,22 @@ struct Settings : Window {
     };
     std::vector<Card> cards;
     std::vector<std::pair<float, std::wstring>> headings;
-    D2D1_RECT_F navSel = {};
     size_t freeCard = 0;
     float footerY = -1.0f;
+
+    // The selection indicator, which moves between rows rather than appearing under the new
+    // one: motion::Span is the same thing the library's segmented control draws its block
+    // with, and it is where the two edges and their timings are described.
+    motion::Span nav;
+    bool navSet = false;
+
+    // The move is the only thing this page animates on its own account; the controls' own
+    // fades are the window's business.
+    bool AnimationWanted() const override { return nav.Wants((float)page); }
+    void OnTick(float dt) override {
+        nav.To((float)page);
+        nav.Step(dt);
+    }
 
     const wchar_t *ClassName() const override { return L"MiculaSettings"; }
     const wchar_t *Title() const override { return L"Folder Cleanup"; }
@@ -130,7 +148,6 @@ void Settings::Layout() {
     Painter measure;
     measure.font = &fonts;
 
-    float ny = kCaptionH + 12;
     for (int i = 0; i < 4; i++) {
         Button *b = Add(new Button(kNav[i].label, ButtonStyle::Subtle, [this, i] {
             page = i;
@@ -139,9 +156,11 @@ void Settings::Layout() {
         }));
         b->glyph = kNav[i].icon;
         b->leftAlign = true;
-        b->rect = { 8, ny, kNavW - 8, ny + 36 };
-        if (i == page) navSel = b->rect;
-        ny += 40;
+        b->rect = { 8, kNavTop + kNavPitch * i,
+                    kNavW - 8, kNavTop + kNavPitch * i + kNavRowH };
+        // The first layout has nothing to animate from: the indicator begins on the row the
+        // page begins on.
+        if (!navSet) { nav.Set((float)i); navSet = true; }
     }
 
     const float left = kNavW + 12, right = w - 24;
@@ -223,16 +242,21 @@ void Settings::Layout() {
         log->rect = { right - rw - 8 - lw, y, right - rw - 8, y + metric::kControlH };
         break;
     }
-    case 1:
+    case 1: {
         Add(new Segmented({ L"At sign-in", L"Daily", L"Weekly" }, when,
                           [this](int i) { when = i; }))
             ->rect = card(kIconCalendar, L"Run", L"When a cleanup starts", 250);
-        Add(new DropDown({ L"Midnight", L"2:00", L"4:00", L"6:00", L"Noon", L"18:00" }, hour,
-                         [this](int i) { hour = i; }))
-            ->rect = card(kIconRecent, L"Time of day", L"For daily and weekly cleanups", 140);
+        DropDown *day =
+            Add(new DropDown({ L"Midnight", L"2:00", L"4:00", L"6:00", L"Noon", L"18:00" }, hour,
+                             [this](int i) { hour = i; }));
+        // Times of day are a ring, and the wheel over the list says so: the step past 18:00
+        // is after midnight. See DropDown::wrapAround.
+        day->wrapAround = true;
+        day->rect = card(kIconRecent, L"Time of day", L"For daily and weekly cleanups", 140);
         toggle(kIconBattery, L"Run on battery power", L"Off by default to save battery",
                &onBattery);
         break;
+    }
     case 2: {
         toggle(glyph::kFolder, L"Downloads", L"Files saved by browsers and other apps",
                &downloads);
@@ -257,12 +281,16 @@ void Settings::PaintPage(const Painter &p) {
     const float w = ClientW();
     const float left = kNavW + 12;
 
-    // Windows 11's navigation selection: a subtle fill and a short accent bar.
-    if (navSel.right > navSel.left) {
-        p.FillRound(navSel, metric::kRadiusControl, c.subtleHover);
-        const float cy = (navSel.top + navSel.bottom) / 2;
-        p.FillRound({ navSel.left, cy - 8, navSel.left + 3, cy + 8 }, 1.5f, c.accent);
-    }
+    // Windows 11's navigation selection: the item's own fill, and a short accent bar that
+    // moves between items rather than appearing under the new one. The fill is on the chosen
+    // row already -- it is the bar that travels, its two ends a row apart while it does, so
+    // it stretches across the gap and closes up on arrival.
+    const D2D1_RECT_F sel = { 8.0f, kNavTop + kNavPitch * (float)page,
+                              kNavW - 8, kNavTop + kNavPitch * (float)page + kNavRowH };
+    p.FillRound(sel, metric::kRadiusControl, c.subtleHover);
+    p.FillRound({ 8.0f, kNavTop + kNavPitch * nav.Lo() + 10.0f,
+                  11.0f, kNavTop + kNavPitch * nav.Hi() + kNavRowH - 10.0f },
+                1.5f, c.accent);
 
     p.Text(kNav[page].label, { left, kCaptionH + 8, w - 24, kCaptionH + 52 }, p.font->title,
            c.textPrimary);

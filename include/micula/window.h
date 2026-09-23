@@ -340,40 +340,42 @@ struct Widget {
     //
     // This and OnPress are the whole of a drag. A control must not update itself out of
     // Paint instead, by reading the cursor each frame: Slider did, and it cost both
-    // correctness and testability -- see DragsOutsideSelf below for the first and the
+    // correctness and testability -- see PressedVisual below for the first and the
     // note on Cursor() for the second.
     virtual void OnDrag(float /*x*/, float /*y*/) {}
-    // While this widget holds capture, the pointer leaving its rectangle does not end the
-    // gesture.
+    // The pointer moved over this control, or over the region it watches outside itself
+    // (see ExternalRegion), in the control's own space.
     //
-    // The default is a button's, and is right for one: pressing a button and sliding off
-    // it un-presses it, which is how somebody backs out of a click they have changed
-    // their mind about, and the release that follows is not a click at all.
-    //
-    // A control that is *dragged* needs the opposite. A slider on a 32-DIP row has a
-    // 20-DIP thumb in the middle of it, so a sideways drag leaves the rectangle after six
-    // pixels of vertical wander -- and until this existed, that froze the value where it
-    // last was and committed the frozen one on release. The knob stopped following the
-    // pointer and the saved value disagreed with where the gesture ended.
-    //
-    // Asked each time rather than fixed per class, because one widget can be both: a
-    // colour panel's square and strips are dragged, its swatches are clicked, and a
-    // swatch must stay escapable.
-    virtual bool DragsOutsideSelf() const { return false; }
-    // The pointer moved somewhere over the window -- not necessarily over this control --
-    // in window DIPs.
-    //
-    // For a control that answers to the area it belongs to rather than to itself: a
-    // scroll bar shows itself when the pointer moves over the page it scrolls, which is a
-    // move it would otherwise never hear about.
+    // It is sent to the control under the pointer and to nobody else, so a control that
+    // has to hear about a move it does not contain says where that is: a scroll bar shows
+    // itself when the pointer crosses the page it scrolls, which is a page and not a
+    // control. Being told about every move in the window is not the same offer -- it is
+    // a coordinate space each control then has to correct by hand.
     virtual void OnPointerMove(float /*x*/, float /*y*/) {}
+    // The area outside `rect` -- in the control's own space, so for a scrolling control
+    // the page's offset is already off it -- where this control wants OnPointerMove as
+    // well. Empty for a control that only answers to itself.
+    //
+    // Moves only. A press here is a press on whatever is behind, so this widens what a
+    // control can see, not what it takes: a scroll bar that could be grabbed by clicking
+    // the page it scrolls would be a different control.
+    virtual D2D1_RECT_F ExternalRegion() const { return {}; }
     // A wheel turned over this control, in its own space; `notches` is positive away from
     // the user. Return true to keep it from the page.
     //
     // For an open drop-down's list, which scrolls by itself when it is taller than the
-    // room it has. Left to the page, the notch scrolled the page instead, and scrolling
-    // lays the page out again -- which throws the open list away with everything else.
+    // room it has. Left to the page, the notch scrolled the page instead: the list's own
+    // anchor moved out from under it, and on a page that lays itself out in response to a
+    // scroll the open list was thrown away with everything else.
     virtual bool OnWheel(float /*x*/, float /*y*/, float /*notches*/) { return false; }
+    // The keyboard's way of working this control: Space, and Enter on a control that has one.
+    //
+    // Distinct from `OnClick`, which is what a mouse press and release means, because a click
+    // is the *pointer* doing something and this is not. A drop-down chooses the row the
+    // pointer is over, and there is no pointer to read when the choice came from a keyboard:
+    // what Space means there is "the one the list has already arrived at". The default is a
+    // click, which is what every other control wants.
+    virtual void OnActivate() { OnClick(); }
     // A WM_TIMER the window does not own. Return true if the id was this control's.
     virtual bool OnTimer(UINT_PTR /*id*/) { return false; }
     // Something happened that should put away anything transient this control is
@@ -390,6 +392,14 @@ struct Widget {
     // highlight stays wherever it was when the pointer arrived and only catches up when
     // something else happens to repaint.
     virtual bool TracksPointer() const { return false; }
+    // Whether the press shadow should be showing.
+    //
+    // The window clears `pressed` the moment the pointer leaves the rectangle, which is
+    // what makes a button cancellable by dragging off it. A control whose gesture
+    // outlives the rectangle overrides this to say it is still held -- a slider dragged
+    // out of its own track would otherwise grow its thumb back under a finger that is
+    // plainly still on it, and the press is the only cue that the drag has not ended.
+    virtual bool PressedVisual() const { return pressed; }
     // The mouse went up on a widget that had capture, wherever the cursor ended up.
     //
     // OnClick is not the same event and cannot stand in for this one: it fires only
@@ -423,11 +433,11 @@ struct Widget {
     // value of its own -- the switch's knob, the segmented control's pill, a flyout
     // opening -- overrides both of these and calls them.
     virtual bool Animating() const {
-        return hoverT != Want(hover) || pressT != Want(pressed) || focusT != Want(focus);
+        return hoverT != Want(hover) || pressT != Want(PressedVisual()) || focusT != Want(focus);
     }
     virtual void Tick(float dt) {
         motion::Ramp(&hoverT, Want(hover), dt, motion::kFaster);
-        motion::Ramp(&pressT, Want(pressed), dt, motion::kFaster);
+        motion::Ramp(&pressT, Want(PressedVisual()), dt, motion::kFaster);
         // Focus moves a fill too (a text field lightens when the caret is in it) and
         // nothing else: the accent underline and the focus ring are setters, and arrive
         // whole.
@@ -449,17 +459,32 @@ struct Widget {
     // such as a hovered row.
     D2D1_POINT_2F Cursor() const;
 
-    // This widget moves with the page's scroll, so it is painted inside the window's
-    // ClipRect() and takes no clicks outside it. Left false for the furniture -- a
-    // navigation list and a title-bar button do not scroll, and clipping them to the
-    // scrolling area would hide them.
+    // The part of the page that is on screen, in this widget's own coordinates -- the
+    // window's ClipRect with the page's paint offset added back on. Empty when the page
+    // does not scroll, and empty in the same way ClipRect is.
+    //
+    // For a control that has to know how much room it really has. A drop-down deciding
+    // whether its list fits below it is asking about the visible strip, and on a
+    // scrolling page that strip is not the window's: it moves with the page while the
+    // control's own rectangle stays where the layout put it.
+    D2D1_RECT_F VisibleArea() const;
+
+    // This widget moves with the page's scroll: its `rect` is in the page's own space --
+    // window coordinates with the scroll *not* taken off -- and the offset that puts it
+    // on screen comes from ContentTransform() when it is painted and hit-tested. So,
+    // painted only inside the window's ClipRect() and taking no clicks outside it.
+    //
+    // Left false for the furniture -- a navigation list, a title-bar button, the page's
+    // own scroll bar -- which does not scroll, and which clipping to the scrolling area
+    // would hide.
     bool scrolls = false;
     // Survives ClearWidgets, together with the capture or focus it holds.
     //
-    // For a control the page lays out *while it is being operated*. A scroll bar's thumb,
-    // dragged, scrolls the page, and scrolling re-lays the page out -- which rebuilds
-    // every control and drops the capture, so the drag would end on its first pixel. The
-    // page makes such a control once and repositions it on every layout.
+    // For a control the page lays out *while it is being operated*: the page is rebuilt,
+    // the gesture is not over, and a rebuild would drop the capture -- so it would end on
+    // its first pixel. A scroll bar's thumb held through a resize is what this is for, and
+    // so is anything else a page repositions on every layout that a person can hold on
+    // to. The page makes such a control once and repositions it in each Layout().
     bool persistent = false;
 };
 
@@ -545,6 +570,10 @@ struct Window {
     // page that needs to know whether a value it was handed should animate or land
     // (motion::Track::To or Track::Set) when it lays itself out.
     bool animOn = false;
+    // True while Windows is running a modal loop of its own for a drag of the border or the
+    // caption, during which the frame loop cannot run and WM_PAINT is the only painting
+    // there is. See WM_ENTERSIZEMOVE.
+    bool inSizeMove = false;
     bool alive = true;
 
     float scale() const { return dpi / 96.0f; }
@@ -592,7 +621,11 @@ struct Window {
     // --- lifetime ---------------------------------------------------------------
     bool Create(int dipW, int dipH, bool canResize, HICON icon);
     int  Run();
-    void Invalidate() { if (hwnd) InvalidateRect(hwnd, nullptr, FALSE); }
+    // While the frame loop is animating it draws every frame itself and clears the update
+    // region after each one, so invalidating as well buys nothing -- and it costs a frame:
+    // the region it sets is handed back by the next PeekMessage as a WM_PAINT, which paints
+    // the window a second time in the same frame. See Window::Run and the WM_PAINT case.
+    void Invalidate() { if (hwnd && !animOn) InvalidateRect(hwnd, nullptr, FALSE); }
 
     // Everything the window animates on its own account: every control's pointer states
     // and the three caption buttons. Distinct from AnimationWanted(), which is the
@@ -631,11 +664,12 @@ struct Window {
     // Hover, recomputed from where the cursor actually is rather than from the last
     // mouse message.
     //
-    // Needed because the widget list is rebuilt more often than the mouse moves: a
-    // scroll, an expander opening and every saved setting all call Layout(), and the
-    // control under a *stationary* pointer is then a new object with hover false --
-    // which used to make the highlight vanish under the cursor and now would fade it
-    // out, which is worse. Called from the tick, where a rebuild has just happened.
+    // Needed because the widget list is rebuilt more often than the mouse moves: an
+    // expander opening, a page switching, a button relabelling itself and every saved
+    // setting all call Layout(), and the control under a *stationary* pointer is then a
+    // new object with hover false -- which used to make the highlight vanish under the
+    // cursor and now would fade it out, which is worse. Called from the tick, where a
+    // rebuild has just happened.
     bool RefreshHover();
 
     template <typename T> T *Add(T *w) {
@@ -713,6 +747,9 @@ struct Window {
     Widget *HitTest(float x, float y);
     void MoveFocus(int delta);
     void SetFocusTo(Widget *w);
+    // Ends a gesture the pointer is no longer allowed to finish, and hands the widget
+    // the release it will otherwise never see. See the WM_CAPTURECHANGED handler.
+    void CancelCapture();
     void PlaceImeAtCaret();
 
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l);
@@ -722,6 +759,15 @@ struct Window {
 // what replaced it and why. Named so a subclass that adds one of its own does not
 // silently take it over.
 constexpr UINT_PTR kCaretTimer = 2;
+
+// The stand-in for the frame loop while Windows is running a modal loop of its own: a drag
+// of the border or of the caption, which happens inside DefWindowProc and stops the
+// window's own loop from getting another turn until it is over. See WM_ENTERSIZEMOVE.
+//
+// 3, between the caret's 2 and the scroll bars' 4 to 7: a timer id has to be one the
+// controls do not claim, and one of a page's own would be offered to them first and
+// swallowed.
+constexpr UINT_PTR kFrameTimer = 3;
 
 inline void ApplyBackdrop(HWND hwnd, bool dark, bool *micaOut) {
     const BOOL d = dark ? TRUE : FALSE;
@@ -897,11 +943,27 @@ inline void Window::Paint() {
     // rather than interleaved with it in insertion order. They do not overlap -- the
     // furniture is outside ClipRect by construction, which is the same fact that makes
     // the clip legal -- so the order between the two groups cannot show.
+    // A control that has been scrolled clear of the clip is not painted at all. The clip
+    // would discard its pixels anyway, but only after it had built everything it draws --
+    // and a long page pays for every row above and below the visible strip, on every
+    // frame of a scroll. Four DIPs of slack, because a control may draw a little outside
+    // its own rectangle: a focus ring, a shadow, a flyout the control has not grown its
+    // rect to cover.
+    auto reaches = [&](const Widget *w) {
+        const D2D1_RECT_F r = { w->rect.left, w->rect.top + dy,
+                                w->rect.right, w->rect.bottom + dy };
+        return r.right + 4.0f > clip.left && r.left - 4.0f < clip.right &&
+               r.bottom + 4.0f > clip.top && r.top - 4.0f < clip.bottom;
+    };
+    auto shown = [&](const Widget *w) {
+        return w->visible && (!clipping || !w->scrolls || reaches(w));
+    };
     auto pass = [&](int z) {
         for (auto &w : widgets)
             if (w->visible && w->z == z && !w->scrolls) w->Paint(p);
         bool any = false;
-        for (auto &w : widgets) if (w->visible && w->z == z && w->scrolls) { any = true; break; }
+        for (auto &w : widgets)
+            if (w->z == z && w->scrolls && shown(w.get())) { any = true; break; }
         if (!any) return;
         // Clip first, transform second. The clip is a fixed window onto the page and
         // must not move with what is being drawn inside it -- pushed the other way round
@@ -917,7 +979,7 @@ inline void Window::Paint() {
                                                 D2D1::IdentityMatrix(), op), nullptr);
         }
         for (auto &w : widgets)
-            if (w->visible && w->z == z && w->scrolls) w->Paint(p);
+            if (w->z == z && w->scrolls && shown(w.get())) w->Paint(p);
         if (layered) dc->PopLayer();
         if (dy != 0.0f) dc->SetTransform(D2D1::Matrix3x2F::Identity());
         if (clipping) dc->PopAxisAlignedClip();
@@ -1195,6 +1257,25 @@ inline bool Window::RefreshHover() {
     return changed;
 }
 
+// The gesture that was in progress cannot finish: the capture went to another window,
+// the system took it back for a modal state of its own, or this window lost the
+// activation. Nothing else here notices. WM_LBUTTONUP is delivered to whoever holds the
+// capture, and from that moment on that is no longer this window, so the release is
+// synthesised rather than waited for.
+//
+// Without it a drag has no end at all: a scroll bar with a repeat timer running keeps
+// scrolling, a slider keeps its knob grabbed, and a button that was held down stays
+// looking held. The capture is dropped before OnRelease runs, because a widget is free
+// to lay the page out again there and this must not re-enter on the way.
+inline void Window::CancelCapture() {
+    Widget *w = capture;
+    if (!w) return;
+    capture = nullptr;
+    w->pressed = false;
+    if (w->enabled) w->OnRelease();
+    Invalidate();
+}
+
 inline D2D1_POINT_2F Widget::Cursor() const {
     POINT pt = {};
     GetCursorPos(&pt);
@@ -1204,6 +1285,18 @@ inline D2D1_POINT_2F Widget::Cursor() const {
     if (scrolls) owner->ContentTransform(&dy, &op);
     const float s = owner->scale();
     return D2D1::Point2F(pt.x / s, pt.y / s - dy);
+}
+
+inline D2D1_RECT_F Widget::VisibleArea() const {
+    if (!owner) return D2D1_RECT_F{ 0, 0, 0, 0 };
+    const D2D1_RECT_F clip = owner->ClipRect();
+    if (clip.right <= clip.left || clip.bottom <= clip.top) return clip;
+    // The page is drawn `dy` from where it was laid out, so the window's strip becomes a
+    // strip of the page by shifting it the other way -- the same offset the pointer is
+    // shifted by, in the other direction.
+    float dy = 0.0f, op = 1.0f;
+    if (scrolls) owner->ContentTransform(&dy, &op);
+    return D2D1_RECT_F{ clip.left, clip.top - dy, clip.right, clip.bottom - dy };
 }
 
 inline void Window::SetFocusTo(Widget *w) {
@@ -1367,6 +1460,26 @@ inline LONGLONG RefreshPeriod(HWND hwnd) {
     return 10000000LL / 60;
 }
 }  // namespace frameclock
+
+// Seconds since the process started, monotonic, off the same performance counter the frame
+// loop times its frames with. QPC's frequency is fixed for the life of the process, so it
+// is read once.
+//
+// For a control whose animation is periodic and holds nothing else. Asking the clock where
+// in its cycle *now* is gives the same answer to a control that has just been built as to
+// the one it replaced, and a control is rebuilt for all sorts of reasons -- a resize, a save
+// that changes the shape of the page, a page that lays itself out in response to a scroll.
+// A phase counted per frame starts over from the beginning every time. See ProgressBar.
+inline double MonotonicSeconds() {
+    static const LARGE_INTEGER freq = [] {
+        LARGE_INTEGER f = {};
+        QueryPerformanceFrequency(&f);
+        return f;
+    }();
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    return freq.QuadPart ? (double)now.QuadPart / (double)freq.QuadPart : 0.0;
+}
 
 inline int Window::Run() {
     SetTimer(hwnd, kCaretTimer, 530, nullptr);   // GetCaretBlinkTime's own default
@@ -1539,19 +1652,52 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // there is no WM_MOUSELEAVE to do the second; the hover would sit there until the
         // pointer happened to move over this window again.
         //
-        // A gesture in progress is not this message's to end: the capture is what makes
-        // it one, and losing the capture has its own message. See WM_CAPTURECHANGED.
-        if (!self->active)
+        // The gesture in progress ends here too. Losing the capture has its own message
+        // and usually arrives first, which is why CancelCapture is written to be harmless
+        // a second time -- but a window can be deactivated while it still holds the
+        // capture, and the button that was down then comes up over whatever took the
+        // activation. See WM_CAPTURECHANGED.
+        if (!self->active) {
+            self->CancelCapture();
             for (auto &w : self->widgets) { w->Dismiss(); w->hover = false; }
+        }
         self->Invalidate();
         break;
     case WM_PAINT: {
+        // The frame loop paints outside WM_PAINT while it is animating (see Window::Run),
+        // directly after the Tick that moved everything. A paint here would be the second
+        // one in the same frame, drawing the state from before that Tick -- and every mouse
+        // message this window handles invalidates, so during a drag it is every frame, at
+        // twice the drawing cost and half the frame rate.
+        //
+        // Unless Windows has the loop's turn in its own hands -- a drag of the border or the
+        // caption -- in which case this is the only paint there is going to be, and it has
+        // to happen or the window shows the size it had when the drag started.
         PAINTSTRUCT ps;
         BeginPaint(h, &ps);
-        self->Paint();
+        if (!self->animOn || self->inSizeMove) self->Paint();
         EndPaint(h, &ps);
         return 0;
     }
+    case WM_ENTERSIZEMOVE:
+        // Windows is about to run a modal loop of its own for a drag of the border or of the
+        // caption. This window's frame loop -- and the compositor clock it paces itself
+        // with -- gets no turn again until that loop ends, so everything the loop does has
+        // to happen from a message instead, and the only message that keeps arriving is a
+        // timer. Without one the window repainted only when the mouse happened to move, the
+        // controls caught up with the new size only when the drag was let go, and whatever
+        // was animating -- an indeterminate bar, a page's glide -- stood still until then.
+        self->inSizeMove = true;
+        SetTimer(h, kFrameTimer, 16, nullptr);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        self->inSizeMove = false;
+        KillTimer(h, kFrameTimer);
+        // And the clock is picked up again here, or the frame loop's first frame after the
+        // drag carries the whole drag's worth of `dt` -- which the loop clamps to a tenth of
+        // a second, but a tenth of a second of an animation in one step is a jump.
+        QueryPerformanceCounter(&self->qpcLast);
+        return 0;
     case WM_SIZE:
         if (wp == SIZE_RESTORED) self->MeasureFrame();
         self->Resize();
@@ -1586,11 +1732,15 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             const bool now = (w.get() == over);
             if (w->hover != now) { w->hover = now; changed = true; }
         }
+        // The page's offset, read once per move rather than once per control: every
+        // control that hears about a pointer below hears about it in the space its own
+        // rect is in.
+        float pdy = 0.0f, popacity = 1.0f;
+        self->ContentTransform(&pdy, &popacity);
+
         if (self->capture) {
             // The page's paint offset taken back off, so a control dragged while the page
             // is still gliding does not un-press itself.
-            float pdy = 0.0f, popacity = 1.0f;
-            self->ContentTransform(&pdy, &popacity);
             const float dragY = self->capture->scrolls ? my - pdy : my;
             // From the message, and the same point OnDrag gets. This used to read
             // GetCursorPos: two coordinates for one event, and the one that decided
@@ -1598,21 +1748,31 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // with. It also put every drag out of reach of a harness that posts messages,
             // since the widget answered the physical pointer instead of the message.
             //
-            // A widget that owns the drag stays pressed wherever the pointer goes -- see
-            // Widget::DragsOutsideSelf.
-            const bool down = self->capture->DragsOutsideSelf() ||
-                              Inside(self->capture->rect, mx, dragY);
+            // `pressed` follows the rectangle honestly and nothing here overrides it: a
+            // control whose gesture outlives its own rectangle says so in PressedVisual.
+            const bool down = Inside(self->capture->rect, mx, dragY);
             if (self->capture->pressed != down) { self->capture->pressed = down; changed = true; }
             self->capture->OnDrag(mx, dragY);
         }
-        // By index, because a drag above may have laid the page out and replaced the list.
-        for (size_t i = 0; i < self->widgets.size(); i++)
-            self->widgets[i]->OnPointerMove(mx, my);
+
+        // The control under the pointer, and any control that watches a region outside
+        // its own rectangle. See Widget::ExternalRegion. By index, because a drag above
+        // may have laid the page out and replaced the list.
+        bool tracks = false;
+        for (size_t i = 0; i < self->widgets.size(); i++) {
+            Widget *wd = self->widgets[i].get();
+            const float wy = wd->scrolls ? my - pdy : my;
+            if (wd != over &&
+                !(wd->visible && wd->enabled && Inside(wd->ExternalRegion(), mx, wy)))
+                continue;
+            wd->OnPointerMove(mx, wy);
+            if (wd->TracksPointer()) tracks = true;
+        }
         SetCursor(LoadCursorW(nullptr, !over            ? kCursorArrow
                                      : over->TextCursor() ? kCursorIBeam
                                      : over->HandCursor() ? kCursorHand
                                                           : kCursorArrow));
-        if (changed || (over && over->TracksPointer())) self->Invalidate();
+        if (changed || tracks) self->Invalidate();
         return 0;
     }
     case WM_MOUSELEAVE:
@@ -1658,7 +1818,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // saying the second the moment a widget keeps it through a drag that has left
             // its rectangle -- a slider let go three rows away is not a click on whatever
             // it was let go over.
-            const bool click = w->pressed && !w->DragsOutsideSelf();
+            const bool click = w->pressed;
             w->pressed = false;
             self->Invalidate();
             if (w->enabled) w->OnRelease();
@@ -1686,16 +1846,15 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     // what the documentation warns against. Nor does this double up with the case above
     // -- that clears `capture` before it releases, so the WM_CAPTURECHANGED it causes
     // arrives to find nothing left to end.
-    case WM_CAPTURECHANGED: {
-        Widget *w = self->capture;
-        self->capture = nullptr;
-        if (w) {
-            w->pressed = false;
-            self->Invalidate();
-            if (w->enabled) w->OnRelease();
-        }
+    case WM_CAPTURECHANGED:
+        self->CancelCapture();
         return 0;
-    }
+    case WM_CANCELMODE:
+        // The same thing, announced before the capture is taken rather than after.
+        // Released here so that the two handlers cannot disagree about who holds it.
+        if (self->capture) ReleaseCapture();
+        self->CancelCapture();
+        return 0;
     case WM_GETMINMAXINFO: {
         int mw = 0, mh = 0;
         self->MinSize(&mw, &mh);
@@ -1757,13 +1916,13 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             self->MoveFocus((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
             return 0;
         case VK_SPACE:
-            if (self->focused) { self->focused->OnClick(); self->Invalidate(); }
+            if (self->focused) { self->focused->OnActivate(); self->Invalidate(); }
             return 0;
         case VK_RETURN:
             // Enter operates the focused control if it is one that can be operated,
             // and otherwise the page's default action. Without the first half, tabbing
             // to "Browse" and pressing Enter would press the page's default button.
-            if (self->focused) self->focused->OnClick();
+            if (self->focused) self->focused->OnActivate();
             else               self->OnDefaultAction();
             self->Invalidate();
             return 0;
@@ -1773,10 +1932,20 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_TIMER:
-        // Only the caret's is the window's own. A control's is offered to the controls
-        // (by index: a scroll bar's repeat scrolls, and scrolling replaces the list), and
-        // anything else a page set falls through to OnAppMessage, which is where a page's
-        // messages are answered.
+        // Only the caret's and the modal loop's are the window's own. A control's is offered
+        // to the controls (by index: a scroll bar's repeat scrolls, and scrolling replaces
+        // the list), and anything else a page set falls through to OnAppMessage, which is
+        // where a page's messages are answered.
+        if (wp == kFrameTimer) {
+            if (!self->inSizeMove) { KillTimer(h, kFrameTimer); return 0; }
+            // A frame of the loop that cannot run, in the loop's own order: tick, then
+            // paint. No Dispatch of its own -- the one at the top of this function covers
+            // the whole message, which is what the tick needs to be able to lay the page out.
+            self->Frame();
+            self->Paint();
+            ValidateRect(h, nullptr);
+            return 0;
+        }
         if (wp != kCaretTimer) {
             for (size_t i = 0; i < self->widgets.size(); i++)
                 if (self->widgets[i]->OnTimer(wp)) return 0;

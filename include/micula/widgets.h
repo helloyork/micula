@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cwctype>
 #include <functional>
 #include <string>
 #include <vector>
@@ -219,57 +220,148 @@ struct ToggleSwitch : Widget {
     // 0..1, animated. A switch that snaps is the single most obvious tell that a
     // control was drawn rather than inherited -- and it is one of the few things WinUI
     // really does animate, with a storyboard rather than a brush transition.
+    //
+    // Two of them, for the two things that move and are not the same thing: `knob` is where
+    // the knob *is*, which is the pointer's while a hand is on it, and `fill` is what the
+    // switch *is*, which is the value's. One value driving both is what a switch looks like
+    // when the colour follows the hand -- the moment it changed cannot be seen.
     motion::Track knob;
+    motion::Track fill;
+    // How much of the hold is a *drag* rather than a press. A click presses the knob, which
+    // Fluent draws as wider and shorter; a drag carries it, and a squash says "pushed against
+    // something", which is the one thing a knob under a hand is not doing. This is the
+    // handover between the two, so that a grab turns the squash into a round knob instead of
+    // a shape changing between two frames.
+    motion::Track carry;
 
     ToggleSwitch(std::wstring text, bool value, std::function<void(bool)> f)
         : label(std::move(text)), on(value), onChange(std::move(f)),
-          knob(value ? 1.0f : 0.0f) {}
+          knob(value ? 1.0f : 0.0f), fill(value ? 1.0f : 0.0f) {}
 
     bool Focusable() const override { return true; }
     void OnClick() override {
         if (!enabled) return;
-        on = !on;
+        // A drag that has already chosen is not a click as well.
+        if (moved) { moved = false; return; }
+        Set(!on, true);
+    }
+
+    // --- dragging the knob ---------------------------------------------------------
+    //
+    // The track is 40 by 20 and its knob travels the middle 20 of it, here and in Paint:
+    // named because the pointer has to be turned into a position with the same numbers.
+    static constexpr float kW = 40.0f, kH = 20.0f, kTravel = 20.0f;
+    // Where the state flips while the knob is being dragged: two points rather than one, so
+    // that a hand resting on the middle of the track -- or a drag crossing it twice in a
+    // second -- does not fire `onChange` twice for one gesture. The middle is a place with
+    // no answer, which is what it is for, and past either of these the switch has really
+    // chosen.
+    static constexpr float kFlipOn = 0.6f, kFlipOff = 0.4f;
+    // How far from the knob's centre a press still counts as taking hold of it: the knob
+    // itself, and a little for a hand. A press anywhere else is a click.
+    static constexpr float kGrab = 10.0f;
+
+    bool dragging = false;
+    bool moved = false;      // the drag changed the state, so the release is not a click too
+    float grabAt = 0.0f;     // the knob's position when it was taken hold of
+    float grabX = 0.0f;      // and where the pointer was, so it does not jump under the hand
+
+    bool TracksPointer() const override { return dragging; }
+    bool PressedVisual() const override { return pressed || dragging; }
+    float KnobX() const { return rect.right - kW + 10.0f + knob.value * kTravel; }
+
+    void Set(bool value, bool tell) {
+        if (on == value) return;
+        on = value;
+        if (!tell) return;
         if (owner) StartAnimation(owner);
         if (onChange) onChange(on);
     }
+    // The knob at `k` (0..1), and the state that follows from where it has got to.
+    void DragTo(float k) {
+        knob.Set(std::clamp(k, 0.0f, 1.0f));
+        if (k >= kFlipOn) Set(true, true);
+        else if (k <= kFlipOff) Set(false, true);
+        if (owner) owner->Invalidate();
+    }
+    void OnPress(float x, float y) override {
+        moved = false;
+        if (!enabled) return;
+        // Only a press on the knob itself takes hold of it. Anywhere else -- the rest of the
+        // track, the words -- is a click, and a click must not move the knob before the
+        // release: pressing the empty end of the track used to throw the knob across to it.
+        const float cy = rect.top + (Height(rect) - kH) / 2 + kH / 2;
+        const float cx = KnobX();
+        if (!Inside({ cx - kGrab, cy - kGrab, cx + kGrab, cy + kGrab }, x, y)) return;
+        dragging = true;
+        grabAt = knob.value;
+        grabX = x;
+    }
+    void OnDrag(float x, float /*y*/) override {
+        if (!dragging) return;
+        moved = true;          // a hand that moved is not a click, whatever the knob did
+        // Followed by the distance the pointer moved rather than jumped to where it is, so
+        // that a knob taken hold of by its edge stays where it was taken hold of.
+        DragTo(grabAt + (x - grabX) / kTravel);
+    }
+    void OnRelease() override {
+        if (!dragging) return;
+        dragging = false;
+        // The knob is left where the hand let go of it: Tick takes it to the end the state
+        // came out on, which is the animation that says the switch has settled.
+        if (owner) owner->Invalidate();
+    }
     bool Animating() const override {
-        return Widget::Animating() || knob.Wants(on ? 1.0f : 0.0f);
+        return Widget::Animating() || knob.Wants(on ? 1.0f : 0.0f) ||
+               fill.Wants(on ? 1.0f : 0.0f) || carry.Wants(dragging ? 1.0f : 0.0f);
     }
     void Tick(float dt) override {
         Widget::Tick(dt);
         // Was `knob += 0.18f` per tick, which made the switch's speed a function of how
         // busy the message queue was. micula::motion says why that had to go.
+        //
+        // The fill is the value's, and runs whether or not a hand has the knob: that is what
+        // separates "the switch turned on" from "the knob is over there", and what keeps the
+        // moment of the change visible while the knob is being dragged.
+        fill.To(on ? 1.0f : 0.0f);
+        fill.Step(dt, motion::kFast);
+        carry.To(dragging ? 1.0f : 0.0f);
+        carry.Step(dt, motion::kFaster);
+        // The knob is the pointer's while it is held, and Tick must not pull it the other way.
+        if (dragging) return;
         knob.To(on ? 1.0f : 0.0f);
         knob.Step(dt, motion::kFast);
     }
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
-        const float w = 40.0f, h = 20.0f;
+        const float w = kW, h = kH;
         const float y = rect.top + (Height(rect) - h) / 2;
         // The switch sits on the right of the row, which is where Windows' own
         // settings put it -- label left, control right, aligned down the page.
         const D2D1_RECT_F track = { rect.right - w, y, rect.right, y + h };
 
-        // The track crosses over with the knob rather than switching under it: `knob` is
-        // the same 0..1 the knob slides on, so the colour arrives exactly as the knob
-        // reaches the other end.
-        const float k = knob.value;
+        // The track's colour and the knob's are the *value's*: `fill` crosses over on its own,
+        // at the length the knob's own move takes, so the two are one move of the switch and
+        // the flip is visible even while the knob is following a hand.
+        const float f = fill.value;
         const D2D1_COLOR_F offBg = Mix(c.controlBg, c.controlBgHover, hoverT);
         const D2D1_COLOR_F onBg  = Mix(Mix(c.accent, c.accentHover, hoverT),
                                        c.accentPressed, pressT);
-        p.FillRound(track, h / 2, !enabled ? c.controlBg : Mix(offBg, onBg, k));
-        if (!enabled || k < 1.0f)
-            p.StrokeRound(track, h / 2, Fade(c.controlStroke, enabled ? 1.0f - k : 1.0f));
+        p.FillRound(track, h / 2, !enabled ? c.controlBg : Mix(offBg, onBg, f));
+        if (!enabled || f < 1.0f)
+            p.StrokeRound(track, h / 2, Fade(c.controlStroke, enabled ? 1.0f - f : 1.0f));
 
         // Fluent's knob grows under the pointer and squashes while it is held -- wider
         // than it is tall, as if it were being pushed against the track. Two radii and
-        // two lerps, which is the whole of it.
-        const float rx = 6.0f + hoverT + pressT;
-        const float ry = 6.0f + hoverT - pressT;
-        const float cx = track.left + 10 + k * (w - 20);
+        // two lerps, which is the whole of it. A drag is not a press, though: the squash
+        // gives way to a round knob, a little larger, for as long as the hand is on it.
+        const float press = pressT * (1.0f - carry.value);
+        const float rx = 6.0f + hoverT + press + carry.value * 1.5f;
+        const float ry = 6.0f + hoverT - press + carry.value * 1.5f;
+        const float cx = KnobX();
         const D2D1_COLOR_F knobColor = !enabled ? c.textDisabled
-                                                : Mix(c.textSecondary, c.accentText, k);
+                                                : Mix(c.textSecondary, c.accentText, f);
         p.rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, y + h / 2), rx, ry),
                           p.Brush(knobColor));
 
@@ -305,68 +397,164 @@ struct Segmented : Widget {
     std::vector<std::wstring> options;
     int selected = 0;
     std::function<void(int)> onChange;
-    int hoverIndex = -1;
+
+    // The indicator, in cells: 0 is `rect.left`, 1 the far edge of the first option.
+    //
+    // Two values, because the block's two edges do not move together: `pillPos` is where the
+    // move has got to and `pillLag` is a follower that trails behind it -- see Tick. At rest
+    // both are `selected`, so a control that is not moving has nothing to remember and one
+    // that Layout() has just built is right on its first paint.
+    motion::Track pillPos;
+    float pillLag = 0.0f;
+    bool  dragging = false;
+
+    // How far behind the leading edge the trailing one trails, in seconds. The block is
+    // longer than a cell by about the distance covered in that time: 45 ms of a 167 ms move
+    // is a quarter of a cell, which is as much as reads as deliberate.
+    static constexpr float kPillLag = 0.045f;
 
     Segmented(std::vector<std::wstring> opts, int sel, std::function<void(int)> f)
-        : options(std::move(opts)), selected(sel), onChange(std::move(f)) {}
+        : options(std::move(opts)), selected(sel), onChange(std::move(f)),
+          pillPos((float)sel), pillLag((float)sel) {}
 
     bool Focusable() const override { return true; }
-    // The hovered cell is worked out at paint time from where the pointer is, so the
-    // window has to repaint while it moves across this control. See Widget::TracksPointer.
-    bool TracksPointer() const override { return true; }
+    // The hovered cell follows the pointer across the control, and a drag follows it out of
+    // the control altogether, so the window has to keep repainting either way.
+    bool TracksPointer() const override { return hover || dragging; }
     float CellW() const { return Width(rect) / (float)(std::max)(size_t(1), options.size()); }
 
-    void OnClick() override {
-        if (!enabled || hoverIndex < 0) return;
-        selected = hoverIndex;
+    // The cell under `x`, or -1 past either end. Asked of the cursor where it is needed
+    // rather than cached in a field written by Paint: a cached one stays right only as long
+    // as the control is repainted on every move, and anything reading it -- a click, an IME
+    // position -- then depends on a frame having been drawn since the pointer last moved.
+    int IndexAtX(float x) const {
+        const int n = (int)options.size();
+        if (n <= 0) return -1;
+        const int i = (int)((x - rect.left) / CellW());
+        return (i < 0 || i >= n) ? -1 : i;
+    }
+
+    // The same, kept between the ends -- what a drag wants, since dragging past the last
+    // option means the last option.
+    int ClampedIndexX(float x) const {
+        const int n = (int)options.size();
+        if (n <= 0) return -1;
+        return std::clamp((int)((x - rect.left) / CellW()), 0, n - 1);
+    }
+
+    // The indicator's two edges, in cells. The leading one is where the move has got to and
+    // the trailing one is behind it, so the block spans a cell plus however far apart they
+    // are: that gap is the stretch, which opens as the move sets off and closes as it lands.
+    void PillEdges(float *lo, float *hi) const {
+        *lo = (std::min)(pillPos.value, pillLag);
+        *hi = (std::max)(pillPos.value, pillLag) + 1.0f;
+    }
+
+    // Take the new index. Nothing starts here: the indicator is aimed at whatever `selected`
+    // is, once a frame, in Tick. That is what makes a drag that crosses three cells inside one
+    // frame one move rather than three, and crossing back again continuous rather than a
+    // rewind.
+    void Select(int index) {
+        if (index < 0 || index >= (int)options.size() || index == selected) return;
+        selected = index;
         if (onChange) onChange(selected);
     }
+
+    // A press takes the option under the pointer and a drag carries the selection along;
+    // the release only ends the gesture. The same shape as Slider, including following the
+    // pointer out of the control -- and out of the window.
+    void OnPress(float x, float /*y*/) override { dragging = true; Select(ClampedIndexX(x)); }
+    void OnDrag(float x, float /*y*/) override { if (dragging) Select(ClampedIndexX(x)); }
+    void OnRelease() override { dragging = false; }
+
     bool OnKey(WPARAM vk) override {
         if (vk != VK_LEFT && vk != VK_RIGHT) return false;
         const int n = (int)options.size();
-        selected = (selected + (vk == VK_RIGHT ? 1 : n - 1)) % n;
-        if (onChange) onChange(selected);
+        if (n <= 0) return false;
+        // Wraps, and the indicator wraps with it: the one move that crosses the control.
+        Select((selected + (vk == VK_RIGHT ? 1 : n - 1)) % n);
         return true;
+    }
+
+    bool Animating() const override {
+        return Widget::Animating() || pillPos.Wants((float)selected) || pillLag != pillPos.value;
+    }
+    void Tick(float dt) override {
+        Widget::Tick(dt);
+        // Aimed every frame rather than at the press: a page that assigns `selected` itself is
+        // followed too, and the target is always the last cell the pointer crossed.
+        pillPos.To((float)selected);
+        pillPos.Step(dt, motion::kFaster);
+        // The trailing edge is a lag of the leading one. A follower is continuous through a
+        // change of target by construction, which is the whole reason it is not a second
+        // curve: a drag retargets this several times a frame, and a curve restarted each time
+        // would jump to whichever cell it was last pointed at -- the block teleporting from
+        // cell to cell while the pointer was dragged across them.
+        pillLag += (pillPos.value - pillLag) * (1.0f - std::exp(-dt / kPillLag));
+        // Snapped when it is close, or the two are never quite equal and the window animates
+        // for the rest of its life, a thousandth of a cell out.
+        if (std::fabs(pillPos.value - pillLag) < 0.002f) pillLag = pillPos.value;
     }
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
-        // Recomputed here rather than in the mouse handler: the widget does not see
-        // WM_MOUSEMOVE, only the hover flag, so the cell under the pointer has to
-        // come from the cursor position at paint time.
-        hoverIndex = -1;
-        if (hover && owner) {
-            hoverIndex = std::clamp((int)((Cursor().x - rect.left) / CellW()), 0,
-                                    (int)options.size() - 1);
-        }
+        // The highlight only, and the one thing here that is allowed to read the cursor:
+        // which cell the pointer is over is a question about the pointer, not state this
+        // control keeps, and a stored answer is one that goes stale the moment the page
+        // is laid out under a pointer that has not moved. The selection is not read here
+        // -- it comes from OnPress and OnDrag, in message coordinates, so that a drag
+        // across the cells can be driven by posted messages.
+        const int hot = hover ? IndexAtX(Cursor().x) : -1;
         p.FillRound(rect, metric::kRadiusControl, c.controlBg);
         p.StrokeRound(rect, metric::kRadiusControl, c.controlStroke);
-        // **The pill appears at the new cell rather than sliding to it.** It used to
-        // slide, which is what Windows 10 did and what WinUI did until 22000.51 -- the
-        // indicator animation was changed then to land in place rather than stretch
-        // across, and a control that still travels reads as the older system. What is
-        // left moving here is the hover fill, which is a brush transition like any other.
+        // The hover fill goes under the indicator, so a block on its way to a cell the
+        // pointer is already on is not covered by that cell's own highlight.
+        if (hot >= 0 && enabled) {
+            const float x = rect.left + CellW() * hot;
+            p.FillRound({ x + 2, rect.top + 2, x + CellW() - 2, rect.bottom - 2 },
+                        metric::kRadiusControl - 1, c.controlBgHover);
+        }
+        float lo = 0.0f, hi = 0.0f;
+        PillEdges(&lo, &hi);
+        const float w = CellW();
+        const float blockLo = rect.left + lo * w, blockHi = rect.left + hi * w;
+        p.FillRound({ blockLo + 2, rect.top + 2, blockHi - 2, rect.bottom - 2 },
+                    metric::kRadiusControl - 1, enabled ? c.accent : c.controlBgHover);
+        // **The label colour follows the block rather than the selection.** Each label is drawn
+        // in the colour of what is behind it, and one the block is halfway across is drawn on
+        // either side of the block's edge -- which cuts the glyph in two exactly where the fill
+        // changes. Turning the whole word over the moment the option is chosen instead reads as
+        // the text arriving before the block does, which is what it is.
         for (size_t i = 0; i < options.size(); i++) {
-            const float x = rect.left + CellW() * i;
-            const D2D1_RECT_F cell = { x, rect.top, x + CellW(), rect.bottom };
-            const bool sel = (int)i == selected;
-            if (sel)
-                p.FillRound({ cell.left + 2, cell.top + 2, cell.right - 2, cell.bottom - 2 },
-                            metric::kRadiusControl - 1, enabled ? c.accent : c.controlBgHover);
-            else if ((int)i == hoverIndex && enabled)
-                p.FillRound({ cell.left + 2, cell.top + 2, cell.right - 2, cell.bottom - 2 },
-                            metric::kRadiusControl - 1, c.controlBgHover);
-            const D2D1_COLOR_F fg = !enabled ? c.textDisabled
-                                   : sel     ? c.accentText
-                                             : c.textPrimary;
+            const float x = rect.left + w * i;
+            const D2D1_RECT_F cell = { x, rect.top, x + w, rect.bottom };
             const float tw = p.MeasureWidth(options[i], p.font->body);
-            p.Text(options[i], { cell.left + (CellW() - tw) / 2, cell.top, cell.right, cell.bottom },
-                   p.font->body, fg);
+            const D2D1_RECT_F text = { cell.left + (w - tw) / 2, cell.top, cell.right, cell.bottom };
+            if (!enabled) { p.Text(options[i], text, p.font->body, c.textDisabled); continue; }
+            // Where the block's edges fall inside this cell: three slices, of which the middle
+            // one is empty whenever the block misses the cell entirely or covers all of it.
+            const float cutLo = std::clamp(blockLo, cell.left, cell.right);
+            const float cutHi = std::clamp(blockHi, cell.left, cell.right);
+            Label(p, options[i], text, cell.left, cutLo, c.textPrimary);
+            Label(p, options[i], text, cutLo, cutHi, c.accentText);
+            Label(p, options[i], text, cutHi, cell.right, c.textPrimary);
         }
         if (focus && owner && owner->showFocusRing) {
             const D2D1_RECT_F o = { rect.left - 2, rect.top - 2, rect.right + 2, rect.bottom + 2 };
             p.StrokeRound(o, metric::kRadiusControl + 2, c.textPrimary, 2.0f);
         }
+    }
+
+    // One slice of a label: the text drawn through its own box, so that it stays where the
+    // layout put it, and clipped to `[from, to)` across that box. The clip is never the text's
+    // box -- narrowing that would move the glyphs instead of cutting them.
+    static void Label(const Painter &p, const std::wstring &s, const D2D1_RECT_F &text,
+                      float from, float to, const D2D1_COLOR_F &c) {
+        if (to <= from) return;
+        p.rt->PushAxisAlignedClip({ from, text.top, to, text.bottom },
+                                  D2D1_ANTIALIAS_MODE_ALIASED);
+        p.Text(s, text, p.font->body, c);
+        p.rt->PopAxisAlignedClip();
     }
 };
 
@@ -385,38 +573,68 @@ struct Slider : Widget {
     // back wrong the next time the page is built.
     std::function<void(float)> onChange;
     std::function<void(float)> onCommit;
+    // Between a press and its release, wherever the pointer has got to since. The
+    // gesture's own flag rather than `pressed`, which the window clears as soon as the
+    // pointer leaves the rectangle -- a slider's drag outlives that by design.
+    bool dragging = false;
+    // Where the knob is drawn, as a fraction, which trails a value that snaps from one step
+    // to the next. A step is the one thing about a stepped slider that is visible, and
+    // answering it by jumping the knob says the knob and the value are the same thing. They
+    // are not: the value is what the page is told and it is exact, the knob is where the
+    // result is drawn -- so the knob eases to each new step while the value is already there.
+    motion::Track drawn;
 
     Slider(float v, float a, float b, float s, std::function<void(float)> f)
-        : value(v), lo(a), hi(b), step(s), onChange(std::move(f)) {}
+        : value(v), lo(a), hi(b), step(s), onChange(std::move(f)), drawn(Frac()) {}
 
     bool Focusable() const override { return true; }
     // While it is being dragged: the knob follows the pointer, and the pointer moving is
     // the only thing that happens. The window repaints on that account rather than on the
     // caller's -- a slider whose `onChange` does not happen to invalidate the window is
-    // still a slider, and its knob still has to move.
-    bool TracksPointer() const override { return pressed; }
+    // still a slider, and its knob still has to move. `dragging` rather than `pressed`,
+    // which the window clears the moment the pointer leaves the rectangle.
+    bool TracksPointer() const override { return dragging; }
     // A drag of a slider is mostly sideways, and a control row is 32 DIPs tall with a
     // 20-DIP thumb in the middle: six pixels of wander and the pointer is outside. The
-    // gesture is the whole of the control, so it does not end there.
-    bool DragsOutsideSelf() const override { return true; }
+    // thumb is the one thing on screen saying the gesture has not ended, so it stays held
+    // for the whole of it.
+    bool PressedVisual() const override { return pressed || dragging; }
     float Frac() const { return (value - lo) / (hi - lo); }
+
+    bool Animating() const override { return Widget::Animating() || drawn.Wants(Frac()); }
+    void Tick(float dt) override {
+        Widget::Tick(dt);
+        // A curve rather than a follower, because a step is a place rather than a direction:
+        // the knob arrives at it and stops, instead of closing a gap that a hand could keep
+        // opening. Retargeting means a fast drag restarts this once a step, which is a move
+        // the knob can make continuously.
+        drawn.To(Frac());
+        drawn.Step(dt, motion::kFaster);
+    }
 
     void SetFromX(float x) {
         const float t = std::clamp((x - rect.left - 8) / (std::max)(1.0f, Width(rect) - 16), 0.0f, 1.0f);
         // Snapped to the step, so a slider that writes 0.02 into a settings file
         // cannot land on 0.019999999. Files like that are read by people.
         const float raw = lo + t * (hi - lo);
-        value = std::round(raw / step) * step;
+        const float snapped = std::round(raw / step) * step;
+        // A drag is a mouse message per pointer move, and a step is wider than a pixel,
+        // so most of them land on the step the value is already on. Those have nothing
+        // to report, and reporting them anyway would have onChange write the settings
+        // file a hundred times across one gesture.
+        if (snapped == value) return;
+        value = snapped;
         if (onChange) onChange(value);
     }
     // The press is already a value: clicking anywhere on the track puts the knob there,
-    // which is what every slider does and what makes the track worth aiming at.
-    void OnPress(float x, float /*y*/) override { SetFromX(x); }
+    // which is what every slider does and what makes the track worth aiming at. It also
+    // means a click over before the next frame is still a click.
+    void OnPress(float x, float /*y*/) override { dragging = true; SetFromX(x); }
     void OnDrag(float x, float /*y*/) override { SetFromX(x); }
     // Nothing: the press placed the knob and the drag moved it. A slider has no separate
     // click, and Space reaches here from the keyboard -- OnKey is where that belongs.
     void OnClick() override {}
-    void OnRelease() override { if (onCommit) onCommit(value); }
+    void OnRelease() override { dragging = false; if (onCommit) onCommit(value); }
     bool OnKey(WPARAM vk) override {
         if (vk == VK_LEFT || vk == VK_DOWN)  { value = (std::max)(lo, value - step); }
         else if (vk == VK_RIGHT || vk == VK_UP) { value = (std::min)(hi, value + step); }
@@ -434,13 +652,15 @@ struct Slider : Widget {
         // Draws the value and nothing else. It used to *set* it here, from the cursor,
         // on the grounds that the window already held capture and already set `pressed`
         // -- so a paint was the whole of the drag and no mouse-move plumbing was needed.
-        // That was wrong twice over: `pressed` goes false the moment the pointer leaves
-        // the 32-DIP row, which froze the knob mid-drag, and a value read from the
-        // physical cursor cannot be driven by a posted message, which put the control
-        // out of reach of a message-posting harness. OnPress and OnDrag now carry it.
+        // That was wrong three times over: `pressed` goes false the moment the pointer
+        // leaves the 32-DIP row, which froze the knob mid-drag; a value read from the
+        // physical cursor cannot be driven by a posted message, which put the control out
+        // of reach of a message-posting harness; and a page long enough to scroll does not
+        // paint a control the clip has left behind, which would stop the drag outright.
+        // OnPress and OnDrag now carry it.
         const float cy = rect.top + Height(rect) / 2;
         const float x0 = rect.left + 8, x1 = rect.right - 8;
-        const float at = x0 + Frac() * (x1 - x0);
+        const float at = x0 + std::clamp(drawn.value, 0.0f, 1.0f) * (x1 - x0);
         p.rt->FillRoundedRectangle(D2D1::RoundedRect({ x0, cy - 2, x1, cy + 2 }, 2, 2),
                                    p.Brush(c.controlStroke));
         p.rt->FillRoundedRectangle(D2D1::RoundedRect({ x0, cy - 2, at, cy + 2 }, 2, 2),
@@ -468,7 +688,7 @@ struct Slider : Widget {
 // drop-down's list -- takes two ids of its own (see DropDown), because a timer is
 // offered to the controls in order and the first bar to recognise the id takes it.
 //
-// So Micula uses timer ids 2 and 4 to 7. A page's own timers should be numbered
+// So Micula uses timer ids 2 to 7. A page's own timers should be numbered
 // outside that range; they reach the page through Window::OnAppMessage.
 constexpr UINT_PTR kScrollBarStateTimer  = 4;
 constexpr UINT_PTR kScrollBarRepeatTimer = 5;
@@ -514,6 +734,9 @@ struct ScrollBar : Widget {
     float value    = 0.0f;   // where it has been scrolled to
     float drawn    = 0.0f;   // where it is drawn, which trails `value` through a glide
     // The scrolling part of the window. The pointer moving anywhere over it shows the bar.
+    // Handed to the window as this control's ExternalRegion, which is where a move over
+    // the page is delivered from: not a hit-test area, so a click here is a click on the
+    // page.
     D2D1_RECT_F area = {};
     // Asked to scroll the page to `to`. `glide` is false for the thumb only: a dragged
     // thumb has to stay under the pointer, not catch up with it.
@@ -567,10 +790,13 @@ struct ScrollBar : Widget {
 
     // --- input --------------------------------------------------------------------
     bool TracksPointer() const override { return hover; }   // the arrow under it lights
+    D2D1_RECT_F ExternalRegion() const override { return area; }
 
     void OnPointerMove(float x, float y) override {
+        // Both places a move can arrive from -- over the bar itself and over the page it
+        // scrolls -- are places the bar should be out for, so there is nothing to test.
         px = x; py = y;
-        if (visible && (Inside(area, x, y) || Inside(rect, x, y))) Wake();
+        Wake();
         Poll();
     }
     void OnPress(float x, float y) override {
@@ -775,9 +1001,17 @@ struct DropDown : Widget {
     std::function<void(int)> onChange;
     bool open = false;
     float rowH = 32.0f;
-    // How far the flyout is out: 0 closed, 1 fully open. Fluent fades and lifts a
-    // flyout into place rather than blinking it on, and on the way out it fades rather
-    // than vanishing -- which is why the control stays raised while this runs down.
+    // Whether the choice is a ring. Off, the list has two ends, and a step past one of them
+    // has nowhere to go -- which is what the knock is for. On, the step past the last option
+    // arrives at the first: the wheel's, Up and Down's, and either of them while the list is
+    // closed as well as open, because a control whose keys and wheel disagree about its ends
+    // is a control with two answers. The list's own scroll bar is not part of this: a bar has
+    // two ends by definition, and so does the room the popup is shown through.
+    bool wrapAround = false;
+    // How far the lid is open: 0 is the control's own row and nothing else, 1 is the whole
+    // popup. Fluent expands a flyout out of the control it belongs to rather than blinking
+    // it on, and on the way out it collapses back into it rather than vanishing -- which is
+    // why the control stays raised while this runs down.
     //
     // Two curves, because Fluent has two: in on "Fast Out, Slow In", out on "Slow Out,
     // Fast In". A flyout arriving settles; a flyout leaving gets out of the way.
@@ -794,22 +1028,81 @@ struct DropDown : Widget {
         }
     }
 
-    // The control's own row. While the list is open `rect` grows to cover it -- and
-    // grows *upwards* when that is where the room is -- so the head cannot be derived
-    // from `rect` any more.
+    // The control's own row. While the list is open `rect` grows to cover the popup, so
+    // the head cannot be derived from `rect` any more.
     D2D1_RECT_F head = {};
-    bool upwards = false;
-
-    // Only for a list cut short (see List): how far its rows are scrolled, and where they
-    // are drawn, which follows through a glide the way the page's scrollAt does.
-    float listScroll = 0.0f;
-    motion::Track listAt;
+    // The rows' margin inside the popup, top and bottom. WinUI's
+    // ComboBoxDropdownContentMargin, of which the 4 DIPs that show are the part that
+    // matters here.
+    static constexpr float kPad = 4.0f;
+    // Where the popup comes to rest: worked out when it opens, from the chosen row, and
+    // then left alone -- the popup does not move while it is being scrolled through, the
+    // *rows* do. See Place().
+    D2D1_RECT_F frame = {};
+    // Where the panel is, in rows: 0 has the first option on the control's own row, 3 has
+    // the fourth there. It trails `selected` so the list slides to a new choice rather than
+    // jumping, and it is what the panel -- and every row in it -- is drawn from. The list
+    // moves past the control as a whole; nothing scrolls inside the panel, and no marker
+    // travels down a still one.
+    float slid = 0.0f;
+    // How long the slide takes to close most of its gap, in seconds. A follower rather than
+    // a curve with a duration, like the page's scroll and the segmented indicator's block:
+    // a spun wheel retargets this several times inside one frame, and a storyboard restarted
+    // that often would stutter between the notches.
+    static constexpr float kSlideLag = 0.05f;
     // Its scroll bar, the page's own control: WinUI's drop-down is a ScrollViewer, and
     // the bar in it is the one every other ScrollViewer has. Made the first time a list
     // needs one, not for every drop-down on every layout.
     std::unique_ptr<ScrollBar> bar;
     // The press went down on the bar, so letting go is not choosing a row.
     bool barGrab = false;
+
+    // Typing to find an option. The control is a list of words, so the keyboard can be a
+    // search: the letters go into a prefix, the option that starts with it is chosen, and an
+    // open list slides to it. Windows' own combo boxes do this, and it needs no field, no
+    // layout and nothing drawn -- the chosen option's label is already on the control.
+    //
+    // The prefix is forgotten after a second of quiet, and whenever the list opens or closes:
+    // it is a way of pointing at one option, not a query that stays.
+    std::wstring typed;
+    ULONGLONG typedAt = 0;
+    static constexpr ULONGLONG kTypeWindow = 1000;   // ms
+
+    // What a letter that found nothing does. A control that swallows a key in silence looks
+    // broken, and the window's answer to a key nobody took is a beep -- a complaint from the
+    // operating system rather than from the thing that did not move. So the mark is the
+    // answer: it shrinks for a moment and springs back. Heard, and nowhere to go with it.
+    //
+    // Full at the instant of the refusal and decaying from there, which is the shape that
+    // needs no state beyond the number itself: a curve with a duration would have to be
+    // turned round at the end of itself to come back.
+    float refuse = 0.0f;
+    static constexpr float kRefuseLag = 0.07f;       // seconds
+
+    // And what a gesture that had nowhere to go does -- the wheel, or Up and Down, at the end
+    // of the list. A different shape, because it is a different thing to say: not "no", but
+    // "that way, and no further". The edge the gesture is going towards twitches quickly and a
+    // short way and holds there; the other edge follows it, more slowly and further, so the
+    // mark is *shorter* for as long as either of them is out. Then both spring back.
+    float knock = 0.0f;        // the fast edge's impulse, 0..1
+    float knockLag = 0.0f;     // and the edge that follows it, which goes further
+    int knockDir = 0;          // -1 up a list, +1 down it
+    bool knockHeld = false;    // still in the rise, which is where the two differ
+    static constexpr float kKnockRise = 0.03f;    // seconds for the fast edge to arrive
+    // And the time constant for the edge behind it, which is an approach rather than a ramp
+    // and so is *fastest* in its first instant: three of these is 95 % of the way, which is
+    // the tenth of a second a ramp over the same distance used to take.
+    static constexpr float kKnockFollow = 0.03f;
+    static constexpr float kKnockLag = 0.12f;     // and for both to spring back
+    static constexpr float kKnockTip = 2.0f;      // DIPs the fast edge moves
+    static constexpr float kKnockShove = 6.0f;    // and the edge that follows it
+
+    static bool StartsWith(const std::wstring &s, const std::wstring &prefix) {
+        if (prefix.size() > s.size()) return false;
+        for (size_t i = 0; i < prefix.size(); i++)
+            if ((wchar_t)std::towlower(s[i]) != prefix[i]) return false;
+        return true;
+    }
 
     bool Focusable() const override { return true; }
     bool TracksPointer() const override { return open; }
@@ -819,148 +1112,205 @@ struct DropDown : Widget {
     // not scroll, the window under its caption -- which is painted last, over everything.
     D2D1_RECT_F Bounds() const {
         if (!owner || !owner->hwnd) return D2D1_RECT_F{ 0, 0, 0, 0 };
-        const D2D1_RECT_F clip = owner->ClipRect();
+        // In this control's own space rather than the window's, which on a scrolling page
+        // are not the same thing: the strip the page shows moves with the scroll while the
+        // control's rectangle stays where the layout put it. Measuring against the
+        // window's rectangle instead made a control halfway down the page think it had the
+        // room the top of the page had, and open downward off the bottom of it.
+        const D2D1_RECT_F clip = VisibleArea();
         if (clip.bottom > clip.top) return clip;
-        return D2D1_RECT_F{ 0, kCaptionH, owner->ClientW(), owner->ClientH() };
+        // No scrolling area: the window under its caption, in this control's space too,
+        // because the page may still be drawn through a transform.
+        float dy = 0.0f, op = 1.0f;
+        if (scrolls) owner->ContentTransform(&dy, &op);
+        return D2D1_RECT_F{ 0, kCaptionH - dy, owner->ClientW(), owner->ClientH() - dy };
     }
-    float FullHeight() const { return rowH * options.size() + 8; }
+    float FullHeight() const { return rowH * (float)options.size() + 2 * kPad; }
 
-    // Where the list goes: under the control, unless the page's visible area has no room
-    // for it there and does have room above.
+    // The y a row has to be at to be over the control's own row: the two boxes centred on
+    // each other, which for a row and a control of the same height is the two boxes on top
+    // of each other -- and is why the popup reads as a lid closing over the control.
+    float RowLine() const { return (Head().top + Head().bottom) / 2 - rowH / 2; }
+    // Where a row is drawn. The panel's place in rows is `slid`, so every row moves with
+    // it, which is the whole of the difference between this and a list that scrolls.
+    float RowTop(int i) const { return RowLine() + rowH * ((float)i - slid); }
+
+    // The panel: the whole list, laid out so that the chosen row is on the control's own
+    // row, and moved as a whole when the choice moves.
     //
-    // **Windows flips its flyouts and this has to as well**, because the list is a
-    // scrolling widget and the page clips those: one opened near the bottom of a page
-    // was not merely inelegant, it was *cut off*, with the options that did not fit
-    // simply not drawn and no sign that they existed.
+    // **This is what a Windows 11 combo box does**, and it is not "open below and flip when
+    // short of room": the popup covers the control with the chosen item on it, so the two
+    // names are in the same place and the choice reads as a swap rather than as a menu. The
+    // rule is one line of ComboBox::GetNonPannablePopupLayout -- the chosen item is laid out
+    // at `cbY + cbHeight/2 - itemHeight/2 - margin.Top` -- applied again after every step,
+    // which is what makes the wheel feel like a dial under the control rather than a menu
+    // being dragged about.
     //
-    // **And when neither side has room, it is cut short and its rows scroll**, which is
-    // what WinUI's ComboBox does: its popup is a ScrollViewer. Its fixed cap,
-    // MaxDropDownHeight's 504 DIPs, is not copied -- a list that fits is drawn whole,
-    // whatever its length, so the room is the only cap.
-    // Flipping alone leaves a nine-option list on a small window with nowhere to go at
-    // some scroll positions: it went down anyway, whole, and the page cut it off. It
-    // takes the roomier side and stops four DIPs short of the edge, the gap it keeps from
-    // the control.
-    D2D1_RECT_F List() const { return Place(nullptr); }
-    // Told by the branch that cut it rather than by comparing heights: `(top + tall) - top`
-    // need not come back as `tall` in floats, and a list that fits must not be taken for
-    // one that scrolls.
-    bool Overflows() const { bool cut = false; Place(&cut); return cut; }
-    D2D1_RECT_F Place(bool *cutShort) const {
-        const D2D1_RECT_F h = Head();
-        const float tall = FullHeight();
-        float top = h.bottom + 4;
-        const D2D1_RECT_F b = Bounds();
-        if (b.bottom > b.top && top + tall > b.bottom) {
-            if (h.top - 4 - tall >= b.top) {
-                top = h.top - 4 - tall;
-            } else {
-                const float below = b.bottom - top - 4;
-                const float above = h.top - 4 - b.top - 4;
-                const float cut = (std::max)((std::max)(below, above), rowH + 8);
-                if (above > below) top = h.top - 4 - cut;
-                if (cutShort) *cutShort = cut < tall;
-                return { h.left, top, h.right, top + cut };
-            }
-        }
-        return { h.left, top, h.right, top + tall };
+    // One deliberate difference. WinUI clamps the popup into the window and shrinks it, so
+    // the chosen row drifts off the control near the top and bottom of the screen. This lets
+    // the panel hang off the strip and be clipped by the page instead, because the chosen
+    // row being on the control is the whole reason the popup is over it: what goes out of
+    // sight is the far end of the list, which is the end to lose.
+    D2D1_RECT_F FrameAt(float k) const {
+        const float top = RowLine() - kPad - rowH * k;
+        return { Head().left, top, Head().right, top + FullHeight() };
     }
-    float MaxListScroll() const { return (std::max)(0.0f, FullHeight() - Height(List())); }
-
-    // Scrolled by the wheel and the bar's arrows and track (`glide`), or by its thumb,
-    // which has to stay under the pointer.
-    void ScrollList(float to, bool glide) {
-        listScroll = std::clamp(to, 0.0f, MaxListScroll());
-        if (!glide) listAt.Set(listScroll);
+    D2D1_RECT_F Frame() const { return FrameAt(slid); }          // where it is drawn
+    D2D1_RECT_F Rest() const { return FrameAt((float)selected); }  // where it belongs
+    // Everything that follows from the chosen row: the area the mouse can reach and the bar.
+    // The rows themselves need no telling -- RowTop reads `slid`.
+    //
+    // Only while the list is open. Closed there is no popup to reach into, and `head` is
+    // whatever the last one left behind -- or nothing at all, if there has never been one --
+    // so a choice made from the keyboard while closed would have rewritten the control's own
+    // rectangle out of a popup that does not exist. SetOpen puts all of this right before the
+    // list is seen again.
+    void Sync() {
+        if (!open) return;
+        const D2D1_RECT_F f = Rest();
+        rect = { head.left, (std::min)(head.top, f.top),
+                 head.right, (std::max)(head.bottom, f.bottom) };
         SyncBar();
+    }
+    // The popup as it is drawn *now*: it grows out of the control's own row, each edge
+    // that has somewhere to go travelling from that row to where it ends up. Up and down
+    // both when the list reaches both ways, which is the ordinary case -- the chosen row
+    // sits over the control and its neighbours arrive from under it.
+    //
+    // WinUI does this with SplitOpenThemeAnimation, whose ClosedLength, OpenedLength and
+    // OffsetFromCenter are the three numbers ComboBoxTemplateSettings hands it for exactly
+    // this purpose.
+    D2D1_RECT_F Shown() const {
+        const D2D1_RECT_F f = Frame();
+        const float k = openT.value;
+        const float top = f.top < head.top ? head.top + (f.top - head.top) * k : head.top;
+        const float bot = f.bottom > head.bottom
+                              ? head.bottom + (f.bottom - head.bottom) * k
+                              : head.bottom;
+        return { head.left, top, head.right, bot };
+    }
+    // Taller than the room it is seen through, which is the only thing the bar is for.
+    bool Overflows() const { return FullHeight() > Height(Bounds()) + 0.5f; }
+
+    // The chosen row, by the wheel, the keys, a click or the bar. The panel's place and the
+    // bar come out of it -- see Sync -- so there is nothing here to keep in step by hand.
+    //
+    // Returns whether the choice actually moved, which is what tells a gesture that had
+    // nowhere to go from one that had: see Knock.
+    bool Select(int i) {
+        const int n = (int)options.size();
+        if (n <= 0) return false;
+        i = std::clamp(i, 0, n - 1);
+        const bool moved = (i != selected);
+        if (moved) {
+            selected = i;
+            Sync();
+            if (onChange) onChange(selected);
+        }
+        if (BarShown()) { bar->Wake(); bar->Poll(); }
         if (owner) owner->Invalidate();
+        return moved;
     }
-    // The chosen row wholly in view, with the rows' own four DIPs of margin when it is the
-    // first or the last.
-    void ScrollToRow(int i, bool glide) {
-        if (i < 0 || !Overflows()) return;
-        const float view = Height(List());
-        const float top = rowH * i, bottom = top + rowH + 8;
-        if (top < listScroll) ScrollList(top, glide);
-        else if (bottom > listScroll + view) ScrollList(bottom - view, glide);
+    // One step of the choice, which is what the wheel, Up and Down and the bar's arrows all
+    // amount to. Past either end it wraps when `wrapAround` is set and otherwise goes
+    // nowhere -- Select clamps, so a step that ran off an end is the option it started from
+    // and reports that nothing moved, which is what the callers read as nowhere to go.
+    bool Step(int dir) {
+        const int n = (int)options.size();
+        if (n <= 0) return false;
+        const int want = selected + dir;
+        if (!wrapAround) return Select(want);
+        return Select(((want % n) + n) % n);
     }
-    // The bar's geometry, in the list's resting place (before Lift). The ScrollViewer is
-    // the popup's whole inside, within its 1-DIP border, and the rows' 4-DIP margins above
-    // and below are content that scrolls (ComboBoxDropdownContentMargin); the bar keeps
-    // the 1 DIP from that edge that the page's does (ScrollViewerScrollBarMargin).
+    // A gesture with nowhere to go -- the wheel or Up and Down at the end of the list -- is
+    // answered by the mark giving way the way it was pressed and coming back. `dir` is +1 for
+    // down a list, -1 for up it, which is the direction the gesture was going.
+    void Knock(int dir) {
+        knock = 0.0f;
+        knockLag = 0.0f;
+        knockHeld = true;
+        knockDir = dir;
+    }
+    // The bar, which works in DIPs while the list works in rows. A step smaller than a row
+    // still moves a row: an arrow that did nothing would be an arrow that is broken.
+    void ScrollTo(float to, bool /*glide*/) {
+        if (!open) return;
+        Select(to < slid * rowH ? (int)std::floor(to / rowH) : (int)std::ceil(to / rowH));
+    }
+    // The bar's geometry. It belongs to the list, so it travels with the panel -- but its
+    // track is only drawn where the page can show it, and what it reports is the chosen
+    // row's place in the list, which is the only thing about this list that moves.
     void SyncBar() {
         if (!bar) return;
-        const D2D1_RECT_F l = List();
-        bar->rect = { l.right - 2 - ScrollBar::kSize, l.top + 1, l.right - 2, l.bottom - 1 };
-        bar->area = l;
-        bar->viewport = Height(l);
+        const D2D1_RECT_F f = Frame();
+        const D2D1_RECT_F b = Bounds();
+        bar->rect = { f.right - 2 - ScrollBar::kSize, (std::max)(f.top, b.top) + 1,
+                      f.right - 2, (std::min)(f.bottom, b.bottom) - 1 };
+        bar->area = f;
+        bar->viewport = Height(b);
         bar->extent = FullHeight();
-        bar->value = listScroll;
-        bar->drawn = listAt.value;
+        bar->value = (std::min)((std::max)(0.0f, slid * rowH),
+                                (std::max)(0.0f, FullHeight() - Height(b)));
+        bar->drawn = bar->value;
     }
     bool BarShown() const { return open && bar && bar->visible; }
 
-    // How far the flyout still has to travel, and in which direction. It comes *out of*
-    // the control, so a list below starts six DIPs high and a list above starts six
-    // DIPs low. Both the drawing and the hit test go through this, or the row under the
-    // pointer is not the row being lit.
-    float Lift() const { return (upwards ? 6.0f : -6.0f) * (1.0f - openT.value); }
-
-    // Which option is at this point, in the flyout's own space. -1 for the gap between
-    // the control and the list, and for the padding around the rows -- and on a list cut
-    // short, for its bar and for the edges the rows are cut at.
+    // Which option is at this point. -1 for anything outside the panel as it is drawn right
+    // now -- a row the panel has not slid over yet is not there -- and for the bar.
+    //
+    // Boxed in on all four sides, and it has to be: this is the box the pointer is in when a
+    // row is lit, and it is not the window. The sides matter because the popup is narrow --
+    // the control's own width -- and the height alone lit a row for a pointer resting beside
+    // it, on the card's title a hand's width away. `Bounds` matters for the same reason one
+    // step out: the lid reaches over the title bar whenever the chosen row is low enough in
+    // the list, and a pointer dragging the window sits exactly there. Rows the page has cut
+    // away are not lit either, because they are not drawn -- see Bounds for the strip.
     int RowAt(float x, float y) const {
-        const D2D1_RECT_F l = List();
-        if (!Overflows()) {
-            if (y < l.top + 4 || y >= l.bottom - 4) return -1;
-            const int i = (int)((y - (l.top + 4)) / rowH);
-            return (i >= 0 && i < (int)options.size()) ? i : -1;
-        }
-        if (y < l.top + 1 || y >= l.bottom - 1) return -1;
+        const D2D1_RECT_F s = Shown();
+        if (x < s.left || x >= s.right) return -1;
+        if (y < s.top || y >= s.bottom) return -1;
+        if (!Inside(Bounds(), x, y)) return -1;
         if (BarShown() && Inside(bar->rect, x, y)) return -1;
-        const float at = y - l.top + listAt.value;      // in the rows' own space
-        if (at < 4 || at >= FullHeight() - 4) return -1;
-        const int i = (int)((at - 4) / rowH);
+        const int i = (int)std::floor((y - RowLine()) / rowH + slid);
         return (i >= 0 && i < (int)options.size()) ? i : -1;
     }
 
     void SetOpen(bool o) {
         barGrab = false;
+        // A list being opened or closed is a fresh gesture at the keyboard.
+        typed.clear();
         if (o) {
             head = { rect.left, rect.top, rect.right, rect.top + metric::kControlH };
             open = true;
             z = 1;
-            const D2D1_RECT_F l = List();
-            upwards = l.top < head.top;
-            // The whole of it takes the mouse, or a click on an option falls through to
-            // whatever is behind the list.
-            rect = { head.left, (std::min)(head.top, l.top),
-                     head.right, (std::max)(head.bottom, l.bottom) };
-            listScroll = 0.0f;
-            listAt.Set(0.0f);
-            if (Overflows()) {
+            // Opened with the chosen row already on the control: nothing to slide.
+            slid = (float)selected;
+            const bool cut = Overflows();
+            if (cut) {
                 if (!bar) {
                     bar = std::make_unique<ScrollBar>(
-                        [this](float to, bool glide) { ScrollList(to, glide); });
+                        [this](float to, bool glide) { ScrollTo(to, glide); });
                     bar->stateTimer = kDropDownBarStateTimer;
                     bar->repeatTimer = kDropDownBarRepeatTimer;
                 }
                 bar->owner = owner;
                 bar->visible = true;
-                // Opened on the chosen row, with rows on either side of it where the
-                // scroll allows, so the list says which way the others are.
-                ScrollList(4 + rowH * selected + rowH / 2 - Height(l) / 2, false);
-                // And the line shows at once, for the same reason: the pointer is on the
-                // control, not over the list, so nothing else would wake it.
+            }
+            // The whole of it takes the mouse, or a click on an option falls through to
+            // whatever is behind the list.
+            Sync();
+            if (cut) {
+                // The line shows at once: the pointer is on the control, not over the
+                // list, so nothing else would wake it.
                 bar->Wake();
                 bar->Poll();
             }
         } else {
             open = false;
-            // Stays raised while the list fades out, and Tick drops it back to 0 when
-            // the fade is done. Nothing is stolen by that: the rect has gone back to the
-            // control's own row, so the hit test cannot reach the list even though it is
-            // still being drawn.
+            // Stays raised while the lid closes, and Tick drops it back to 0 when that is
+            // done. Nothing is stolen by that: the rect has gone back to the control's own
+            // row, so the hit test cannot reach the rows even though they are still being
+            // drawn.
             z = 1;
             if (head.right > head.left) rect = head;
             // Its timers go with it; see kDropDownBarStateTimer.
@@ -975,46 +1325,85 @@ struct DropDown : Widget {
     void Dismiss() override { if (open) SetOpen(false); }
     bool Animating() const override {
         return Widget::Animating() || openT.Wants(open ? 1.0f : 0.0f) ||
-               listAt.Wants(listScroll) || (BarShown() && bar->Animating());
+               (open && slid != (float)selected) || refuse > 0.0f || knockHeld ||
+               knock > 0.0f || knockLag > 0.0f ||
+               (BarShown() && bar->Animating());
     }
     void Tick(float dt) override {
         Widget::Tick(dt);
         openT.To(open ? 1.0f : 0.0f);
         if (open) {
             openT.Step(dt, motion::kFast, motion::Decel);
-        } else if (!openT.Step(dt, motion::kFaster, motion::Accel)) {
-            z = 0;          // the list has finished fading; stop keeping it raised
+            // The list slides while the popup is open, and only then. A click on an option
+            // closes the popup on the release, and a panel that then slid its way to the
+            // option it had just chosen would be moving the list *while the lid closed over
+            // it* -- two motions where there is room for one, and the slide is the one that
+            // loses, because it cannot finish. Closed, the panel is left where it was;
+            // SetOpen puts it on the chosen row before it is seen again.
+            const float want = (float)selected;
+            if (slid != want) {
+                slid += (want - slid) * (1.0f - std::exp(-dt / kSlideLag));
+                if (std::fabs(want - slid) < 0.004f) slid = want;
+                SyncBar();
+            }
+        } else if (!openT.Step(dt, motion::kFast, motion::Accel)) {
+            z = 0;          // the lid has finished closing; stop keeping it raised
         }
-        // A glide, like a page's scroll: the rows trail the scroll position on
-        // motion::Decel rather than jumping to it.
-        listAt.To(listScroll);
-        listAt.Step(dt, motion::kFast);
+        // The refusal, if there is one: an impulse that fades, so a letter with nowhere to go
+        // is answered for about a fifth of a second and then is not.
+        if (refuse > 0.0f) {
+            refuse *= std::exp(-dt / kRefuseLag);
+            if (refuse < 0.002f) refuse = 0.0f;
+        }
+        // And the knock at the end of the list: the fast edge out in a thirtieth of a second
+        // and held, the one behind it following in three times that, and both springing back
+        // in about a fifth. A lean and a spring rather than a move.
+        if (knockHeld) {
+            // Both edges set off on this frame, and everything the gesture shows comes of
+            // that. The edge behind goes three times as far, so a ramp for it -- three times
+            // the distance in three times the time -- would run at exactly the fast edge's
+            // rate, and the two of them would move as one for the first thirtieth of a second
+            // while the mark slid bodily down and did not shorten at all; which is what this
+            // was, and what made it read as the far edge starting late. An approach is fastest
+            // in its first instant, so the mark begins losing length at once, and the fast
+            // edge still arrives first because its distance is the short one.
+            knock = (std::min)(knock + dt / kKnockRise, 1.0f);
+            knockLag = 1.0f - (1.0f - knockLag) * std::exp(-dt / kKnockFollow);
+            if (knock >= 1.0f && knockLag >= 0.95f) knockHeld = false;
+        } else if (knock > 0.0f || knockLag > 0.0f) {
+            knock *= std::exp(-dt / kKnockLag);
+            knockLag *= std::exp(-dt / kKnockLag);
+            if (knock < 0.002f && knockLag < 0.002f) { knock = knockLag = 0.0f; knockDir = 0; }
+        }
         if (BarShown()) {
             SyncBar();
             // The bar is not in the window's list, so nothing else tells it the pointer
             // has left: this control's own hover going is what runs this frame.
             if (!barGrab) {
                 const D2D1_POINT_2F at = Cursor();
-                bar->hover = hover && Inside(bar->rect, at.x, at.y - Lift());
+                bar->hover = hover && Inside(bar->rect, at.x, at.y);
             }
             bar->Tick(dt);
         }
     }
 
-    void OnClick() override {
+    void OnClick() override { Pick(true); }
+    void OnActivate() override { Pick(false); }
+    // One path for both, because everything but the choice itself is the same: opening the
+    // list, the bar's press, and the close. `byPointer` is the whole difference -- a click is
+    // the pointer naming a row, and Space or Enter is naming nothing, which is the row the
+    // accent mark has been left on. Reading the pointer for those chose whichever row happened
+    // to be under a mouse that was resting somewhere else on the screen entirely.
+    void Pick(bool byPointer) {
         if (!enabled) return;
         // A press on the list's bar scrolls it. It does not choose, and it does not close.
         if (barGrab) { barGrab = false; return; }
         if (!open) { SetOpen(true); return; }
-        // Through the same two functions the drawing uses -- `Cursor` for the page's own
-        // offset, `Lift` for the flyout's. Reading the cursor a second way here is how
-        // the row that was lit and the row that was chosen came to be different rows.
+        // Through the same function the drawing uses, so the row that was lit and the row
+        // that is chosen cannot come apart.
         const D2D1_POINT_2F at = Cursor();
-        const int i = RowAt(at.x, at.y - Lift());
-        if (i >= 0 && i != selected) {
-            selected = i;
-            if (onChange) onChange(selected);
-        }
+        const int i = byPointer ? RowAt(at.x, at.y) : selected;
+        if (i >= 0) Select(i);
         SetOpen(false);
     }
     bool OnKey(WPARAM vk) override {
@@ -1024,53 +1413,123 @@ struct DropDown : Widget {
         if (vk == VK_ESCAPE && open) { SetOpen(false); return true; }
         if (vk != VK_UP && vk != VK_DOWN) return false;
         const int n = (int)options.size();
-        selected = (selected + (vk == VK_DOWN ? 1 : n - 1)) % n;
-        if (open) ScrollToRow(selected, true);
-        if (onChange) onChange(selected);
+        if (n <= 0) return false;
+        // Open, a step goes through Select like the wheel's does, so the rows slide under
+        // the control as the choice moves -- and a step that runs off an end is a gesture with
+        // nowhere to go, which is the knock's. Closed, the label is the only thing that moves
+        // and there is no mark on screen to give way, so the ends are silent.
+        if (open) {
+            const int dir = vk == VK_DOWN ? 1 : -1;
+            if (!Step(dir) && !wrapAround) Knock(dir);
+            return true;
+        }
+        Step(vk == VK_DOWN ? 1 : -1);
+        return true;
+    }
+    // A printable character, from the keyboard or the IME. Always the control's, whether or
+    // not it found anything: a letter that matched nothing and was passed on to the window
+    // would be answered with a beep.
+    //
+    // **Only while the list is open.** A closed drop-down is a button with a label on it: it
+    // has nothing to search in, and the mark that would show what the search found is not on
+    // screen. Space opens it, and the search is there.
+    bool OnChar(wchar_t ch) override {
+        const int n = (int)options.size();
+        if (!enabled || n <= 0) return false;
+        if (!open) return true;      // consumed, so the window does not beep at it
+        const ULONGLONG now = GetTickCount64();
+        const wchar_t lower = (wchar_t)std::towlower(ch);
+        // The same letter again steps to the next option that starts with it rather than
+        // looking for the prefix it is already on. That is what Windows does, and it is the
+        // only way to reach the second "Monthly" from the keyboard.
+        const bool again = typed.size() == 1 && typed[0] == lower;
+        if (again || now - typedAt > kTypeWindow) typed.clear();
+        typedAt = now;
+        typed.push_back(lower);
+        // Where the search starts, and this is the whole of it: a first letter is a step, like a
+        // notch of the wheel, and a step goes forward -- the next option that starts with it,
+        // after the one chosen now. Every letter after it only refines an answer that has
+        // already been given, so it starts *at* the chosen option, and the answer stays put for
+        // as long as the option under it still starts with what has been typed. It moves on only
+        // when that option has been typed out of the running.
+        //
+        // Starting after the chosen option every time is what this was, and it made every letter
+        // a fresh errand: with five "Every ..." options in a row, E V E R Y walked through all
+        // five of them, a letter each, so the name that was typed out was never the name that
+        // ended up chosen. A search that walks a list while a name is typed into it is not what
+        // Explorer does, and Explorer is the behaviour people arrive with.
+        const int from = typed.size() > 1 ? selected : selected + 1;
+        for (int step = 0; step < n; step++) {
+            const int i = (from + step) % n;
+            if (StartsWith(options[i], typed)) { Select(i); return true; }
+        }
+        // Nothing starts with it. Answered rather than ignored: see `refuse`.
+        refuse = 1.0f;
+        if (owner) owner->Invalidate();
         return true;
     }
 
     // The list's bar, driven from here: it is not one of the window's controls, because
     // the window's list is rebuilt on every layout and this bar lives as long as the list.
-    // Everything arrives in the page's space and goes on in the flyout's.
+    // No offset to take off anywhere: the popup is drawn where it was placed, and it is
+    // the rows that move inside it rather than it moving over them.
     void OnPress(float x, float y) override {
         barGrab = false;
         if (!BarShown()) return;
         SyncBar();
-        if (!Inside(bar->rect, x, y - Lift())) return;
+        if (!Inside(bar->rect, x, y)) return;
         barGrab = true;
         bar->hover = true;
-        bar->OnPress(x, y - Lift());
+        bar->OnPress(x, y);
     }
     void OnDrag(float x, float y) override {
-        if (barGrab && BarShown()) bar->OnDrag(x, y - Lift());
+        if (barGrab && BarShown()) bar->OnDrag(x, y);
     }
     void OnRelease() override {
         if (barGrab && BarShown()) bar->OnRelease();
     }
     void OnPointerMove(float x, float y) override {
         if (!BarShown()) return;
-        // Window DIPs, unlike the three above.
-        float dy = 0.0f, op = 1.0f;
-        if (scrolls && owner) owner->ContentTransform(&dy, &op);
         SyncBar();
-        const float fy = y - dy - Lift();
-        if (!barGrab) bar->hover = hover && Inside(bar->rect, x, fy);
-        bar->OnPointerMove(x, fy);
+        if (!barGrab) bar->hover = hover && Inside(bar->rect, x, y);
+        bar->OnPointerMove(x, y);
     }
     bool OnTimer(UINT_PTR id) override { return BarShown() && bar->OnTimer(id); }
     bool OnWheel(float x, float y, float notches) override {
-        if (!open || !Overflows() || !Inside(List(), x, y - Lift())) return false;
-        // A notch is the system's wheel-lines setting times 22 DIPs, which is what a
-        // page scrolling the same way should use too, so the list moves as the page under
-        // it does. Kept even at either end: passed on, it would scroll the page, and that
-        // lays the page out again and takes the list away.
-        UINT lines = 3;
-        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
-        if (lines == WHEEL_PAGESCROLL) lines = 6;
-        ScrollList(listScroll - notches * (float)lines * 22.0f, true);
+        if (!open || !Inside(Shown(), x, y)) return false;
+        // One row a notch, and the row that arrives at the control's own row is the choice.
+        // A notch is a step through the items here and not a distance: this is a list of
+        // things to choose, and a wheel that moved it 66 DIPs, as the page's does, would
+        // leave the chosen row somewhere other than under the control it was chosen from.
+        //
+        // Taken even at either end. Passed on, it would scroll the page out from under an
+        // open list -- and on a page that lays itself out in response to a scroll, take the
+        // list away with it.
+        const int step = (int)std::lround(-notches);
+        const int dir = step != 0 ? step : (notches > 0.0f ? -1 : 1);
+        // A ring has no end to run into, so there is nothing for the mark to give way to:
+        // the step either moves the choice or has come all the way round to where it was.
+        if (!Step(dir) && !wrapAround) Knock(dir > 0 ? 1 : -1);
         if (BarShown()) { bar->Wake(); bar->Poll(); }
         return true;
+    }
+
+    // The mark on the control's own row: the accent bar, which shrinks for a letter that found
+    // nothing and gives way for a gesture that had nowhere to go. Drawn by the popup, which is
+    // the only place it is: a closed drop-down has no mark, and nothing to search in either.
+    void PaintMark(const Painter &p, float alpha) {
+        const D2D1_RECT_F h = Head();
+        const float inset = 8.0f + 4.8f * refuse;    // the refusal's own shrink
+        // The knock, in DIPs of offset per edge. The fast edge is capped at what the edge
+        // behind it has already given: the mark may be shorter than it is at rest and never
+        // longer, so what the two of them do together reads as length rather than as travel.
+        const float tip = (std::min)(kKnockTip * knock, kKnockShove * knockLag);
+        const float shove = kKnockShove * knockLag;
+        const float top = RowLine() + inset + (knockDir > 0 ? shove : -tip);
+        const float bot = RowLine() + rowH - inset + (knockDir > 0 ? tip : -shove);
+        p.rt->FillRoundedRectangle(
+            D2D1::RoundedRect({ h.left + 1, top, h.left + 4, bot }, 1.5f, 1.5f),
+            p.Brush(Fade(p.pal->accent, alpha)));
     }
 
     void Paint(const Painter &p) override {
@@ -1094,64 +1553,70 @@ struct DropDown : Widget {
         const float openF = openT.value;
         if (openF <= 0.0f) return;
 
-        // Offset arithmetically rather than with a transform, because the page may
-        // already have one set on the device context and this must compose with it, not
-        // replace it.
-        const float lift = Lift();
-        const D2D1_RECT_F l0 = List();
-        const D2D1_RECT_F l = { l0.left, l0.top + lift, l0.right, l0.bottom + lift };
+        // Where the lid is *now*, and the rows where they rest. The two are separate, and
+        // that separation is the whole of the animation: the frame grows out of the
+        // control's own row while the rows stay exactly where the layout put them, so the
+        // chosen row is over the control from the first frame to the last, and what opens
+        // is a window onto a list rather than a list that slides into place.
+        const D2D1_RECT_F s = Shown();
+        if (s.bottom - s.top < 2.0f) return;
 
         // A flyout is not a card: it is over the page rather than part of it, so it gets
-        // an opaque surface of its own and a shadow. The shadow is five rounded
-        // rectangles at four percent rather than a blur -- there is no cheap real one
-        // without a layered popup or a Direct2D effect, and the only job it has is to
-        // say that this is not painted on the page.
-        for (int s = 5; s >= 1; s--) {
-            const float e = (float)s * 1.5f;
-            p.FillRound({ l.left - e, l.top - e + 3, l.right + e, l.bottom + e + 3 },
-                        8.0f + e, Fade(Rgb(0x000000, 0.04f), openF));
+        // an opaque surface of its own and a shadow.
+        //
+        // The shadow is Fluent's, which is a blur, and there is no cheap real blur in
+        // Direct2D without an effect and a layer per frame -- so this is twelve rounded
+        // rectangles at 0.9 per cent, the largest and faintest outermost, which stack into
+        // a falloff smooth enough to read as one. It was five at four per cent, and five at
+        // four per cent is a black band with an edge on it: at the size of a flyout the
+        // steps show as bands, and the four per cent at the outermost layer is not faint
+        // enough to disappear. Four DIPs down and none up, because the light is above the
+        // popup and the popup hangs off the control it belongs to.
+        constexpr int kShadowLayers = 12;
+        constexpr float kShadowReach = 14.0f;
+        constexpr float kShadowDrop = 4.0f;
+        for (int i = kShadowLayers; i >= 1; i--) {
+            const float e = kShadowReach * (float)i / (float)kShadowLayers;
+            p.FillRound({ s.left - e, s.top - e + kShadowDrop,
+                          s.right + e, s.bottom + e + kShadowDrop },
+                        8.0f + e, Fade(Rgb(0x000000, 0.009f), openF));
         }
-        p.FillRound(l, 8.0f, Fade(c.flyoutBg, openF));
-        p.StrokeRound(l, 8.0f, Fade(c.flyoutStroke, openF));
-        // A list cut short has its rows scrolled and cut at the inside of its border,
-        // which is where WinUI's ScrollViewer is. One that fits draws nothing differently.
-        const bool cut = Overflows();
-        const float off = cut ? listAt.value : 0.0f;
-        if (cut)
-            p.rt->PushAxisAlignedClip({ l.left, l.top + 1, l.right, l.bottom - 1 },
-                                      D2D1_ANTIALIAS_MODE_ALIASED);
+        p.FillRound(s, 8.0f, Fade(c.flyoutBg, openF));
+        p.StrokeRound(s, 8.0f, Fade(c.flyoutStroke, openF));
+
+        // The rows, clipped to the lid: what it has not grown over yet is not drawn, and a
+        // row the leading edge has reached half way through is cut there.
+        p.rt->PushAxisAlignedClip({ s.left, s.top + 1, s.right, s.bottom - 1 },
+                                  D2D1_ANTIALIAS_MODE_ALIASED);
         const D2D1_POINT_2F at = open ? Cursor() : D2D1::Point2F();
-        const int hot = open ? RowAt(at.x, at.y - lift) : -1;
+        const int hot = open ? RowAt(at.x, at.y) : -1;
         for (size_t i = 0; i < options.size(); i++) {
-            const D2D1_RECT_F row = { l.left + 4, l.top + 4 + rowH * i - off,
-                                      l.right - 4, l.top + 4 + rowH * (i + 1) - off };
-            if (cut && (row.bottom <= l.top || row.top >= l.bottom)) continue;
+            const float top = RowTop((int)i);
+            const D2D1_RECT_F row = { s.left + 4, top, s.right - 4, top + rowH };
+            if (row.bottom <= s.top || row.top >= s.bottom) continue;
             const bool over = (int)i == hot;
-            if (over) p.FillRound(row, metric::kRadiusControl, Fade(c.subtleHover, openF));
-            if ((int)i == selected) {
-                // Fluent marks the selected row with a short accent bar on the left
-                // rather than by filling it, which keeps the hover highlight legible
-                // on top of it.
-                p.rt->FillRoundedRectangle(
-                    D2D1::RoundedRect({ row.left + 2, row.top + 8, row.left + 5, row.bottom - 8 },
-                                      1.5f, 1.5f), p.Brush(Fade(c.accent, openF)));
-            }
-            p.Text(options[i], { row.left + 12, row.top, row.right, row.bottom },
+            // The row under the pointer is filled, and filled harder while the button is
+            // down: the press has to land somewhere, and the release takes the list away.
+            if (over)
+                p.FillRound(row, metric::kRadiusControl,
+                            Fade(pressed && enabled ? c.controlBgPressed : c.subtleHover, openF));
+            p.Text(options[i], { row.left + 7, row.top, row.right, row.bottom },
                    p.font->body, Fade(c.textPrimary, openF));
         }
-        if (!cut) return;
-        p.rt->PopAxisAlignedClip();
+        // The mark on the chosen row is drawn on the control's own row instead, and does not
+        // travel with the list. The two movements cancel: the choice moves one row while the
+        // panel moves one row the other way, so the mark it is put on is the mark of the
+        // choice, and what a notch of the wheel changes is which option is under it. Nothing
+        // stretches, because nothing has anywhere to go -- see motion::Span for the rule this
+        // is the degenerate case of.
+        PaintMark(p, openF);
         // The bar once the list has arrived: its line is a setter, and at full strength
-        // over a list still fading in it would arrive first.
-        if (!BarShown() || openF < 1.0f) return;
-        SyncBar();
-        // Laid out where the list rests and drawn where it is, through whatever transform
-        // the page has set -- composed with it, as PaintArrow does, not replacing it.
-        D2D1_MATRIX_3X2_F was;
-        p.rt->GetTransform(&was);
-        p.rt->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, lift) * was);
-        bar->Paint(p);
-        p.rt->SetTransform(was);
+        // over a list still growing it would arrive first.
+        if (BarShown() && openF >= 1.0f) {
+            SyncBar();
+            bar->Paint(p);
+        }
+        p.rt->PopAxisAlignedClip();
     }
 };
 
@@ -1181,7 +1646,6 @@ struct TextBox : Widget {
     size_t caret  = 0;      // index into `text`
     size_t anchor = 0;      // the other end of the selection; equal to caret when none
     float  scroll = 0.0f;   // how far the text is scrolled left, in DIPs
-    float  caretX = 0.0f;   // cached from the last paint, for the IME and the caret
     std::wstring placeholder;
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
@@ -1193,7 +1657,11 @@ struct TextBox : Widget {
     // on every keystroke. See Widget::OnBlur for why a text field needs both.
     std::function<void(const std::wstring &)> onCommit;
 
-    IDWriteTextLayout *layout = nullptr;
+    // The layout is a cache of what the text, the format and the theme already say, so
+    // it is mutable: the queries below are const and are called from places that have no
+    // business rebuilding text layout, the IME among them. Built on demand, dropped by
+    // Dirty().
+    mutable IDWriteTextLayout *layout = nullptr;
 
     ~TextBox() override { if (layout) layout->Release(); }
 
@@ -1213,7 +1681,7 @@ struct TextBox : Widget {
     void Dirty() {
         if (layout) { layout->Release(); layout = nullptr; }
     }
-    void Ensure() {
+    void Ensure() const {
         if (layout || !owner || !owner->dw || !owner->fonts.body) return;
         owner->dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), owner->fonts.body,
                                     100000.0f, 100.0f, &layout);
@@ -1226,7 +1694,7 @@ struct TextBox : Widget {
         // looks like the text was never set.
         if (layout) layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
-    float XOf(size_t index) {
+    float XOf(size_t index) const {
         Ensure();
         if (!layout) return 0.0f;
         FLOAT x = 0, y = 0;
@@ -1237,7 +1705,8 @@ struct TextBox : Widget {
     // The gap nearest `localX`, which is where a caret goes. `under`, if asked for, is
     // the character the point is actually over -- not the same thing in the right half
     // of a letter, and the one a double-click has to start from.
-    size_t IndexAt(float localX, size_t *under = nullptr) {
+    size_t IndexAt(float localX, size_t *under = nullptr) const {
+        Ensure();
         Ensure();
         if (under) *under = 0;
         if (!layout) return 0;
@@ -1446,11 +1915,15 @@ struct TextBox : Widget {
         return true;
     }
 
-    // Where the IME should open. Reported from the cached caret position rather than
-    // measured here, because this is called from the message loop and the layout may
-    // not exist yet on the first composition.
+    // Where the IME should open: at the caret, in the field's own space.
+    //
+    // Measured now rather than read from a position cached by the last paint. This is
+    // called from the message loop when a composition starts, which can arrive before
+    // the WM_PAINT for a key that has just moved the caret, and the candidate window
+    // then opened wherever the caret used to be. Nothing here depends on a paint having
+    // happened: the layout is created on demand -- see Ensure.
     bool CaretPoint(D2D1_POINT_2F *out) const override {
-        if (out) *out = D2D1::Point2F(InnerLeft() + caretX - scroll, rect.bottom);
+        if (out) *out = D2D1::Point2F(InnerLeft() + XOf(caret) - scroll, rect.bottom);
         return true;
     }
 
@@ -1479,7 +1952,6 @@ struct TextBox : Widget {
                active && enabled ? 2.0f : 1.0f);
 
         Ensure();
-        caretX = XOf(caret);
 
         const D2D1_RECT_F inner = { InnerLeft(), rect.top + 1, rect.right - 11, rect.bottom - 1 };
         p.rt->PushAxisAlignedClip(inner, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1505,7 +1977,7 @@ struct TextBox : Widget {
         }
 
         if (active && owner && owner->caretOn && enabled) {
-            const float x = inner.left + caretX - scroll;
+            const float x = inner.left + XOf(caret) - scroll;
             p.Line(x, rect.top + 6, x, rect.bottom - 6, c.textPrimary, 1.0f);
         }
         p.rt->PopAxisAlignedClip();
@@ -1517,18 +1989,57 @@ struct TextBox : Widget {
 struct ProgressBar : Widget {
     float value = 0.0f;      // 0..1
     bool  indeterminate = false;
-    float phase = 0.0f;      // 0..1, and it advances itself
+
+    // WinUI's indeterminate bar, to the numbers -- and it is not "a segment sweeps across".
+    // It is **two** bars of different lengths crossing on a 2 s loop, the second staggered
+    // three quarters of a second behind the first, so that for half of the cycle one is
+    // leaving at the right while the other arrives at the left. That overlap is the whole
+    // of the look, and the two lengths are why the bar is not the same shape on the way out
+    // as on the way in.
+    //
+    // From ProgressBar.xaml's Indeterminate storyboard -- 2 s, RepeatBehavior Forever, two
+    // TranslateX animations on KeySpline 0.4, 0, 0.6, 1 -- and the widths and positions
+    // ProgressBar.cpp hands it through TemplateSettings:
+    //
+    //   the first   40% of the bar wide, -100% to 300% of its own width, 0 to 1.5 s* , held
+    //   the second  60% of the bar wide, -150% to 166% of its own width, 0.75 to 2 s
+    //
+    // (*held to the end of the cycle, which is what the discrete key frame at 2 s is for.)
+    // Multiplied out, they come in at -0.40 and 1.20 of the bar, and -0.90 and 0.996.
+    static constexpr float kSweep = 2.0f;
+    struct Sweep { float wide, in, out, begin, end; };
+    static constexpr Sweep kSweeps[2] = {
+        { 0.4f, -1.00f, 3.00f, 0.00f, 1.50f },
+        { 0.6f, -1.50f, 1.66f, 0.75f, 2.00f },
+    };
+
+    // One bar's left edge at `t` seconds into the cycle, as a fraction of the control's
+    // width: held at `in` until its turn comes round, then on cubic-bezier(0.4, 0, 0.6, 1)
+    // to `out`.
+    static float SweepLeft(const Sweep &s, float t) {
+        const float u = std::clamp((t - s.begin) / (s.end - s.begin), 0.0f, 1.0f);
+        return s.wide * (s.in + (s.out - s.in) * motion::InOut(u));
+    }
 
     // Self-driving, because the alternative was a page remembering to advance it: the
     // indeterminate bar's sweep was a field nothing ever wrote, so the segment sat
     // still at the left-hand end wherever one was used.
     bool Animating() const override { return Widget::Animating() || indeterminate; }
-    void Tick(float dt) override {
-        Widget::Tick(dt);
-        if (!indeterminate) return;
-        phase += dt / 1.6f;             // one sweep and a beat, which is Fluent's pace
-        if (phase >= 1.0f) phase -= 1.0f;
+
+    // Where in the cycle *now* is, in seconds.
+    //
+    // Read from the clock rather than counted across frames, and that is the whole of what
+    // keeps the sweep from restarting. A ProgressBar is rebuilt for all sorts of reasons --
+    // a resize, another control changing the shape of the page, a page that lays itself out
+    // in response to a scroll -- and a phase accumulated per frame began the sweep again
+    // from the left on each of them, while the operation it was reporting carried on. A
+    // periodic animation has nothing to lose by this: the clock belongs to the window, not
+    // to the control, and two bars on one page are in step rather than racing.
+    static float Cycle() {
+        return (float)std::fmod(micula::MonotonicSeconds(), (double)kSweep);
     }
+
+    // No Tick: there is no phase to advance. Plain Widget::Tick runs the pointer fades.
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
@@ -1536,17 +2047,17 @@ struct ProgressBar : Widget {
         const D2D1_RECT_F track = { rect.left, cy - 1.5f, rect.right, cy + 1.5f };
         p.rt->FillRoundedRectangle(D2D1::RoundedRect(track, 1.5f, 1.5f), p.Brush(c.controlStroke));
         if (indeterminate) {
-            // Fluent's indeterminate bar is a short segment that sweeps and eases at
-            // both ends. `t*t*(3-2t)` is smoothstep, which is the cheapest easing
-            // that does not look mechanical.
-            const float t = phase;
-            const float e = t * t * (3.0f - 2.0f * t);
-            const float segW = Width(rect) * 0.30f;
-            const float x = rect.left - segW + e * (Width(rect) + segW);
-            const D2D1_RECT_F seg = { (std::max)(rect.left, x), track.top,
-                                      (std::min)(rect.right, x + segW), track.bottom };
-            if (seg.right > seg.left)
-                p.rt->FillRoundedRectangle(D2D1::RoundedRect(seg, 1.5f, 1.5f), p.Brush(c.accent));
+            const float w = Width(rect);
+            const float t = Cycle();
+            for (const Sweep &s : kSweeps) {
+                const float left = rect.left + SweepLeft(s, t) * w;
+                // Cut at the ends of the track: most of each bar's travel is off it, and a
+                // bar that is off the end must not be drawn past the corner.
+                const D2D1_RECT_F seg = { (std::max)(rect.left, left), track.top,
+                                          (std::min)(rect.right, left + s.wide * w), track.bottom };
+                if (seg.right > seg.left)
+                    p.rt->FillRoundedRectangle(D2D1::RoundedRect(seg, 1.5f, 1.5f), p.Brush(c.accent));
+            }
         } else {
             const D2D1_RECT_F fill = { rect.left, track.top,
                                        rect.left + Width(rect) * std::clamp(value, 0.0f, 1.0f),

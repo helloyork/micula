@@ -255,6 +255,23 @@ inline float Decel(float u) {
 // the above: x(s) = 3s - 3s^2 + s^3 has no useful inverse, and this identity is exact.
 inline float Accel(float u) { return 1.0f - Decel(1.0f - u); }
 
+// cubic-bezier(0.4, 0, 0.6, 1.0) -- "ease in and out", for something crossing from
+// one end of its track to the other. It is the shape `KeySpline="0.4, 0.0, 0.6, 1.0"`
+// draws in XAML, which is what WinUI's indeterminate progress bar travels on.
+//
+// Solved rather than closed-form, unlike the two above: with both control points
+// live, x(s) = 0.4s^3 - 0.6s^2 + 1.2s is a cubic with no inverse worth writing down.
+// Newton from a linear first guess, which is all this curve needs -- its slope is
+// between 0.9 and 1.2 everywhere. The y(s) that falls out is smoothstep(s).
+inline float InOut(float u) {
+    if (u <= 0.0f) return 0.0f;
+    if (u >= 1.0f) return 1.0f;
+    float s = u;
+    for (int i = 0; i < 3; i++)
+        s -= (((0.4f * s - 0.6f) * s + 1.2f) * s - u) / ((1.2f * s - 1.2f) * s + 1.2f);
+    return s * s * (3.0f - 2.0f * s);
+}
+
 // A brush crossing over: linear, at a fixed rate, reversible at any point.
 //
 // Returns true while it is still moving. Reversing mid-fade walks back at the same
@@ -311,6 +328,48 @@ struct Track {
         value = from + (to - from) * ease(t);
         return true;
     }
+};
+
+// A slot that a marker moves between, and the interval that stretches between where it has
+// got to and where it is going.
+//
+// `lead` sets off and `trail` follows it, so `Lo()` and `Hi()` are the same slot at rest and
+// a slot apart while it travels: whatever is drawn between them is one item wide when it
+// lands and longer on the way. That is how Windows draws a selection moving between items --
+// the segmented control's block, a navigation bar's accent, a list's indicator -- and it is
+// what makes a step read as a move rather than as a jump between two frames.
+//
+// Two followers rather than a `Track`, and followers rather than a curve each: something
+// aimed at a new slot several times inside one frame must not restart a curve every time,
+// and a follower that is retargeted is continuous by construction. `slide` equal to `close`
+// welds the two edges into one, which is what a marker that must not stretch wants.
+struct Span {
+    float lead = 0.0f, trail = 0.0f;   // in slots
+    float to = 0.0f;                   // the slot both of them belong on
+    float slide = 0.05f;               // seconds: time constant of the leading edge
+    float close = 0.028f;              // and of the trailing edge, which follows it
+
+    explicit Span(float at = 0.0f) : lead(at), trail(at), to(at) {}
+
+    // The slot it belongs on. Aimed, not started: call it every frame, from `Tick`.
+    void To(float at) { to = at; }
+    // Straight there, no animation. For a control being built for the first time -- a
+    // first layout has nothing to move from.
+    void Set(float at) { lead = trail = to = at; }
+    // Anything left to do to reach `at`? Either edge still moving, or nobody having told
+    // it about this slot yet. Use this in `Animating()` and `AnimationWanted()`.
+    bool Wants(float at) const { return lead != at || trail != lead; }
+    bool Step(float dt) {
+        if (!Wants(to)) return false;
+        lead += (to - lead) * (1.0f - std::exp(-dt / slide));
+        trail += (lead - trail) * (1.0f - std::exp(-dt / close));
+        if (std::fabs(to - lead) < 0.002f) lead = to;
+        if (std::fabs(lead - trail) < 0.002f) trail = lead;
+        return true;
+    }
+    // The two edges, the lower one first.
+    float Lo() const { return lead < trail ? lead : trail; }
+    float Hi() const { return lead < trail ? trail : lead; }
 };
 
 }  // namespace motion

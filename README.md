@@ -62,7 +62,7 @@ The headers link the libraries they need through `#pragma comment`, so with MSVC
 enough:
 
 ```bat
-cl /std:c++17 /EHsc /O1 /MT /I include app.cpp /link /SUBSYSTEM:WINDOWS
+cl /std:c++17 /EHsc /O1 /MT /DUNICODE /D_UNICODE /I include app.cpp /link /SUBSYSTEM:WINDOWS
 ```
 
 With CMake, add this directory and link `micula::micula`. Building the repository itself
@@ -70,10 +70,14 @@ builds both examples.
 
 A program using Micula has to:
 
+- compile with `UNICODE` and `_UNICODE` defined. The headers call the wide API, and a
+  program that does not define them still gets the A variants of everything in
+  `<windows.h>` -- including the names it hands this window, which are wide strings
+  here. The CMake target defines both for you.
 - initialize COM on the UI thread (apartment-threaded) before `Window::Create`. The title
   bar icon and `Window::Image` use WIC.
 - be per-monitor DPI aware, through its manifest or `micula::EnablePerMonitorDpi()`.
-- leave timer IDs 2 and 4 to 7 to Micula.
+- leave timer IDs 2 to 7 to Micula.
 
 ## How it works
 
@@ -82,8 +86,10 @@ creates them again from the window's own fields, so a callback should update tho
 fields rather than the control. `Layout()` may be called from inside a callback. Text and
 backgrounds that are not controls are drawn in `PaintPage()`. Coordinates are in DIPs.
 
-For a scrolling page, return the scrolling area from `ClipRect()` and set `scrolls` on
-the controls inside it. `examples/gallery` does this.
+For a scrolling page, return the scrolling area from `ClipRect()`, set `scrolls` on the
+controls inside it, and move them by returning an offset from `ContentTransform()` -- so a
+wheel notch costs a transform and a repaint rather than a `Layout()`, and the page is not
+rebuilt as it scrolls. `examples/gallery` does this.
 
 ## Documentation
 
@@ -95,4 +101,4 @@ the controls inside it. `examples/gallery` does this.
 
 ## License
 
-MIT. Micula is not affiliated with Microsoft.
+[MIT License](LICENSE). Micula is not affiliated with Microsoft.
