@@ -3,7 +3,7 @@
 | Page | Contents |
 |---|---|
 | [Window](window.md) | `Window`: creating a window, page callbacks, input, scrolling |
-| [Controls](controls.md) | The nine controls |
+| [Controls](controls.md) | The controls |
 | [Custom controls](widget.md) | `Widget`, the base class of every control |
 | [Drawing](drawing.md) | `Painter`, palette, fonts, metrics, icons, animation helpers |
 
@@ -50,12 +50,13 @@ the page, over anything drawn there.
 
 1. Background: transparent over Mica, `pal.windowBg` without it.
 2. `Window::PaintPage()`.
-3. Controls with `z == 0`, then controls with `z == 1` (an open drop-down). Within each,
-   controls that don't scroll come first, then scrolling controls, clipped to
-   `ClipRect()` and offset by `ContentTransform()`.
+3. Controls with `z == 0`, then `z == 1` (an open drop-down), then `z == 2` (a navigation
+   pane open over the page). Within each, controls that don't scroll come first, then
+   scrolling controls, clipped to `ClipRect()` and offset by `ContentTransform()`.
 4. The title bar.
 
-Within a group, controls are painted in the order they were added.
+Within a group, controls are painted in the order they were added. `z` orders the
+painting and not the hit test, which asks only whether a control is raised at all.
 
 ### Animation
 

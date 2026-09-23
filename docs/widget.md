@@ -41,7 +41,7 @@ struct Swatch : micula::Widget {
 | `bool enabled` | Disabled controls are painted but take no input. |
 | `bool hover`, `pressed`, `focus` | Set by the window. `pressed` is true while the mouse button that went down on this control is held and the pointer is over it. |
 | `float hoverT`, `pressT`, `focusT` | The same three states, faded from 0 to 1 over 83 ms by `Widget::Tick`. Use them for the background, as WinUI does. |
-| `int z` | 0 normally. 1 paints above and hit-tests before all other controls. |
+| `int z` | 0 normally. 1 paints above the rest of the page and hit-tests before it -- an open drop-down. 2 paints above the page altogether, which is a `SideNav` while it is open over one. |
 | `Window *owner` | Set by `Window::Add`. |
 | `bool scrolls` | Part of the scrolling area: `rect` is in the page's own coordinates, and the control is clipped to `ClipRect()` and moved by `ContentTransform()`. |
 | `bool persistent` | Survives `ClearWidgets()`, together with focus or capture it holds. |

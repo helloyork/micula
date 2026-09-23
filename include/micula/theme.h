@@ -594,6 +594,7 @@ constexpr const wchar_t *kError    = L"\uEA39";  // ErrorBadge
 constexpr const wchar_t *kInfo     = L"\uE946";  // Info
 constexpr const wchar_t *kFolder   = L"\uE8B7";  // FolderOpen
 constexpr const wchar_t *kChevron  = L"\uE70D";  // ChevronDown
+constexpr const wchar_t *kMenu     = L"\uE700";  // GlobalNavButton: a pane's toggle
 constexpr const wchar_t *kRefresh  = L"\uE72C";  // Refresh
 constexpr const wchar_t *kSettings = L"\uE713";  // Settings
 constexpr const wchar_t *kShield   = L"\uEA18";  // Shield

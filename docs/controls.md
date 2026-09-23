@@ -207,6 +207,92 @@ does not scroll, the client area below the title bar.
 `rect` must be 32 DIPs tall: while the list is open, `rect` grows to cover it. An open
 list's scroll bar uses timers 6 and 7.
 
+## SideNav
+
+```cpp
+SideNav();
+```
+
+| Member | Description |
+|---|---|
+| `std::vector<NavItem> items` | The pane, top to bottom: rows written `{ glyph, label }`, and group headings written `NavItem::Heading(L"...")`. |
+| `std::vector<NavItem> footer` | Rows pinned to the bottom, which is where Settings goes. Their place in the numbering carries on from `items`. |
+| `int selected` | Which row is chosen. Headings are not counted, so adding one to `items` does not move the page's own indices. |
+| `std::function<void(int)> onSelect` | Called with the new index when a row is chosen. |
+| `std::function<void(bool)> onToggle` | Called when the pane opens or closes. A page in `Push` mode lays itself out again here. |
+| `PaneStyle style` | `Fixed`, `Toggle` (the default), `Peek` or `Minimal`. |
+| `bool animate` | Whether the width slides or arrives in one frame. Default true. |
+| `bool ownToggle` | Draw the button that opens and closes the pane. Default true; `Fixed` and `Minimal` draw none whatever it says. |
+| `bool scrim` | Darken the page while an overlay pane is open. Default false. |
+| `bool followsFocus` | Whether Up and Down move the choice or only the focus ring. Default true. |
+| `float compactW`, `openW`, `rowH` | 48, 320 and 36 DIPs: WinUI's `CompactPaneLength`, `OpenPaneLength` and the height of one of its rows. |
+| `float peekIn` | `Peek`: the seconds the pointer has to rest on the rail before it opens. Default 0.2. |
+
+The pane draws its rows, its headings, its button and its accent bar, and nothing else. The
+page beside it belongs to the window: `onSelect` is where another page happens -- write the
+field the page is built from and call `Layout()`, the way a `Segmented` control's callback
+does.
+
+**Make it `persistent`.** A pane is the one control a page really is laid out while it is
+being operated: choosing a page rebuilds the page, and the rebuild would take the open state,
+a width half way through its animation, the hover and the accent bar's travel with it. Make
+it once, mark it persistent, and hand it a fresh `rect` in every `Layout()`. Give it the left
+edge, the top and the bottom; the pane owns its own right edge, so that a closed rail takes
+exactly the clicks that belong to it. `Reserved()` is the width to leave for it.
+
+Four styles, and the drawing is the same in all of them:
+
+| Style | What it is | Where the page goes |
+|---|---|---|
+| `Fixed` | Part of the layout, and it never moves: `openW` is simply how wide it is. | The page is laid out past it. |
+| `Toggle` | The button opens and closes it, and it stays where it was put. | The page makes room for it again on every toggle, so the window lays itself out in `onToggle`. |
+| `Peek` | Resting the pointer on the rail opens it and leaving closes it, over the page. The button pins it open instead, and a pinned pane is a `Toggle`: the page lays itself out and keeps the room until it is closed again, which is what a person asking for a pane should get from it -- a pane that covers the content *and* has to be clicked shut is a pane with no reason to exist. Only the hover covers the page, and a hover is the pointer on its way somewhere else. The pointer has to rest for `peekIn` first -- crossing a rail on the way somewhere else is not asking for a pane -- and closing has no such delay, because a pane that lingers over the page after the pointer has left is in the way. This one is not WinUI: `NavigationView` has no hover, and Task Manager does not open on hover either. It is Visual Studio's auto-hide tool window. | The hover leaves the page where it is; once the button has pinned it, the page makes room. |
+| `Minimal` | A rail of icons and nothing more: it never expands, so `SetOpen` and `Toggle` do nothing, and it draws no button of its own. | The page is laid out past the rail, and the pane never covers it. |
+
+Nothing chooses between those two answers: a pane that stays is one the page is laid out around,
+and a pane that comes and goes covers what it is over, because pushing a page around under a
+pointer that is only passing through is worse than covering it. There was a `place` field here
+and a rail-plus-overlay shape to match WinUI's `LeftCompact`; it came out of the example window
+because a pane the user asked to open and which then covers the content is not worth the third
+axis. WinUI earns that shape by picking it *for you* in a window too narrow to give up the room,
+and this library has no such mode.
+
+`Minimal` is the rail by itself. WinUI's own `PaneDisplayMode="Minimal"` keeps a pane that
+overlays the content when its button is pressed; this one does not expand at all. A bar of
+icons is a shape a window has on purpose -- a launcher, a tool window's tab strip -- and a pane
+that has to be dismissed again before the page can be read is not that shape. `open` is not
+asked, so a page can wire its own button to `SetOpen` or `Toggle` without asking which style
+the pane is in.
+
+The rail shows the icons alone, and the shape around one is the pane's own width: it is a
+40-DIP square around the icon at rest and the whole row once the pane has arrived, so the
+pill grows out of the icon box rather than being a second animation kept in step with the
+first. The accent bar is the exception -- it travels, stretched between the row it left and
+the row it is arriving at (`motion::Span`, the same two-edged follower the segmented control
+draws its block with).
+
+A heading is a label for a group of rows, and a rail has no groups to label: its gap and its
+own height go with the pane's width, so the icons close up into one column as it collapses
+(WinUI's compact pane does the same). And the rows start under the pane's button when there is
+one, because the button is drawn over the pane's own top corner -- with no button, the top of
+the pane is free and the rows go up into it.
+
+The pane never touches the page. The only two moments it is involved in one are `onSelect`
+and `onToggle`, and both are the page's own callbacks, running in the page's own code. A page
+that keeps its scroll offset in a field -- the way `examples/gallery` does -- is therefore
+still exactly where it was read after the pane has opened and closed over it; a page that
+starts at the top when another one is chosen is the page's decision and not this control's.
+
+Up and Down move the choice, which means the page follows the arrow keys. With
+`followsFocus` off they move only the focus ring, and Enter or Space chooses -- for a window
+whose pages are expensive to build. A pane open over the page is drawn in layer `z == 2`; see
+the painting order in [Overview](README.md). `examples/nav` is this control with every switch
+above on the page beside it.
+
+Not here: a pane title, a back button, hierarchical rows, and a pane that scrolls its own
+list when the rows do not fit -- that last one is a `ClipRect()` and a `ScrollBar` away if a
+window ever needs it.
+
 ## TextBox
 
 ```cpp

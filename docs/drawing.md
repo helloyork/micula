@@ -126,6 +126,7 @@ Segoe MDL2 Assets.
 | `kInfo` | Info |
 | `kFolder` | FolderOpen |
 | `kChevron` | ChevronDown |
+| `kMenu` | GlobalNavButton, the pane toggle in a `SideNav` |
 | `kRefresh` | Refresh |
 | `kSettings` | Settings |
 | `kShield` | Shield |

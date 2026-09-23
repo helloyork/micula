@@ -312,10 +312,13 @@ struct Widget {
     // Fluent. micula::motion::Ramp is the transition, linear and 83 ms, because that is what
     // BrushTransition is.
     float hoverT = 0.0f, pressT = 0.0f, focusT = 0.0f;
-    // Paint order, and hit-test order reversed. Everything is 0 except a dropdown
-    // while its list is open: that list has to be drawn over the controls below it and
-    // has to take the click that lands on one of them, and insertion order cannot
-    // express that -- the dropdown was added in the middle of the page.
+    // Paint order, and hit-test order reversed. Three layers: 0 is the furniture and the
+    // page, 1 is raised *within* the page -- a dropdown's list is drawn over the controls
+    // below it and takes the click that lands on one of them, and insertion order cannot
+    // express that, because the dropdown was added in the middle of the page -- and 2 is
+    // over the page altogether, which is what a navigation pane is while it is open over
+    // one. Only the drawing order knows the difference between 1 and 2; the hit test asks
+    // whether a widget is raised at all, since a click belongs to whatever is on top.
     int  z = 0;
     Window *owner = nullptr;
 
@@ -458,7 +461,6 @@ struct Widget {
     // OnDrag; this is for the few things that genuinely mean "where is the pointer now",
     // such as a hovered row.
     D2D1_POINT_2F Cursor() const;
-
     // The part of the page that is on screen, in this widget's own coordinates -- the
     // window's ClipRect with the page's paint offset added back on. Empty when the page
     // does not scroll, and empty in the same way ClipRect is.
@@ -468,6 +470,18 @@ struct Widget {
     // scrolling page that strip is not the window's: it moves with the page while the
     // control's own rectangle stays where the layout put it.
     D2D1_RECT_F VisibleArea() const;
+
+    // Whether the pointer is on this control, in the control's own coordinates -- the page's
+    // offset has already been taken off. This is what the window's hit test asks, rather than
+    // `rect` on its own.
+    //
+    // It exists for the control whose rectangle is not its own to keep: a page hands one a fresh
+    // `rect` in every Layout, taking back the edge the control derives from its own state, and
+    // deriving it again is a frame's work. Between the two -- a layout with no animation after
+    // it -- the control is drawn correctly and cannot be clicked, which is a control that is
+    // broken for seconds at a time and comes back when anything else in the window happens to
+    // animate. See `SideNav`.
+    virtual bool Covers(float x, float y) const { return Inside(rect, x, y); }
 
     // This widget moves with the page's scroll: its `rect` is in the page's own space --
     // window coordinates with the scroll *not* taken off -- and the offset that puts it
@@ -745,6 +759,10 @@ struct Window {
     void ReleaseImages();
     LRESULT CaptionHitTest(POINT screen) const;
     Widget *HitTest(float x, float y);
+    // Everything but `except` puts away what it is showing -- an open list, a peeked pane. From
+    // a copy of the list, because a dismissal is allowed to lay the page out again and the list
+    // itself may not survive that. See `retired`.
+    void DismissOthers(Widget *except);
     void MoveFocus(int delta);
     void SetFocusTo(Widget *w);
     // Ends a gesture the pointer is no longer allowed to finish, and hands the widget
@@ -986,6 +1004,7 @@ inline void Window::Paint() {
     };
     pass(0);
     pass(1);
+    pass(2);
     // Last, so a page that draws to the top of its own area cannot run under the
     // caption -- which is now client area like any other, and has nothing but paint
     // order protecting it.
@@ -1226,7 +1245,7 @@ inline Widget *Window::HitTest(float x, float y) {
         return w->visible && w->enabled && (!clipping || !w->scrolls || Inside(clip, x, y));
     };
     auto over = [&](const Widget *w) {
-        return Inside(w->rect, x, w->scrolls ? y - dy : y);
+        return w->Covers(x, w->scrolls ? y - dy : y);
     };
     // Raised first, then the rest back-to-front: the reverse of the paint order, so
     // whatever is drawn on top is whatever the click reaches.
@@ -1239,8 +1258,15 @@ inline Widget *Window::HitTest(float x, float y) {
     return nullptr;
 }
 
-inline bool Window::RefreshHover() {
-    POINT pt = {};
+inline void Window::DismissOthers(Widget *except) {
+    std::vector<Widget *> shown;
+    shown.reserve(widgets.size());
+    for (auto &w : widgets) shown.push_back(w.get());
+    for (Widget *w : shown)
+        if (w != except) w->Dismiss();
+}
+
+inline bool Window::RefreshHover() {    POINT pt = {};
     if (!GetCursorPos(&pt)) return false;
     // Whose window the pointer is actually over. A cursor resting on something else
     // must not leave a control lit: this is called from the tick, not from a mouse
@@ -1784,8 +1810,13 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // Everything else puts away whatever it was showing. This is what closes an open
         // drop-down when the click lands somewhere else -- including on nothing, which is
         // the case the control itself can never see.
-        for (auto &other : self->widgets)
-            if (other.get() != w) other->Dismiss();
+        self->DismissOthers(w);
+        // Those dismissals can lay the page out again -- a pane that closes tells the page, and
+        // a page that lays itself out is a different list of widgets. What the pointer was over
+        // is then a control that has been retired, freed when this message returns, and a press
+        // taken on it would leave the capture pointing at memory that is going: the mouse-up
+        // after it is the crash. So the hit test is made again, on the page that is there now.
+        w = self->HitTest(mx, my);
         // Clicking anywhere takes the focus ring away again: it is a keyboard
         // affordance, and a mouse user who has just clicked a button does not want the
         // rectangle left behind on it.
