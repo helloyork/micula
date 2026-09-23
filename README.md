@@ -18,8 +18,8 @@ machine with nothing installed.
 
 ## Controls
 
-Button, CheckBox, ToggleSwitch, Segmented, Slider, ScrollBar, DropDown, TextBox,
-ProgressBar.
+Button, CheckBox, ToggleSwitch, Segmented, Slider, ScrollBar, DropDown, SideNav,
+TextBox, ProgressBar.
 
 Colors, sizes and animation timings come from WinUI's control templates and the Fluent
 design tokens. The accent color and the light or dark theme are read from the system.
@@ -54,7 +54,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
 ```
 
 `examples/settings` is the window in the screenshot. `examples/gallery` puts every
-control on one scrolling page.
+control on one scrolling page. `examples/nav` is the navigation pane with the switches
+that shape it on the page beside it, for trying them out.
 
 ## Building
 

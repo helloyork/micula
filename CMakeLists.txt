@@ -32,7 +32,7 @@ target_link_libraries(micula INTERFACE
 
 option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 if(MICULA_BUILD_EXAMPLES)
-    foreach(example gallery settings)
+    foreach(example gallery settings nav)
         add_executable(micula-${example} WIN32 examples/${example}/${example}.cpp)
         target_link_libraries(micula-${example} PRIVATE micula::micula)
         # The entry point is wWinMain, which MSVC's linker finds on its own from the
