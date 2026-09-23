@@ -114,14 +114,15 @@ The next system theme change replaces it through `ReloadTheme()`.
 
 | Input | What the window does |
 |---|---|
-| Mouse move | Sets `hover` on the control under the pointer. The control holding capture gets `pressed` (while the pointer is over it) and `OnDrag`. Every control gets `OnPointerMove`. |
+| Mouse move | Sets `hover` on the control under the pointer. The control holding capture gets `pressed` (while the pointer is over it, or throughout if it returns true from `DragsOutsideSelf`) and `OnDrag`. Every control gets `OnPointerMove`. |
 | Left button down | Every other control gets `Dismiss()`. The control under the pointer takes capture, `pressed`, focus if it is focusable, and `OnPress`. A click on nothing clears focus. |
-| Left button up | The captured control gets `OnRelease`, then `OnClick` if the pointer is still over it. |
+| Left button up | The captured control gets `OnRelease`, then `OnClick` if the pointer is still over it and it did not own the drag (`DragsOutsideSelf`). |
+| Capture lost | A gesture cut short by alt-tab, a system modal or another application taking the mouse: the captured control gets `OnRelease` and no `OnClick`. |
 | Wheel | The control under the pointer gets `OnWheel`. If it returns false, the page gets `OnAppMessage(WM_MOUSEWHEEL, wp, lp)` with `lp` holding the pointer in client pixels. |
 | Key down | The focused control's `OnKey` first. If it returns false: Tab and Shift+Tab move focus, Space clicks the focused control, Enter clicks it or calls `OnDefaultAction()`, Esc calls `OnCancel()`. |
 | Characters | `WM_CHAR` and `WM_IME_CHAR` go to the focused control's `OnChar`. Control characters are dropped. |
 | `WM_TIMER` | Timer 2 blinks the caret. Other ids go to each control's `OnTimer` in order, then to `OnAppMessage`. |
-| Deactivation | Every control gets `Dismiss()`. |
+| Deactivation | Every control gets `Dismiss()`, and `hover` is cleared. |
 | Resize, DPI change | `Layout()`. |
 | Light/dark change | `ReloadTheme()`. |
 

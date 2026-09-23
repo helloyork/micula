@@ -328,19 +328,38 @@ struct Widget {
     //
     // For a control that has to know *which part* of itself was grabbed: a colour
     // panel is one rectangle with a square, two strips and a row of swatches in it, and
-    // `pressed` does not say which of them the gesture started on. Reading the cursor at
-    // paint time -- which is what Slider does, and is right for a control that is all
-    // one axis -- answers where the pointer is now, not where it began.
+    // `pressed` does not say which of them the gesture started on.
+    //
+    // Taken from the message rather than from GetCursorPos, and the difference is not
+    // theoretical: the pointer can have moved between the click being queued and this
+    // running, so a press position read from the cursor can disagree with the hit test
+    // that chose this widget.
     virtual void OnPress(float /*x*/, float /*y*/) {}
     // The mouse moved while this widget holds capture, in the same space as OnPress and
     // taken from the message for the same reason.
     //
-    // For a gesture whose result is a range the control keeps rather than a value it
-    // redraws: a text field dragged across selects from where the press landed to where
-    // the pointer is now, and that selection is then the keyboard's to edit. Slider's
-    // way -- read the cursor at paint time -- answers "where is the pointer", which is
-    // the whole of a slider and only half of a selection.
+    // This and OnPress are the whole of a drag. A control must not update itself out of
+    // Paint instead, by reading the cursor each frame: Slider did, and it cost both
+    // correctness and testability -- see DragsOutsideSelf below for the first and the
+    // note on Cursor() for the second.
     virtual void OnDrag(float /*x*/, float /*y*/) {}
+    // While this widget holds capture, the pointer leaving its rectangle does not end the
+    // gesture.
+    //
+    // The default is a button's, and is right for one: pressing a button and sliding off
+    // it un-presses it, which is how somebody backs out of a click they have changed
+    // their mind about, and the release that follows is not a click at all.
+    //
+    // A control that is *dragged* needs the opposite. A slider on a 32-DIP row has a
+    // 20-DIP thumb in the middle of it, so a sideways drag leaves the rectangle after six
+    // pixels of vertical wander -- and until this existed, that froze the value where it
+    // last was and committed the frozen one on release. The knob stopped following the
+    // pointer and the saved value disagreed with where the gesture ended.
+    //
+    // Asked each time rather than fixed per class, because one widget can be both: a
+    // colour panel's square and strips are dragged, its swatches are clicked, and a
+    // swatch must stay escapable.
+    virtual bool DragsOutsideSelf() const { return false; }
     // The pointer moved somewhere over the window -- not necessarily over this control --
     // in window DIPs.
     //
@@ -422,6 +441,12 @@ struct Widget {
     // offset taken back off, so a control that reads the mouse while it is being
     // dragged agrees with where it was drawn. Defined under Window, which is what
     // knows the offset.
+    //
+    // This is the *physical* pointer, so a control that takes its value from here cannot
+    // be driven by posted messages -- a harness sends a WM_MOUSEMOVE at one place and the
+    // widget reads the mouse at another. Take a drag's coordinates from OnPress and
+    // OnDrag; this is for the few things that genuinely mean "where is the pointer now",
+    // such as a hovered row.
     D2D1_POINT_2F Cursor() const;
 
     // This widget moves with the page's scroll, so it is painted inside the window's
@@ -1509,9 +1534,15 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_ACTIVATE:
         self->active = LOWORD(wp) != WA_INACTIVE;
         // A window that has just been alt-tabbed away from must not leave a flyout
-        // hanging open over its own page, waiting for a click it will never get.
+        // hanging open over its own page, waiting for a click it will never get -- nor a
+        // control lit under the pointer it no longer has. Alt-tab moves no mouse, so
+        // there is no WM_MOUSELEAVE to do the second; the hover would sit there until the
+        // pointer happened to move over this window again.
+        //
+        // A gesture in progress is not this message's to end: the capture is what makes
+        // it one, and losing the capture has its own message. See WM_CAPTURECHANGED.
         if (!self->active)
-            for (auto &w : self->widgets) w->Dismiss();
+            for (auto &w : self->widgets) { w->Dismiss(); w->hover = false; }
         self->Invalidate();
         break;
     case WM_PAINT: {
@@ -1556,14 +1587,23 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (w->hover != now) { w->hover = now; changed = true; }
         }
         if (self->capture) {
-            // In the widget's own space, so a control dragged while the page is still
-            // gliding does not un-press itself.
-            const D2D1_POINT_2F at = self->capture->Cursor();
-            const bool down = Inside(self->capture->rect, at.x, at.y);
-            if (self->capture->pressed != down) { self->capture->pressed = down; changed = true; }
+            // The page's paint offset taken back off, so a control dragged while the page
+            // is still gliding does not un-press itself.
             float pdy = 0.0f, popacity = 1.0f;
             self->ContentTransform(&pdy, &popacity);
-            self->capture->OnDrag(mx, self->capture->scrolls ? my - pdy : my);
+            const float dragY = self->capture->scrolls ? my - pdy : my;
+            // From the message, and the same point OnDrag gets. This used to read
+            // GetCursorPos: two coordinates for one event, and the one that decided
+            // whether the control was still pressed was not the one it was being dragged
+            // with. It also put every drag out of reach of a harness that posts messages,
+            // since the widget answered the physical pointer instead of the message.
+            //
+            // A widget that owns the drag stays pressed wherever the pointer goes -- see
+            // Widget::DragsOutsideSelf.
+            const bool down = self->capture->DragsOutsideSelf() ||
+                              Inside(self->capture->rect, mx, dragY);
+            if (self->capture->pressed != down) { self->capture->pressed = down; changed = true; }
+            self->capture->OnDrag(mx, dragY);
         }
         // By index, because a drag above may have laid the page out and replaced the list.
         for (size_t i = 0; i < self->widgets.size(); i++)
@@ -1613,7 +1653,12 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         self->capture = nullptr;
         ReleaseCapture();
         if (w) {
-            const bool inside = w->pressed;
+            // A release that is a click: the pointer is still on the control, and the
+            // control was not being dragged. `pressed` alone used to say both, and stops
+            // saying the second the moment a widget keeps it through a drag that has left
+            // its rectangle -- a slider let go three rows away is not a click on whatever
+            // it was let go over.
+            const bool click = w->pressed && !w->DragsOutsideSelf();
             w->pressed = false;
             self->Invalidate();
             if (w->enabled) w->OnRelease();
@@ -1621,7 +1666,33 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // the entire widget list (that is what "next page" is), and touching `w`
             // after that is a use-after-free. OnRelease goes before it for the same
             // reason -- by the time OnClick has returned, `w` may not exist.
-            if (inside && w->enabled) w->OnClick();
+            if (click && w->enabled) w->OnClick();
+        }
+        return 0;
+    }
+    // The capture went away without a button-up: alt-tab, a system modal, another
+    // application taking the mouse. Windows revokes it and no WM_LBUTTONUP is ever
+    // coming, so a gesture left running here is one that never ends. The button stays
+    // dark under a window that is not even active any more -- and worse, `capture` still
+    // points at the control, so the next time the pointer crosses this window the move
+    // goes straight to OnDrag and the slider follows it with no button held.
+    //
+    // Ended as a release that is not a click. A drag has already put its value on screen
+    // and in memory, so OnRelease is what stops a settings file from disagreeing with
+    // both; OnClick is the half that must not happen, because the gesture was abandoned
+    // rather than finished.
+    //
+    // No ReleaseCapture here: it is already gone, and calling it inside this message is
+    // what the documentation warns against. Nor does this double up with the case above
+    // -- that clears `capture` before it releases, so the WM_CAPTURECHANGED it causes
+    // arrives to find nothing left to end.
+    case WM_CAPTURECHANGED: {
+        Widget *w = self->capture;
+        self->capture = nullptr;
+        if (w) {
+            w->pressed = false;
+            self->Invalidate();
+            if (w->enabled) w->OnRelease();
         }
         return 0;
     }

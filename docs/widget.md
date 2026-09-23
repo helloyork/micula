@@ -66,6 +66,7 @@ All virtual. Points are in DIPs.
 | `bool OnTimer(UINT_PTR id)` | `false` | A timer the window does not own. Return true if the id is this control's. |
 | `void Dismiss()` | nothing | A click elsewhere, or the window was deactivated. Close anything transient. |
 | `bool TracksPointer() const` | `false` | Return true to repaint on every pointer move over the control, not only when `hover` changes. For a hover highlight inside the control. |
+| `bool DragsOutsideSelf() const` | `false` | Return true while a drag this control owns is in progress, to keep `pressed` set when the pointer leaves `rect`. A button leaves this false, so sliding off it cancels the click; `Slider` returns true, so a drag survives leaving its row. |
 | `bool HandCursor() const` | `false` | Show the hand cursor. |
 | `bool TextCursor() const` | `false` | Show the I-beam cursor. |
 | `bool CaretPoint(D2D1_POINT_2F *out) const` | `false` | For text input: return true and the caret position, where the IME window opens. `out` may be null. |

@@ -385,15 +385,20 @@ struct Slider : Widget {
     // back wrong the next time the page is built.
     std::function<void(float)> onChange;
     std::function<void(float)> onCommit;
-    bool dragging = false;
 
     Slider(float v, float a, float b, float s, std::function<void(float)> f)
         : value(v), lo(a), hi(b), step(s), onChange(std::move(f)) {}
 
     bool Focusable() const override { return true; }
-    // While it is being dragged: the knob follows the cursor, and the cursor moving is
-    // the only thing that happens.
+    // While it is being dragged: the knob follows the pointer, and the pointer moving is
+    // the only thing that happens. The window repaints on that account rather than on the
+    // caller's -- a slider whose `onChange` does not happen to invalidate the window is
+    // still a slider, and its knob still has to move.
     bool TracksPointer() const override { return pressed; }
+    // A drag of a slider is mostly sideways, and a control row is 32 DIPs tall with a
+    // 20-DIP thumb in the middle: six pixels of wander and the pointer is outside. The
+    // gesture is the whole of the control, so it does not end there.
+    bool DragsOutsideSelf() const override { return true; }
     float Frac() const { return (value - lo) / (hi - lo); }
 
     void SetFromX(float x) {
@@ -404,7 +409,13 @@ struct Slider : Widget {
         value = std::round(raw / step) * step;
         if (onChange) onChange(value);
     }
-    void OnClick() override { /* handled by the drag path below */ }
+    // The press is already a value: clicking anywhere on the track puts the knob there,
+    // which is what every slider does and what makes the track worth aiming at.
+    void OnPress(float x, float /*y*/) override { SetFromX(x); }
+    void OnDrag(float x, float /*y*/) override { SetFromX(x); }
+    // Nothing: the press placed the knob and the drag moved it. A slider has no separate
+    // click, and Space reaches here from the keyboard -- OnKey is where that belongs.
+    void OnClick() override {}
     void OnRelease() override { if (onCommit) onCommit(value); }
     bool OnKey(WPARAM vk) override {
         if (vk == VK_LEFT || vk == VK_DOWN)  { value = (std::max)(lo, value - step); }
@@ -420,10 +431,13 @@ struct Slider : Widget {
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
-        // The widget is dragged by reading the cursor while the mouse is down. The
-        // window gives the widget its pressed flag and holds capture, so this is the
-        // whole of the drag: no separate mouse-move plumbing per widget.
-        if (pressed && owner) SetFromX(Cursor().x);
+        // Draws the value and nothing else. It used to *set* it here, from the cursor,
+        // on the grounds that the window already held capture and already set `pressed`
+        // -- so a paint was the whole of the drag and no mouse-move plumbing was needed.
+        // That was wrong twice over: `pressed` goes false the moment the pointer leaves
+        // the 32-DIP row, which froze the knob mid-drag, and a value read from the
+        // physical cursor cannot be driven by a posted message, which put the control
+        // out of reach of a message-posting harness. OnPress and OnDrag now carry it.
         const float cy = rect.top + Height(rect) / 2;
         const float x0 = rect.left + 8, x1 = rect.right - 8;
         const float at = x0 + Frac() * (x1 - x0);
