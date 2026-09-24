@@ -1131,9 +1131,39 @@ struct DropDown : Widget {
     // each other, which for a row and a control of the same height is the two boxes on top
     // of each other -- and is why the popup reads as a lid closing over the control.
     float RowLine() const { return (Head().top + Head().bottom) / 2 - rowH / 2; }
-    // Where a row is drawn. The panel's place in rows is `slid`, so every row moves with
+    // `slid`, kept inside the strip the page shows the panel through.
+    //
+    // Laying the list out so the chosen row is on the control's own row is the whole point
+    // of opening over the control -- but it is not worth rows the pointer cannot reach. A
+    // control near the top or the foot of a scrolling page puts part of the panel outside
+    // `ClipRect`, and outside it is not merely out of sight: the page cuts it mid-row, and
+    // `Window::HitTest` refuses a scrolling widget outside the clip, so a click on the half
+    // that is drawn falls through to whatever is behind and dismisses the popup. A row that
+    // is visible and dead is worse than a row that is gone.
+    //
+    // So the panel slides back inside, and the chosen row drifts off the control by however
+    // much that took. WinUI clamps for the same reason. This control did not, deliberately
+    // -- see the note on FrameAt -- on the grounds that what hangs off is the far end of the
+    // list and that is the end to lose. That holds when the thing doing the cutting is the
+    // edge of the screen. It does not when it is the top of a page with a header above it.
+    //
+    // Two bounds, in rows, one from each edge. A list taller than the strip is the same pair
+    // with the interval the other way round: then the panel has to *cover* the strip rather
+    // than fit inside it, and the scroll bar is what reaches the rest.
+    float PlacedAt(float k) const {
+        const D2D1_RECT_F b = Bounds();
+        if (b.bottom <= b.top) return k;
+        const float fit  = (RowLine() - kPad - b.top) / rowH;
+        const float full = (RowLine() - kPad + FullHeight() - b.bottom) / rowH;
+        return std::clamp(k, (std::min)(fit, full), (std::max)(fit, full));
+    }
+    // Where the panel actually is. Everything that draws it or hit-tests it reads this and
+    // not `slid`, because the two disagreeing is the defect above.
+    float Placed() const { return PlacedAt(slid); }
+
+    // Where a row is drawn. The panel's place in rows is `Placed()`, so every row moves with
     // it, which is the whole of the difference between this and a list that scrolls.
-    float RowTop(int i) const { return RowLine() + rowH * ((float)i - slid); }
+    float RowTop(int i) const { return RowLine() + rowH * ((float)i - Placed()); }
 
     // The panel: the whole list, laid out so that the chosen row is on the control's own
     // row, and moved as a whole when the choice moves.
@@ -1146,17 +1176,19 @@ struct DropDown : Widget {
     // which is what makes the wheel feel like a dial under the control rather than a menu
     // being dragged about.
     //
-    // One deliberate difference. WinUI clamps the popup into the window and shrinks it, so
-    // the chosen row drifts off the control near the top and bottom of the screen. This lets
-    // the panel hang off the strip and be clipped by the page instead, because the chosen
-    // row being on the control is the whole reason the popup is over it: what goes out of
-    // sight is the far end of the list, which is the end to lose.
+    // Pure geometry: where the panel would be for a place of `k` rows, with nothing said
+    // about whether that is somewhere the page can show. `Placed()` is what decides that,
+    // and every caller here goes through it.
+    //
+    // It used to be called with `slid` and `selected` raw, on the grounds that a panel
+    // hanging off the strip loses only the far end of the list. `PlacedAt` says why that
+    // was wrong when the strip is a page rather than a screen.
     D2D1_RECT_F FrameAt(float k) const {
         const float top = RowLine() - kPad - rowH * k;
         return { Head().left, top, Head().right, top + FullHeight() };
     }
-    D2D1_RECT_F Frame() const { return FrameAt(slid); }          // where it is drawn
-    D2D1_RECT_F Rest() const { return FrameAt((float)selected); }  // where it belongs
+    D2D1_RECT_F Frame() const { return FrameAt(Placed()); }                   // as drawn
+    D2D1_RECT_F Rest() const { return FrameAt(PlacedAt((float)selected)); }   // where it belongs
     // Everything that follows from the chosen row: the area the mouse can reach and the bar.
     // The rows themselves need no telling -- RowTop reads `slid`.
     //
@@ -1235,7 +1267,8 @@ struct DropDown : Widget {
     // still moves a row: an arrow that did nothing would be an arrow that is broken.
     void ScrollTo(float to, bool /*glide*/) {
         if (!open) return;
-        Select(to < slid * rowH ? (int)std::floor(to / rowH) : (int)std::ceil(to / rowH));
+        const float at = Placed() * rowH;
+        Select(to < at ? (int)std::floor(to / rowH) : (int)std::ceil(to / rowH));
     }
     // The bar's geometry. It belongs to the list, so it travels with the panel -- but its
     // track is only drawn where the page can show it, and what it reports is the chosen
@@ -1249,7 +1282,7 @@ struct DropDown : Widget {
         bar->area = f;
         bar->viewport = Height(b);
         bar->extent = FullHeight();
-        bar->value = (std::min)((std::max)(0.0f, slid * rowH),
+        bar->value = (std::min)((std::max)(0.0f, Placed() * rowH),
                                 (std::max)(0.0f, FullHeight() - Height(b)));
         bar->drawn = bar->value;
     }
@@ -1271,7 +1304,7 @@ struct DropDown : Widget {
         if (y < s.top || y >= s.bottom) return -1;
         if (!Inside(Bounds(), x, y)) return -1;
         if (BarShown() && Inside(bar->rect, x, y)) return -1;
-        const int i = (int)std::floor((y - RowLine()) / rowH + slid);
+        const int i = (int)std::floor((y - RowLine()) / rowH + Placed());
         return (i >= 0 && i < (int)options.size()) ? i : -1;
     }
 
@@ -1514,19 +1547,32 @@ struct DropDown : Widget {
         return true;
     }
 
-    // The mark on the control's own row: the accent bar, which shrinks for a letter that found
+    // The mark on the chosen row: the accent bar, which shrinks for a letter that found
     // nothing and gives way for a gesture that had nowhere to go. Drawn by the popup, which is
     // the only place it is: a closed drop-down has no mark, and nothing to search in either.
+    //
+    // Where the chosen row comes to *rest*, which is the control's own row whenever the panel
+    // did not have to be moved to stay inside the page -- and then this is `RowLine()` to the
+    // float, so nothing about the ordinary case changes. Resting position rather than current:
+    // the mark holds still and the list travels into it, which is the motion this control has.
+    // Following `RowTop(selected)` instead would carry the mark along with the list.
+    //
+    // It used to be `RowLine()` outright. That was the same number until PlacedAt began
+    // clamping the panel into the strip, and then it was the wrong row -- the bar stayed on
+    // the control while the choice it marks had moved, so it pointed at whichever option
+    // happened to land there. Caught in a screenshot of the real page, not by the geometry
+    // test, which had not thought to ask where the mark was.
     void PaintMark(const Painter &p, float alpha) {
         const D2D1_RECT_F h = Head();
+        const float line = RowLine() + rowH * ((float)selected - PlacedAt((float)selected));
         const float inset = 8.0f + 4.8f * refuse;    // the refusal's own shrink
         // The knock, in DIPs of offset per edge. The fast edge is capped at what the edge
         // behind it has already given: the mark may be shorter than it is at rest and never
         // longer, so what the two of them do together reads as length rather than as travel.
         const float tip = (std::min)(kKnockTip * knock, kKnockShove * knockLag);
         const float shove = kKnockShove * knockLag;
-        const float top = RowLine() + inset + (knockDir > 0 ? shove : -tip);
-        const float bot = RowLine() + rowH - inset + (knockDir > 0 ? tip : -shove);
+        const float top = line + inset + (knockDir > 0 ? shove : -tip);
+        const float bot = line + rowH - inset + (knockDir > 0 ? tip : -shove);
         p.rt->FillRoundedRectangle(
             D2D1::RoundedRect({ h.left + 1, top, h.left + 4, bot }, 1.5f, 1.5f),
             p.Brush(Fade(p.pal->accent, alpha)));
