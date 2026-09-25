@@ -57,23 +57,96 @@ struct DropDown : Widget {
     // then left alone -- the popup does not move while it is being scrolled through, the
     // *rows* do. See Place().
     D2D1_RECT_F frame = {};
-    // Where the panel is, in rows: 0 has the first option on the control's own row, 3 has
-    // the fourth there. It trails `selected` so the list slides to a new choice rather than
-    // jumping, and it is what the panel -- and every row in it -- is drawn from. The list
-    // moves past the control as a whole; nothing scrolls inside the panel, and no marker
-    // travels down a still one.
+    // The list's own offset for a choice: the chosen row on the control's own row, as far as
+    // the list allows. The offset cannot leave the range the bar has -- the first row at the
+    // panel's top and the last at its bottom -- because outside that range the panel would be
+    // showing rows that do not exist, which is blank space. A choice within a window's height
+    // of either end therefore stops there, and the chosen row comes to rest as the panel's
+    // first or last row. This is where a list *opens*; a choice made afterwards goes through
+    // LazyView, which moves the view as little as it can get away with.
+    float ViewFor(int i) const {
+        const float most = (std::max)(0.0f, FullHeight() - PanelH()) / rowH;
+        return std::clamp((float)i, 0.0f, most);
+    }
+    // How many rows the panel has room for, as a fraction: the offset is a float and so is this,
+    // because a drag of the bar can leave the list half a row down and the arithmetic that keeps
+    // a row on screen has to stay right at that offset too.
+    float RowsShown() const { return (std::max)(1.0f, (PanelH() - 2 * kPad) / rowH); }
+    // The offset to look at a choice from, moving the view as little as will do: the offset it is
+    // already at when the chosen row is inside the window with a row to spare on each side, and
+    // otherwise the nearest offset that gives it one.
+    //
+    // The margin is the whole point. Bringing the choice to the control's own row -- what
+    // ViewFor does, and what opening wants -- is right for a list that is *being opened*, where
+    // the popup covers the control and the two names are meant to be in the same place. It is
+    // wrong afterwards: a wheel through a list is a wheel through a list, the highlight moves
+    // down it, and a view that jumped to put every choice on the same row threw away wherever
+    // the reader had scrolled to and showed them the top of the list again.
+    float LazyView(int i) const {
+        const float rows = RowsShown();
+        const int n = (int)options.size();
+        const float most = (std::max)(0.0f, FullHeight() - PanelH()) / rowH;
+        // Row i-1 above it and row i+1 below, where those exist: the two constraints on the
+        // offset, as a range to keep it inside rather than a value to set it to.
+        const float lo = (i < n - 1) ? (float)i + 2.0f - rows : (float)i + 1.0f - rows;
+        const float hi = (i > 0) ? (float)i - 1.0f : (float)i;
+        const float a = (std::max)(0.0f, lo), b = (std::min)(most, hi);
+        if (a > b) return std::clamp((float)i, 0.0f, most);   // a window too short to keep both
+        return std::clamp(viewTo, a, b);
+    }
+    // The panel's own top for a choice: high enough above the control's own row that the chosen
+    // row comes out on it, given the offset the list has to be at. For a list that fits, that
+    // offset is nothing and this is the chosen row's own height above the control, so the panel
+    // steps up the list with the choice -- which is what a popup over a control does, and where
+    // the list is *not* windowed. For one too long to show, it is the panel's top edge over the
+    // control's row, the same place for every choice the panel can keep to itself.
+    float TopFor(int i) const { return RowLine() - kPad - rowH * ((float)i - ViewFor(i)); }
+    // The list's own offset, in rows: which row is at the top of the panel's window. It trails
+    // `viewTo` -- the chosen row's offset whenever the choice moves, and wherever the bar was
+    // dragged to otherwise -- so the list slides to a new choice rather than jumping, and the
+    // bar can scroll it away from the choice without choosing anything. Kept inside the range
+    // that has a row at both ends of the window: outside it the panel would be showing rows that
+    // do not exist, which is blank space. See ViewFor.
     float slid = 0.0f;
+    // Where the panel's top edge is to be, in the page's own DIPs: TopFor(selected), so that the
+    // chosen row comes out on the control's own row wherever the room allows it. Worked out when
+    // the choice moves and left alone in between -- a bar dragged over an open list scrolls the
+    // list inside a panel that stays where it is, which is the whole difference between this and
+    // a list dragged bodily about the page.
+    float place = 0.0f;
+    // Where the panel is *drawn*, following `place` at the same lag the list follows its own
+    // offset. The rows are drawn from this and not from `place`, which is what makes the panel
+    // and the list one thing: a notch of the wheel through a list too short to have a window in
+    // it moves the whole popup, and the mark it leaves behind is one the rows travel under -- see
+    // drift for the other half of that.
+    float lid = 0.0f;
+    // What `slid` is travelling to. Two callers and no more: the choice moving, and a drag of
+    // the bar.
+    float viewTo = 0.0f;
     // How long the slide takes to close most of its gap, in seconds. A follower rather than
     // a curve with a duration, like the page's scroll and the segmented indicator's block:
     // a spun wheel retargets this several times inside one frame, and a storyboard restarted
     // that often would stutter between the notches.
     static constexpr float kSlideLag = 0.05f;
-    // How far the mark has drifted off the control, in rows, followed at the same lag. The
-    // clamp is a step -- it engages the frame the panel would leave the strip -- and a mark
-    // that took that step in one frame reads as the bar having moved to another option rather
-    // than as the panel having moved under it. Everything else about the mark's place is a
-    // step as well, by design; this is the one quantity that gets to travel.
+    // How far the mark is drawn off the control's own row, in DIPs: the chosen row's own place,
+    // followed rather than stepped. This is the mark's one motion -- the list under it may be
+    // scrolled and the panel it is in may be slid, and neither of those is the mark's business --
+    // and it is a follower because a choice that changes has to be *seen* to change: the row does
+    // not move, so the mark is the only thing on screen that can show it. Where the row itself is
+    // what is moving -- a bar being dragged, a wheel with Shift -- the mark is put on the row
+    // outright instead; see scrolledByHand.
     float drift = 0.0f;
+    // The room's own top edge as it stood when the list opened. A page scrolled under an open list
+    // takes the list's place in that page with it -- what the list hangs off has moved -- so the
+    // list is closed rather than left pointing at a page position that is no longer there. The
+    // room is in the page's own coordinates and only the page moves it, which is what makes its
+    // top the thing to watch: a window moved on the screen moves none of it. See Tick.
+    float roomTop = 0.0f;
+    // Whether the view is being moved by hand rather than to follow a choice. A drag of the bar
+    // and a shifted wheel are the same thing to everything that draws: the list is what moves,
+    // the mark is on one of its rows, and the two have to travel together -- a mark that read the
+    // view's *target* would reach the end of the drag before its row did.
+    bool scrolledByHand = false;
     // Its scroll bar, the page's own control: WinUI's drop-down is a ScrollViewer, and
     // the bar in it is the one every other ScrollViewer has. Made the first time a list
     // needs one, not for every drop-down on every layout.
@@ -150,69 +223,63 @@ struct DropDown : Widget {
         return D2D1_RECT_F{ 0, kCaptionH - dy, owner->ClientW(), owner->ClientH() - dy };
     }
     float FullHeight() const { return rowH * (float)options.size() + 2 * kPad; }
+    // The panel's height: as tall as the list, and no taller than the room the page shows it
+    // through. A longer list is a list that scrolls inside a panel of that height, which is
+    // what the bar on it is for -- and it is what "the whole rounded rectangle stays in the
+    // room" means. Drawn to the full height instead, the rows that left the room were still
+    // built every frame and then thrown away by a clip.
+    float PanelH() const {
+        const float room = Height(Bounds());
+        return room > 0.0f ? (std::min)(FullHeight(), room) : FullHeight();
+    }
+    // The panel's top edge: `place`, kept inside the room. Worked out here rather than where
+    // `place` is set, so that a room that changes under an open list -- the page scrolled, the
+    // window resized -- carries the panel with it instead of leaving it hanging out.
+    float PanelTop() const {
+        const D2D1_RECT_F b = Bounds();
+        if (b.bottom - PanelH() <= b.top) return b.top;
+        return std::clamp(place, b.top, b.bottom - PanelH());
+    }
+    // The same edge as drawn rather than as decided: `lid`, kept inside the room. A slide is
+    // trimmed at the room's edges on every frame of it, the way the settled panel is, so the
+    // rounded rectangle never leaves the room even while it is on its way somewhere.
+    float LidTop() const {
+        const D2D1_RECT_F b = Bounds();
+        if (b.bottom - PanelH() <= b.top) return b.top;
+        return std::clamp(lid, b.top, b.bottom - PanelH());
+    }
 
     // The y a row has to be at to be over the control's own row: the two boxes centred on
     // each other, which for a row and a control of the same height is the two boxes on top
     // of each other -- and is why the popup reads as a lid closing over the control.
     float RowLine() const { return (Head().top + Head().bottom) / 2 - rowH / 2; }
-    // `slid`, kept inside the strip the page shows the panel through.
-    //
-    // Laying the list out so the chosen row is on the control's own row is the whole point
-    // of opening over the control -- but it is not worth rows the pointer cannot reach. A
-    // control near the top or the foot of a scrolling page puts part of the panel outside
-    // `ClipRect`, and outside it is not merely out of sight: the page cuts it mid-row, and
-    // `Window::HitTest` refuses a scrolling widget outside the clip, so a click on the half
-    // that is drawn falls through to whatever is behind and dismisses the popup. A row that
-    // is visible and dead is worse than a row that is gone.
-    //
-    // So the panel slides back inside, and the chosen row drifts off the control by however
-    // much that took. WinUI clamps for the same reason. This control did not, deliberately
-    // -- see the note on FrameAt -- on the grounds that what hangs off is the far end of the
-    // list and that is the end to lose. That holds when the thing doing the cutting is the
-    // edge of the screen. It does not when it is the top of a page with a header above it.
-    //
-    // Two bounds, in rows, one from each edge. A list taller than the strip is the same pair
-    // with the interval the other way round: then the panel has to *cover* the strip rather
-    // than fit inside it, and the scroll bar is what reaches the rest.
-    float PlacedAt(float k) const {
-        const D2D1_RECT_F b = Bounds();
-        if (b.bottom <= b.top) return k;
-        const float fit  = (RowLine() - kPad - b.top) / rowH;
-        const float full = (RowLine() - kPad + FullHeight() - b.bottom) / rowH;
-        return std::clamp(k, (std::min)(fit, full), (std::max)(fit, full));
-    }
-    // Where the panel actually is. Everything that draws it or hit-tests it reads this and
-    // not `slid`, because the two disagreeing is the defect above.
-    float Placed() const { return PlacedAt(slid); }
+    // Where a row is drawn: inside the panel as it is drawn, at the list's own offset into it. A
+    // list with no window in it -- one that fits in the room -- moves as a whole with the choice,
+    // because its offset is nothing and the panel is what travels; a longer one scrolls under a
+    // panel that stays where the room put it. Both come out of the same two quantities.
+    float RowTop(int i) const { return LidTop() + kPad + rowH * ((float)i - slid); }
 
-    // Where a row is drawn. The panel's place in rows is `Placed()`, so every row moves with
-    // it, which is the whole of the difference between this and a list that scrolls.
-    float RowTop(int i) const { return RowLine() + rowH * ((float)i - Placed()); }
-
-    // The panel: the whole list, laid out so that the chosen row is on the control's own
-    // row, and moved as a whole when the choice moves.
+    // The panel: a window of PanelH() onto the list, its top edge as close to the control's
+    // own row as the room allows.
     //
     // **This is what a Windows 11 combo box does**, and it is not "open below and flip when
     // short of room": the popup covers the control with the chosen item on it, so the two
     // names are in the same place and the choice reads as a swap rather than as a menu. The
     // rule is one line of ComboBox::GetNonPannablePopupLayout -- the chosen item is laid out
-    // at `cbY + cbHeight/2 - itemHeight/2 - margin.Top` -- applied again after every step,
-    // which is what makes the wheel feel like a dial under the control rather than a menu
-    // being dragged about.
-    //
-    // Pure geometry: where the panel would be for a place of `k` rows, with nothing said
-    // about whether that is somewhere the page can show. `Placed()` is what decides that,
-    // and every caller here goes through it.
-    //
-    // It used to be called with `slid` and `selected` raw, on the grounds that a panel
-    // hanging off the strip loses only the far end of the list. `PlacedAt` says why that
-    // was wrong when the strip is a page rather than a screen.
-    D2D1_RECT_F FrameAt(float k) const {
-        const float top = RowLine() - kPad - rowH * k;
-        return { Head().left, top, Head().right, top + FullHeight() };
+    // at `cbY + cbHeight/2 - itemHeight/2 - margin.Top` -- which is `place` for the chosen
+    // row when the panel has the room, and the nearest it can get when it has not. A list
+    // taller than the room is the case that made this a window: drawn whole it was a panel
+    // running off the page, with the rows outside it built every frame and clipped away.
+    D2D1_RECT_F Frame() const {
+        const float top = LidTop();
+        return { Head().left, top, Head().right, top + PanelH() };
     }
-    D2D1_RECT_F Frame() const { return FrameAt(Placed()); }                   // as drawn
-    D2D1_RECT_F Rest() const { return FrameAt(PlacedAt((float)selected)); }   // where it belongs
+    // The same panel where it has settled. What the pointer can reach is measured against this
+    // one: a panel on its way somewhere is no reason for the mouse to be carried along with it.
+    D2D1_RECT_F Rest() const {
+        const float top = PanelTop();
+        return { Head().left, top, Head().right, top + PanelH() };
+    }
     // Everything that follows from the chosen row: the area the mouse can reach and the bar.
     // The rows themselves need no telling -- RowTop reads `slid`.
     //
@@ -260,6 +327,11 @@ struct DropDown : Widget {
         const bool moved = (i != selected);
         if (moved) {
             selected = i;
+            // The list travels to the choice, and the panel goes with it where it has to: the
+            // two are one gesture, and this is the one place either is decided.
+            viewTo = LazyView(selected);
+            place = TopFor(selected);
+            scrolledByHand = false;
             Sync();
             if (onChange) onChange(selected);
         }
@@ -287,27 +359,29 @@ struct DropDown : Widget {
         knockHeld = true;
         knockDir = dir;
     }
-    // The bar, which works in DIPs while the list works in rows. A step smaller than a row
-    // still moves a row: an arrow that did nothing would be an arrow that is broken.
+    // The bar, which works in DIPs while the list works in rows, and which scrolls the list:
+    // choosing is what clicking a row is for, and a bar that chose as well would pick whichever
+    // option happened to be where the pointer was let go.
     void ScrollTo(float to, bool /*glide*/) {
         if (!open) return;
-        const float at = Placed() * rowH;
-        Select(to < at ? (int)std::floor(to / rowH) : (int)std::ceil(to / rowH));
+        const float most = (std::max)(0.0f, FullHeight() - PanelH()) / rowH;
+        viewTo = (std::min)((std::max)(0.0f, to / rowH), most);
+        // The view has been taken off the choice by hand: the mark goes with its row until the
+        // choice moves again. See scrolledByHand.
+        scrolledByHand = true;
     }
-    // The bar's geometry. It belongs to the list, so it travels with the panel -- but its
-    // track is only drawn where the page can show it, and what it reports is the chosen
-    // row's place in the list, which is the only thing about this list that moves.
+    // The bar's geometry: the panel's own, since it is the panel that scrolls. Its track is
+    // what the panel can show, and its value is the list's offset -- the one thing about this
+    // control that the bar is in charge of.
     void SyncBar() {
         if (!bar) return;
         const D2D1_RECT_F f = Frame();
-        const D2D1_RECT_F b = Bounds();
-        bar->rect = { f.right - 2 - ScrollBar::kSize, (std::max)(f.top, b.top) + 1,
-                      f.right - 2, (std::min)(f.bottom, b.bottom) - 1 };
+        bar->rect = { f.right - 2 - ScrollBar::kSize, f.top + 1, f.right - 2, f.bottom - 1 };
         bar->area = f;
-        bar->viewport = Height(b);
+        bar->viewport = PanelH();
         bar->extent = FullHeight();
-        bar->value = (std::min)((std::max)(0.0f, Placed() * rowH),
-                                (std::max)(0.0f, FullHeight() - Height(b)));
+        bar->value = (std::min)((std::max)(0.0f, slid * rowH),
+                                (std::max)(0.0f, FullHeight() - PanelH()));
         bar->drawn = bar->value;
     }
     bool BarShown() const { return open && bar && bar->visible; }
@@ -328,7 +402,7 @@ struct DropDown : Widget {
         if (y < s.top || y >= s.bottom) return -1;
         if (!Inside(Bounds(), x, y)) return -1;
         if (BarShown() && Inside(bar->rect, x, y)) return -1;
-        const int i = (int)std::floor((y - RowLine()) / rowH + Placed());
+        const int i = (int)std::floor((y - LidTop() - kPad) / rowH + slid);
         return (i >= 0 && i < (int)options.size()) ? i : -1;
     }
 
@@ -340,11 +414,17 @@ struct DropDown : Widget {
             head = { rect.left, rect.top, rect.right, rect.top + metric::kControlH };
             open = true;
             z = 1;
-            // Opened with the chosen row already on the control: nothing to slide.
-            slid = (float)selected;
-            // And the mark starts out where it belongs rather than travelling there on the
-            // way in: the panel is arriving, and one thing arriving at a time is enough.
-            drift = (float)selected - PlacedAt((float)selected);
+            // The panel and the list where the chosen row is on the control's own row, each as
+            // far as its own limit allows -- and nothing slides on the way in, because this is
+            // what they already are: the first frame is also the resting one.
+            slid = viewTo = ViewFor(selected);
+            place = TopFor(selected);
+            // Opening is a lid growing, not a slide: the panel is put where it is to be before
+            // the first frame of it. And the mark starts on its row, wherever that turned out.
+            lid = place;
+            drift = place + kPad + rowH * ((float)selected - slid) - RowLine();
+            scrolledByHand = false;
+            roomTop = Bounds().top;
             const bool cut = Overflows();
             if (cut) {
                 if (!bar) {
@@ -383,8 +463,11 @@ struct DropDown : Widget {
     void Dismiss() override { if (open) SetOpen(false); }
     bool Animating() const override {
         return Widget::Animating() || openT.Wants(open ? 1.0f : 0.0f) ||
-               (open && slid != (float)selected) ||
-               (open && drift != (float)selected - PlacedAt((float)selected)) ||
+               (open && slid != viewTo) ||
+               (open && lid != place) ||
+               (open && drift != place + kPad + rowH * ((float)selected -
+                                                        (scrolledByHand ? slid : viewTo)) -
+                                     RowLine()) ||
                refuse > 0.0f || knockHeld ||
                knock > 0.0f || knockLag > 0.0f ||
                (BarShown() && bar->Animating());
@@ -394,25 +477,54 @@ struct DropDown : Widget {
         openT.To(open ? 1.0f : 0.0f);
         if (open) {
             openT.Step(dt, motion::kFast, motion::Decel);
+            // The page has scrolled out from under the list: the list goes, with the same close it
+            // gives a click outside itself. Taken before anything else this frame, because there
+            // is no point sliding a list that is on its way out, and read here rather than in
+            // Paint, where this control writes no state. The room's top is also what a *resize*
+            // from the top edge would move; the list would be rebuilt by the layout after that
+            // anyway.
+            const float roomNow = Bounds().top;
+            if (roomNow != roomTop) {
+                roomTop = roomNow;      // so that the close's own frames are not asked again
+                SetOpen(false);
+                return;
+            }
             // The list slides while the popup is open, and only then. A click on an option
             // closes the popup on the release, and a panel that then slid its way to the
             // option it had just chosen would be moving the list *while the lid closed over
             // it* -- two motions where there is room for one, and the slide is the one that
             // loses, because it cannot finish. Closed, the panel is left where it was;
             // SetOpen puts it on the chosen row before it is seen again.
-            const float want = (float)selected;
+            const float want = viewTo;
             if (slid != want) {
                 slid += (want - slid) * (1.0f - std::exp(-dt / kSlideLag));
                 if (std::fabs(want - slid) < 0.004f) slid = want;
                 SyncBar();
             }
-            // The mark's own correction: the clamp moved, the panel did not travel on its
-            // account, and so the mark is the only thing that has to keep up with where the
-            // chosen row came to rest. Same lag as the slide, because it is one motion -- a
-            // correction that took longer than the list's own move would read as the mark
-            // lagging behind the row it is on.
-            const float driftWant = (float)selected - PlacedAt((float)selected);
-            if (drift != driftWant) {
+            // The panel's own place, followed. This is the whole of the motion a wheel through a
+            // list that fits makes: the popup slides a row, the rows go with it, and the mark
+            // stays where it was -- options travelling under it rather than it down them.
+            if (lid != place) {
+                lid += (place - lid) * (1.0f - std::exp(-dt / kSlideLag));
+                if (std::fabs(place - lid) < 0.004f) lid = place;
+                SyncBar();
+            }
+            // The mark's own place, followed: where the chosen row is against the panel as the
+            // panel *asked* to be -- `place`, not where the room has put it. This is the only
+            // motion the mark has that is worth animating: a choice that changes has to be *seen*
+            // to change, and the row does not move, so the mark is the only thing that can show
+            // it. A view scrolled by hand is put on the row outright instead, because there the
+            // row *is* what is moving and a follower is the mark coming loose from the option it
+            // points at. And the room's own displacement is not in here at all: it is a move of
+            // the room rather than a motion of this control, and PaintMark adds it on at once --
+            // a mark that followed it slid with the page for a tenth of a second and then sprang
+            // back to where its row was.
+            const float driftWant = place + kPad +
+                                    rowH * ((float)selected - (scrolledByHand ? slid : viewTo)) -
+                                    RowLine();
+            if (scrolledByHand) {
+                drift = driftWant;
+            } else if (drift != driftWant) {
                 drift += (driftWant - drift) * (1.0f - std::exp(-dt / kSlideLag));
                 if (std::fabs(driftWant - drift) < 0.004f) drift = driftWant;
             }
@@ -565,7 +677,32 @@ struct DropDown : Widget {
         bar->OnPointerMove(x, y);
     }
     bool OnWheel(float x, float y, float notches) override {
-        if (!open || !Inside(Shown(), x, y)) return false;
+        if (!open) return false;
+        // Where the wheel lands does not matter while the list is up. Inside the list it is the
+        // list's, as below. Outside it the turn is still taken and nothing is done with it --
+        // which is what a combo box does: the page under an open list does not move at all, so
+        // there is nothing for the list to be dragged out of, and the list itself stays put. A
+        // row of options is not a page: a wheel that scrolled the page out from under the list,
+        // or scrolled the list past a choice that is not moving, is worse than one that lands on
+        // nothing.
+        if (!Inside(Shown(), x, y)) return true;
+        // Shift asks for the list to be *scrolled* rather than chosen from: the same wheel
+        // over the same list, aimed at the panel instead of at the choice. A list that fits
+        // has nothing to scroll, and there the gesture does nothing at all -- which is what
+        // Shift over a control with nothing to scroll means, and is better than a wheel that
+        // quietly takes an option because Shift was not understood.
+        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+            if (Overflows()) {
+                int lines = 3;
+                SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+                if (lines == WHEEL_PAGESCROLL) lines = 6;
+                // Rows, not DIPs: this list is counted in rows, and the system's line count
+                // read as a row count is the same gesture the page above it uses.
+                ScrollTo(viewTo * rowH - notches * (float)lines * rowH, false);
+                if (BarShown()) { bar->Wake(); bar->Poll(); }
+            }
+            return true;
+        }
         // One row a notch, and the row that arrives at the control's own row is the choice.
         // A notch is a step through the items here and not a distance: this is a list of
         // things to choose, and a wheel that moved it 66 DIPs, as the page's does, would
@@ -587,25 +724,21 @@ struct DropDown : Widget {
     // nothing and gives way for a gesture that had nowhere to go. Drawn by the popup, which is
     // the only place it is: a closed drop-down has no mark, and nothing to search in either.
     //
-    // Where the chosen row comes to *rest*, which is the control's own row whenever the panel
-    // did not have to be moved to stay inside the page -- and then this is `RowLine()` to the
-    // float, so nothing about the ordinary case changes. Resting position rather than current:
-    // the mark holds still and the list travels into it, which is the motion this control has.
-    // Following `RowTop(selected)` instead would carry the mark along with the list.
-    //
-    // It used to be `RowLine()` outright. That was the same number until PlacedAt began
-    // clamping the panel into the strip, and then it was the wrong row -- the bar stayed on
-    // the control while the choice it marks had moved, so it pointed at whichever option
-    // happened to land there. Caught in a screenshot of the real page, not by the geometry
-    // test, which had not thought to ask where the mark was.
-    //
-    // `drift` is that same resting place, followed instead of stepped: the clamp engages and
-    // gives way as the choice crosses it, and a mark that jumped with it moved in a frame by
-    // as much as a row. Following it keeps the panel still -- which is right, the clamp is a
-    // decision about where the panel may be, not a motion -- and leaves the mark to travel.
+    // It goes on the chosen row, at that row's own place -- and which of the two motions brings
+    // it there is the whole of what this control feels like. A wheel through a list that fits the
+    // room slides the *panel*: the popup moves a row, the rows go with it, and the mark stands
+    // still on the control's own row while a different option comes under it, which is a dial
+    // rather than a menu. A wheel through a longer list moves the *choice* down a window that
+    // stays where it is, and there the mark is what travels -- by one row per notch, followed, so
+    // that the change is seen. What it never does is read an animating offset as if it were a
+    // settled one: see scrolledByHand, which is the one case where the row is the moving thing
+    // and the mark is carried along with it exactly.
     void PaintMark(const Painter &p, float alpha) {
         const D2D1_RECT_F h = Head();
-        const float line = RowLine() + rowH * drift;
+        // The followed half and the room's own half, added at once. The clamp is what the room
+        // did to the panel, not a motion of the control's: the rows are drawn from it too, so it
+        // has to be where they are on this frame rather than where a follower has got to.
+        const float line = RowLine() + drift + (PanelTop() - place);
         const float inset = 8.0f + 4.8f * refuse;    // the refusal's own shrink
         // The knock, in DIPs of offset per edge. The fast edge is capped at what the edge
         // behind it has already given: the mark may be shorter than it is at rest and never
@@ -622,6 +755,16 @@ struct DropDown : Widget {
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
         const D2D1_RECT_F h = Head();
+        // Everything this control draws is inside the room the page gives it, the control's own
+        // box included: that box is part of the page, and when the page is scrolled it goes under
+        // the header with the rest of the page rather than over it. The page no longer clips a
+        // pass that floats over it -- see the note in Window::Paint -- so the control does it
+        // itself, which is also the answer to "what is the room": the same `Bounds()` the clamp
+        // keeps the panel inside. It is the shadow's own room too, and the only place that shows:
+        // everything else in it is drawn inside the room by construction.
+        const D2D1_RECT_F room = Bounds();
+        const bool roomy = room.right > room.left && room.bottom > room.top;
+        if (roomy) p.rt->PushAxisAlignedClip(room, D2D1_ANTIALIAS_MODE_ALIASED);
         p.FillRound(h, metric::kRadiusControl,
                     !enabled ? c.controlBg
                              : Mix(c.controlBg, c.controlBgHover,
@@ -638,7 +781,14 @@ struct DropDown : Widget {
             p.StrokeRound(o, metric::kRadiusControl + 2, c.textPrimary, 2.0f);
         }
         const float openF = openT.value;
-        if (openF <= 0.0f) return;
+        // Both of these leave with the room's clip popped. A clip that is pushed and not popped
+        // stays on for the rest of the frame -- the window draws the rest of the page into the
+        // same target -- and a clip stack that does not balance is a frame Direct2D throws away:
+        // the page came up empty, with nothing but the backdrop, while the app went on working.
+        if (openF <= 0.0f) {
+            if (roomy) p.rt->PopAxisAlignedClip();
+            return;
+        }
 
         // Where the lid is *now*, and the rows where they rest. The two are separate, and
         // that separation is the whole of the animation: the frame grows out of the
@@ -646,7 +796,10 @@ struct DropDown : Widget {
         // chosen row is over the control from the first frame to the last, and what opens
         // is a window onto a list rather than a list that slides into place.
         const D2D1_RECT_F s = Shown();
-        if (s.bottom - s.top < 2.0f) return;
+        if (s.bottom - s.top < 2.0f) {
+            if (roomy) p.rt->PopAxisAlignedClip();
+            return;
+        }
 
         // A flyout is not a card: it is over the page rather than part of it, so it gets
         // an opaque surface of its own and a shadow.
@@ -690,12 +843,11 @@ struct DropDown : Widget {
             p.Text(options[i], { row.left + 7, row.top, row.right, row.bottom },
                    p.font->body, Fade(c.textPrimary, openF));
         }
-        // The mark on the chosen row is drawn on the control's own row instead, and does not
-        // travel with the list. The two movements cancel: the choice moves one row while the
-        // panel moves one row the other way, so the mark it is put on is the mark of the
-        // choice, and what a notch of the wheel changes is which option is under it. Nothing
-        // stretches, because nothing has anywhere to go -- see motion::Span for the rule this
-        // is the degenerate case of.
+        // The mark goes on the chosen row, and it is the row's own place that is read here -- not
+        // the list's offset, which would carry the mark along with the list. The two agree at
+        // rest and part company for the tenth of a second a slide takes, which is the slide the
+        // mark is supposed to be standing still through. Drawn inside the rows' clip, so a row
+        // scrolled out of the window takes the mark with it.
         PaintMark(p, openF);
         // The bar once the list has arrived: its line is a setter, and at full strength
         // over a list still growing it would arrive first.
@@ -704,6 +856,7 @@ struct DropDown : Widget {
             bar->Paint(p);
         }
         p.rt->PopAxisAlignedClip();
+        if (roomy) p.rt->PopAxisAlignedClip();
     }
 };
 

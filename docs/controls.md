@@ -164,10 +164,26 @@ for another rather than as picking from a menu. It grows out of the control over
 `motion::kFast`, each edge travelling from the control's row outward, and collapses back
 into it.
 
-Choosing then moves the whole list rather than a marker within it. The panel slides one
-row -- 32 DIPs -- per step, so the row that arrives is on the control's own row and the one
-that was there has left it. That is what a notch of the wheel over an open list does, and
-Up and Down, and dragging the list's scroll bar.
+The panel is never taller than the room the page shows it through, so the whole rounded
+rectangle stays in the room. A list longer than that scrolls *inside* the panel: the panel's
+top edge is clamped to the room and the rows move within it, and the chosen row comes to
+rest wherever the clamp leaves it -- on the control's own row when the room allows it, near
+an end of the panel when it does not.
+
+A notch of the wheel moves the choice one row, and takes the view with it only when it has
+to and only as far as it has to: the row above and the row below the chosen one stay
+visible, so a wheel through a long list moves the highlight down it rather than bringing
+every choice to the same row. That is the difference between a dial and a menu, and it is
+what opening is exempt from -- opening does put the chosen row where the control's own row
+is.
+
+The list's scroll bar moves the view and leaves the choice alone: choosing is what clicking
+a row is for. The accent mark goes with its row, out of the panel if the bar has taken the
+row that far, and a wheel with Shift held scrolls the view the same way without touching
+the choice.
+
+While the list is open the wheel belongs to the list wherever the pointer is, and a page
+scrolled out from under an open list closes it rather than dragging it along.
 
 With `wrapAround` the choice is a ring and those two ends are the same end: a step past the
 last option arrives at the first, from the wheel or from Up and Down, and whether the list
