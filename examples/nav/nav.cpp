@@ -376,6 +376,21 @@ void NavDemo::Layout() {
         }
         break;
     case 1:
+        // A list longer than the room it opens into, with the choice at its end: opening it
+        // needs the clamp at the top *and* the bar, and the two of them together is the case
+        // worth poking at. Scrolled down a little, this control comes up near the header.
+        {
+            std::vector<std::wstring> many;
+            for (int i = 1; i <= 40; i++) {
+                wchar_t name[32];
+                swprintf(name, 32, L"Option %d", i);
+                many.push_back(name);
+            }
+            DropDown *longList = Add(new DropDown(many, 39, [](int) {}));
+            place(longList, card(kIconRecent, L"Forty options",
+                                 L"Longer than the room: the clamp and the bar together",
+                                 180));
+        }
         // Enough rows that the page scrolls, which is the point of this page: open and close
         // the pane and the scroll stays exactly where it was, because it is the page's own
         // state and a layout does not touch it.
