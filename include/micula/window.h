@@ -171,7 +171,12 @@ constexpr DWORD kDwmImmersiveDarkMode = 20;
 constexpr DWORD kDwmCornerPreference  = 33;
 constexpr DWORD kDwmSystemBackdrop    = 38;
 constexpr DWORD kDwmCornerRound       = 2;
+// DWMWA_SYSTEMBACKDROP_TYPE's values, which the SDK this builds against may not name.
+constexpr DWORD kDwmBackdropAuto       = 0;   // DWMSBT_AUTO: let DWM choose
+constexpr DWORD kDwmBackdropNone       = 1;   // DWMSBT_NONE
 constexpr DWORD kDwmBackdropMainWindow = 2;   // DWMSBT_MAINWINDOW == Mica
+constexpr DWORD kDwmBackdropAcrylic    = 3;   // DWMSBT_TRANSIENTWINDOW
+constexpr DWORD kDwmBackdropTabbed     = 4;   // DWMSBT_TABBEDWINDOW == Mica Alt
 
 // The three system cursors, as wide resource ids. IDC_ARROW and its siblings are
 // MAKEINTRESOURCE, which follows UNICODE -- in a program built without it they are
@@ -540,6 +545,11 @@ struct Window {
     // False on Windows 11 before 22H2, and on anything that refuses the attribute.
     // The page paints an opaque background instead of letting the material through.
     bool micaActive = false;
+    // Which system backdrop to ask DWM for: one of the kDwmBackdrop* values, Mica unless a page
+    // says otherwise -- `kDwmBackdropAcrylic` is the translucent one, `kDwmBackdropTabbed` Mica
+    // Alt, `kDwmBackdropNone` a flat window. Set it before `Create`; a page that switches
+    // material at run time sets it and calls `ApplyThemeToFrame()`.
+    DWORD backdrop = kDwmBackdropMainWindow;
     bool resizable = false;
     // How Create shows the window. SW_HIDE leaves it hidden for the program to show
     // later: after restoring a saved position, say, or without taking the foreground
@@ -862,21 +872,23 @@ inline bool Timer::Handle(UINT_PTR which) {
     return true;
 }
 
-inline void ApplyBackdrop(HWND hwnd, bool dark, bool *micaOut) {
+inline void ApplyBackdrop(HWND hwnd, bool dark, bool *micaOut,
+                          DWORD backdrop = kDwmBackdropMainWindow) {
     const BOOL d = dark ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, kDwmImmersiveDarkMode, &d, sizeof(d));
     const DWORD round = kDwmCornerRound;
     DwmSetWindowAttribute(hwnd, kDwmCornerPreference, &round, sizeof(round));
-    // The one that matters, and the one that can fail. Mica is Windows 11 22H2 and
-    // later; before that this returns E_INVALIDARG and the caller paints an opaque
+    // The one that matters, and the one that can fail. The system backdrops are Windows 11
+    // 22H2 and later; before that this returns E_INVALIDARG and the caller paints an opaque
     // background instead.
-    const DWORD backdrop = kDwmBackdropMainWindow;
     const HRESULT hr = DwmSetWindowAttribute(hwnd, kDwmSystemBackdrop, &backdrop,
                                              sizeof(backdrop));
     if (micaOut) *micaOut = SUCCEEDED(hr);
 }
 
-inline void Window::ApplyThemeToFrame() { ApplyBackdrop(hwnd, pal.dark, &micaActive); }
+inline void Window::ApplyThemeToFrame() {
+    ApplyBackdrop(hwnd, pal.dark, &micaActive, backdrop);
+}
 
 inline void Window::ReloadTheme() {
     pal = MakePalette(SystemUsesDarkTheme());

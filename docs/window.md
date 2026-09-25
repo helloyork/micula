@@ -81,7 +81,8 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `float ClientW() const`, `float ClientH() const` | Client size in DIPs. |
 | `Palette pal` | Current colors. See [Drawing](drawing.md#palette). |
 | `Fonts fonts` | Text formats. See [Drawing](drawing.md#fonts). |
-| `bool micaActive` | True when DWM accepted the Mica backdrop. False on Windows 10 and Windows 11 before 22H2; the page then has an opaque background. |
+| `bool micaActive` | True when DWM accepted the backdrop that was asked for. False on Windows 10 and Windows 11 before 22H2; the page then has an opaque background. |
+| `DWORD backdrop` | Which system backdrop to ask DWM for: `kDwmBackdropAuto`, `kDwmBackdropNone`, `kDwmBackdropMainWindow` (Mica, the default), `kDwmBackdropAcrylic` or `kDwmBackdropTabbed` (Mica Alt). Set it before `Create`; a page that switches material at run time sets it and calls `ApplyThemeToFrame()`. |
 | `bool resizable` | As passed to `Create`. |
 | `bool active` | Whether the window is the active window. The title bar dims when it is not. |
 | `bool animOn` | True while the frame loop is running. |

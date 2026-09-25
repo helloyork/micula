@@ -46,6 +46,7 @@ bool  paneFollow = true;           // whether the arrow keys carry the choice
 bool  paneOwn    = true;           // whether the pane draws its own button
 float paneOpenW  = 260.0f;
 bool  paneOpen   = true;
+int   windowBackdrop = 2;          // DWM_SYSTEMBACKDROP_TYPE: 2 Mica, 3 Acrylic, 4 Mica Alt
 
 
 // State for the other pages, so that their controls have something of their own to hold.
@@ -74,6 +75,18 @@ std::wstring Dip(float v) {
     return b;
 }
 
+// The system backdrop the window asks DWM for. Mica is the library's default; the others are
+// here so that the difference can be looked at side by side, which is what `backdrop=` is for.
+const wchar_t *BackdropName() {
+    switch (windowBackdrop) {
+    case 0:  return L"Auto (0) - DWM decides";
+    case 1:  return L"None (1) - the window paints its own background";
+    case 3:  return L"Acrylic (3) - DWMSBT_TRANSIENTWINDOW";
+    case 4:  return L"Mica Alt (4) - DWMSBT_TABBEDWINDOW";
+    default: return L"Mica (2) - DWMSBT_MAINWINDOW";
+    }
+}
+
 // The state can be asked for on the command line -- `micula-nav.exe style=2 open=0` -- so that
 // a state worth looking at does not have to be clicked to. Nothing is remembered either way.
 void ReadState(const wchar_t *cmd) {
@@ -90,6 +103,7 @@ void ReadState(const wchar_t *cmd) {
     paneFollow = number(L"follow=", paneFollow ? 1 : 0) != 0;
     paneOwn    = number(L"own=", paneOwn ? 1 : 0) != 0;
     paneOpenW  = (float)number(L"width=", (int)paneOpenW);
+    windowBackdrop = (std::min)((std::max)(number(L"backdrop=", windowBackdrop), 0), 4);
 }
 
 }  // namespace
@@ -399,6 +413,7 @@ void NavDemo::Layout() {
              L"Header-only Fluent controls for Win32", 0);
         card(glyph::kSettings, L"examples/nav",
              L"The navigation pane, and the switches that shape it", 0);
+        card(kIconLight, L"Backdrop", BackdropName(), 0);
         heading(L"Notes");
         card(L"", L"Nothing here is saved",
              L"Close the window and every setting goes back to the one in the source", 0);
@@ -493,6 +508,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *cmd, int) {
     int code = 1;
     {
         NavDemo d;
+        d.backdrop = (DWORD)windowBackdrop;
         if (d.Create(1040, 700, true, nullptr)) code = d.Run();
     }
     CoUninitialize();
