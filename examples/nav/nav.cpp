@@ -452,10 +452,13 @@ void NavDemo::PaintPage(const Painter &p) {
     // under the title bar and flush with the other two edges. The pane pushes it -- which is the
     // whole of what Inset() is for -- and a pane opening over it covers it.
     const D2D1_RECT_F frame = { Inset(), (float)kCaptionH, ClientW(), ClientH() };
-    p.FillRound(frame, 8.0f, c.layerBg);
-    p.Fill({ frame.left + 8, frame.top, frame.right, frame.top + 8 }, c.layerBg);
-    p.Fill({ frame.right - 8, frame.top, frame.right, frame.bottom }, c.layerBg);
-    p.Fill({ frame.left, frame.bottom - 8, frame.right, frame.bottom }, c.layerBg);
+    // WinUI's content layer: one rounded corner and three square, filled with the layer colour
+    // and bordered inside its edge with the card's, along the two edges that face the rest of
+    // the window. The right and bottom edges are the window's own, where a line would be
+    // doubling a boundary that is already there -- and where a translucent layer's border shows
+    // up darkest, because the layer ends and there is nothing behind the half-covered pixel.
+    p.Panel(frame, Corners(metric::kRadiusCard, 0.0f, 0.0f, 0.0f), c.layerBg, c.cardStroke,
+            edge::kTop | edge::kLeft);
 
     // The header does not scroll, and starts where the page does -- so a pane pushing the page
     // pushes this with it.

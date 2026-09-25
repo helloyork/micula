@@ -474,6 +474,26 @@ constexpr float kControlH      = 32.0f;
 constexpr float kButtonMinW    = 100.0f;
 }  // namespace metric
 
+// A panel's four corner radii in DIPs, in XAML's order: top-left, top-right, bottom-right,
+// bottom-left. 0 is a square corner, any mixture is a shape, and the four may differ -- WinUI's
+// content layer is one rounded corner and three square ones.
+struct Corners {
+    float r[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    constexpr Corners() = default;
+    constexpr Corners(float tl, float tr, float br, float bl) : r{ tl, tr, br, bl } {}
+};
+
+// Which of a panel's four edges its border runs along. A corner is drawn when both of the edges
+// meeting there are, so the common shape -- a border on the two sides a panel shows to the rest
+// of the window and none on the two that are the window -- is still one unbroken line.
+namespace edge {
+constexpr unsigned kTop    = 1u;
+constexpr unsigned kRight  = 2u;
+constexpr unsigned kBottom = 4u;
+constexpr unsigned kLeft   = 8u;
+constexpr unsigned kAll    = 15u;
+}  // namespace edge
+
 // ---------------------------------------------------------------- typography
 
 // Segoe UI Variable is Windows 11's UI face and its two optical sizes are separate

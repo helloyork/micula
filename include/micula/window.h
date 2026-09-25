@@ -232,6 +232,102 @@ struct Painter {
               float width = 1.0f) const {
         rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), Brush(c), width);
     }
+    // A panel whose four corners are chosen one by one, and whose border runs along any
+    // combination of its edges -- WinUI's content layer is one rounded corner, three square ones,
+    // a border along the two edges that face the rest of the window, and none along the two that
+    // are the window.
+    //
+    // The shape is a path because it has to be: `FillRoundedRectangle` takes one radius for all
+    // four corners, and a page's layer has exactly one of them rounded. Drawing it as a rounded
+    // rectangle with the square corners patched on over the top is the same picture for an opaque
+    // colour -- and a band of a lighter colour down every edge it passes for a translucent one,
+    // which is what a layer colour is: two coats in one place and one everywhere else. Over Mica
+    // that is a hint; over Acrylic it is a band you can measure.
+    //
+    // The path is built per call rather than cached, which is what a page with a handful of
+    // panels can afford. A page that draws hundreds of them wants its own cache.
+    void Panel(const D2D1_RECT_F &r, const Corners &c, const D2D1_COLOR_F &fill,
+               const D2D1_COLOR_F &border = D2D1::ColorF(0, 0.0f),
+               unsigned edges = edge::kAll, float width = 1.0f) const {
+        ID2D1Factory *factory = nullptr;
+        rt->GetFactory(&factory);
+        if (!factory) return;
+        // One figure per run of neighbouring pieces, and the pieces themselves in drawing order:
+        // the top edge, the arc joining it to the right edge, the right edge, and so on round, so
+        // that piece `i` runs from `pt[i]` to `pt[i + 1]`. A corner is an arc where two edges meet
+        // -- and half an arc is not a corner, which is why a corner needs both of its edges.
+        auto shape = [&](const D2D1_RECT_F &box, const Corners &k,
+                         unsigned on) -> ID2D1PathGeometry * {
+            float tl = k.r[0], tr = k.r[1], br = k.r[2], bl = k.r[3];
+            // No two radii on one side may overlap, or the curve crosses itself and the fill comes
+            // out inside out. XAML scales the pair down the same way.
+            const float w = box.right - box.left, h = box.bottom - box.top;
+            if (tl + tr > 0.0f) { const float s = (std::min)(1.0f, w / (tl + tr)); tl *= s; tr *= s; }
+            if (bl + br > 0.0f) { const float s = (std::min)(1.0f, w / (bl + br)); bl *= s; br *= s; }
+            if (tl + bl > 0.0f) { const float s = (std::min)(1.0f, h / (tl + bl)); tl *= s; bl *= s; }
+            if (tr + br > 0.0f) { const float s = (std::min)(1.0f, h / (tr + br)); tr *= s; br *= s; }
+            const D2D1_POINT_2F pt[9] = {
+                D2D1::Point2F(box.left + tl, box.top),     D2D1::Point2F(box.right - tr, box.top),
+                D2D1::Point2F(box.right, box.top + tr),    D2D1::Point2F(box.right, box.bottom - br),
+                D2D1::Point2F(box.right - br, box.bottom), D2D1::Point2F(box.left + bl, box.bottom),
+                D2D1::Point2F(box.left, box.bottom - bl),  D2D1::Point2F(box.left, box.top + tl),
+                D2D1::Point2F(box.left + tl, box.top),
+            };
+            const float rad[8] = { 0.0f, tr, 0.0f, br, 0.0f, bl, 0.0f, tl };
+            const bool lit[8] = {
+                (on & edge::kTop) != 0,
+                (on & edge::kTop) != 0 && (on & edge::kRight) != 0,
+                (on & edge::kRight) != 0,
+                (on & edge::kRight) != 0 && (on & edge::kBottom) != 0,
+                (on & edge::kBottom) != 0,
+                (on & edge::kBottom) != 0 && (on & edge::kLeft) != 0,
+                (on & edge::kLeft) != 0,
+                (on & edge::kLeft) != 0 && (on & edge::kTop) != 0,
+            };
+            ID2D1PathGeometry *path = nullptr;
+            if (FAILED(factory->CreatePathGeometry(&path)) || !path) return nullptr;
+            ID2D1GeometrySink *sink = nullptr;
+            if (FAILED(path->Open(&sink)) || !sink) { path->Release(); return nullptr; }
+            for (int i = 0; i < 8;) {
+                if (!lit[i]) { i++; continue; }
+                int j = i;
+                while (j < 8 && lit[j]) j++;
+                sink->BeginFigure(pt[i], D2D1_FIGURE_BEGIN_FILLED);
+                for (int p = i; p < j; p++) {
+                    if (rad[p] > 0.0f)
+                        sink->AddArc(D2D1::ArcSegment(pt[p + 1], D2D1::SizeF(rad[p], rad[p]), 0.0f,
+                                                      D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                                                      D2D1_ARC_SIZE_SMALL));
+                    else
+                        sink->AddLine(pt[p + 1]);
+                }
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                i = j;
+            }
+            sink->Close();
+            sink->Release();
+            return path;
+        };
+        // The fill is the whole shape whatever the border covers, and an open figure is filled as
+        // if it were closed, which is what makes the two share one builder.
+        if (ID2D1PathGeometry *p = shape(r, c, edge::kAll)) {
+            rt->FillGeometry(p, Brush(fill));
+            p->Release();
+        }
+        if (border.a > 0.0f && width > 0.0f && edges != 0) {
+            // Inset by the stroke and drawn on that edge, which is what StrokeRound does with a
+            // rectangle: a stroke centred on the edge is two half-covered rows of pixels.
+            const D2D1_RECT_F in = { r.left + width / 2, r.top + width / 2,
+                                     r.right - width / 2, r.bottom - width / 2 };
+            Corners k = c;
+            for (float &rad : k.r) rad = rad > width / 2 ? rad - width / 2 : 0.0f;
+            if (ID2D1PathGeometry *p = shape(in, k, edges)) {
+                rt->DrawGeometry(p, Brush(border), width);
+                p->Release();
+            }
+        }
+        factory->Release();
+    }
 
     // One line, vertically centred in `r`, clipped. CLIP is on because a string that
     // overflows its box should be cut, not painted over the control next to it -- an

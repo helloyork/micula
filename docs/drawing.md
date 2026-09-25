@@ -16,6 +16,7 @@
 | `void Fill(const D2D1_RECT_F &r, const D2D1_COLOR_F &c) const` | Fills a rectangle. |
 | `void FillRound(const D2D1_RECT_F &r, float radius, const D2D1_COLOR_F &c) const` | Fills a rounded rectangle. |
 | `void StrokeRound(const D2D1_RECT_F &r, float radius, const D2D1_COLOR_F &c, float width = 1) const` | Strokes a rounded rectangle inside `r`, so a 1-DIP border is sharp. |
+| `void Panel(const D2D1_RECT_F &r, const Corners &c, const D2D1_COLOR_F &fill, const D2D1_COLOR_F &border = transparent, unsigned edges = edge::kAll, float width = 1) const` | Fills a panel whose four corners are chosen one by one, and strokes `border` inside its edge. `edges` is which edges the border runs along -- a corner needs both of the edges meeting there -- and a transparent border or `edges = 0` draws none. |
 | `void Line(float x0, float y0, float x1, float y1, const D2D1_COLOR_F &c, float width = 1) const` | Draws a line. |
 | `void Text(const std::wstring &s, const D2D1_RECT_F &r, IDWriteTextFormat *fmt, const D2D1_COLOR_F &c) const` | One line of text, left-aligned, vertically centered in `r` and clipped to it. |
 | `float TextWrapped(const std::wstring &s, const D2D1_RECT_F &r, IDWriteTextFormat *fmt, const D2D1_COLOR_F &c, bool measureOnly = false, bool clip = false) const` | Wrapped text from the top of `r`. Returns its height. `measureOnly` measures without drawing; `clip` cuts it off at the bottom of `r`. |
@@ -112,6 +113,21 @@ vertically centered; `Painter::TextWrapped` makes a layout that wraps.
 | `kRadiusCard` | 8 | Corner radius of cards and flyouts. |
 | `kButtonMinW` | 100 | Minimum button width. |
 
+## Corners
+`struct Corners`, in DIPs, is a panel's four corner radii in XAML's order -- top-left,
+top-right, bottom-right, bottom-left. 0 is a square corner; anything can be mixed, and
+the four may differ. A `Painter::Panel` takes one, and `namespace edge` says which of the
+four edges its border runs along:
+```cpp
+// The content layer of a page: its top-left corner rounded, the other three square, and
+// a border along the two edges that face the rest of the window.
+p.Panel(frame, Corners(metric::kRadiusCard, 0, 0, 0), c.layerBg, c.cardStroke,
+        edge::kTop | edge::kLeft);
+```
+Draw the whole shape in one call rather than assembling it from overlapping fills. A
+translucent colour -- and a layer colour is one -- lays down a second coat wherever two
+fills cross, so a rounded rectangle with squares patched onto its corners leaves a band
+of a lighter colour down those edges.
 ## Icons
 
 `namespace micula::glyph`: Segoe Fluent Icons code points as `const wchar_t *`. Draw them
