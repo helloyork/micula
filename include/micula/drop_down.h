@@ -68,6 +68,12 @@ struct DropDown : Widget {
     // a spun wheel retargets this several times inside one frame, and a storyboard restarted
     // that often would stutter between the notches.
     static constexpr float kSlideLag = 0.05f;
+    // How far the mark has drifted off the control, in rows, followed at the same lag. The
+    // clamp is a step -- it engages the frame the panel would leave the strip -- and a mark
+    // that took that step in one frame reads as the bar having moved to another option rather
+    // than as the panel having moved under it. Everything else about the mark's place is a
+    // step as well, by design; this is the one quantity that gets to travel.
+    float drift = 0.0f;
     // Its scroll bar, the page's own control: WinUI's drop-down is a ScrollViewer, and
     // the bar in it is the one every other ScrollViewer has. Made the first time a list
     // needs one, not for every drop-down on every layout.
@@ -336,6 +342,9 @@ struct DropDown : Widget {
             z = 1;
             // Opened with the chosen row already on the control: nothing to slide.
             slid = (float)selected;
+            // And the mark starts out where it belongs rather than travelling there on the
+            // way in: the panel is arriving, and one thing arriving at a time is enough.
+            drift = (float)selected - PlacedAt((float)selected);
             const bool cut = Overflows();
             if (cut) {
                 if (!bar) {
@@ -374,7 +383,9 @@ struct DropDown : Widget {
     void Dismiss() override { if (open) SetOpen(false); }
     bool Animating() const override {
         return Widget::Animating() || openT.Wants(open ? 1.0f : 0.0f) ||
-               (open && slid != (float)selected) || refuse > 0.0f || knockHeld ||
+               (open && slid != (float)selected) ||
+               (open && drift != (float)selected - PlacedAt((float)selected)) ||
+               refuse > 0.0f || knockHeld ||
                knock > 0.0f || knockLag > 0.0f ||
                (BarShown() && bar->Animating());
     }
@@ -394,6 +405,16 @@ struct DropDown : Widget {
                 slid += (want - slid) * (1.0f - std::exp(-dt / kSlideLag));
                 if (std::fabs(want - slid) < 0.004f) slid = want;
                 SyncBar();
+            }
+            // The mark's own correction: the clamp moved, the panel did not travel on its
+            // account, and so the mark is the only thing that has to keep up with where the
+            // chosen row came to rest. Same lag as the slide, because it is one motion -- a
+            // correction that took longer than the list's own move would read as the mark
+            // lagging behind the row it is on.
+            const float driftWant = (float)selected - PlacedAt((float)selected);
+            if (drift != driftWant) {
+                drift += (driftWant - drift) * (1.0f - std::exp(-dt / kSlideLag));
+                if (std::fabs(driftWant - drift) < 0.004f) drift = driftWant;
             }
         } else if (!openT.Step(dt, motion::kFast, motion::Accel)) {
             z = 0;          // the lid has finished closing; stop keeping it raised
@@ -577,9 +598,14 @@ struct DropDown : Widget {
     // the control while the choice it marks had moved, so it pointed at whichever option
     // happened to land there. Caught in a screenshot of the real page, not by the geometry
     // test, which had not thought to ask where the mark was.
+    //
+    // `drift` is that same resting place, followed instead of stepped: the clamp engages and
+    // gives way as the choice crosses it, and a mark that jumped with it moved in a frame by
+    // as much as a row. Following it keeps the panel still -- which is right, the clamp is a
+    // decision about where the panel may be, not a motion -- and leaves the mark to travel.
     void PaintMark(const Painter &p, float alpha) {
         const D2D1_RECT_F h = Head();
-        const float line = RowLine() + rowH * ((float)selected - PlacedAt((float)selected));
+        const float line = RowLine() + rowH * drift;
         const float inset = 8.0f + 4.8f * refuse;    // the refusal's own shrink
         // The knock, in DIPs of offset per edge. The fast edge is capped at what the edge
         // behind it has already given: the mark may be shorter than it is at rest and never
