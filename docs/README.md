@@ -12,7 +12,8 @@
 | Header | Contents |
 |---|---|
 | `micula/micula.h` | The one to include. Includes the others and defines `MICULA_VERSION_MAJOR`, `_MINOR`, `_PATCH` and `MICULA_VERSION_STRING`. |
-| `micula/theme.h` | Palette, fonts, metrics, icon code points, animation curves, system theme queries |
+| `micula/theme.h` | Palette, fonts, metrics, animation curves, system theme queries |
+| `micula/glyphs.h` | The Segoe Fluent Icons code points, and the place a page adds the ones it needs |
 | `micula/window.h` | `Window`, `Widget`, `Painter`, `Timer`, clipboard and DPI helpers |
 | `micula/widgets.h` | The controls, all of them: it includes the per-control headers below |
 

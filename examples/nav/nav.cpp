@@ -24,17 +24,19 @@ constexpr float kRowGap  = 4.0f;
 constexpr float kInset   = 18.0f;    // card padding, left and right
 constexpr float kGlide   = 0.07f;    // seconds for the page's drawing to catch up
 
-// Segoe Fluent Icons code points that theme.h does not name.
-constexpr const wchar_t *kIconRecent   = L"\uE823";
-constexpr const wchar_t *kIconHome     = L"\uE80F";
-constexpr const wchar_t *kIconCalendar = L"\uE787";
-constexpr const wchar_t *kIconColor    = L"\uE790";
-constexpr const wchar_t *kIconMotion   = L"\uE895";
-constexpr const wchar_t *kIconLight    = L"\uE706";
-constexpr const wchar_t *kIconWidth    = L"\uE710";
-constexpr const wchar_t *kIconBattery  = L"\uE945";
-constexpr const wchar_t *kIconCamera   = L"\uE722";
-constexpr const wchar_t *kIconDebug    = L"\uEBE8";
+// The icons this window draws, from the library's own list: nothing here is a code point of its
+// own, and a page that needs one the library does not name adds it to <micula/glyphs.h> rather
+// than starting a list like this one. The names are what the cards below call them by.
+constexpr const wchar_t *kIconRecent   = glyph::kRecent;
+constexpr const wchar_t *kIconHome     = glyph::kHome;
+constexpr const wchar_t *kIconCalendar = glyph::kCalendar;
+constexpr const wchar_t *kIconColor    = glyph::kColor;
+constexpr const wchar_t *kIconMotion   = glyph::kBusy;
+constexpr const wchar_t *kIconLight    = glyph::kBrightness;
+constexpr const wchar_t *kIconWidth    = glyph::kAdd;
+constexpr const wchar_t *kIconBattery  = glyph::kBolt;
+constexpr const wchar_t *kIconCamera   = glyph::kCamera;
+constexpr const wchar_t *kIconDebug    = glyph::kBug;
 
 // --- the state: deliberately not saved ------------------------------------------------
 int   page   = 0;

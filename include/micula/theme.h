@@ -40,6 +40,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include "glyphs.h"
 #include <windows.h>
 
 // Before <d2d1.h>, and that ordering is the whole of it.
@@ -608,27 +609,7 @@ inline bool SystemAutoHidesScrollBars() {
     return v != 0;
 }
 
-// A handful of Segoe Fluent Icons code points -- the ones the controls draw, and a few
-// a page commonly wants -- named so a reader does not have to look them up. Every one
-// of them also exists in Segoe MDL2 Assets at the same code point, which is what makes
-// the fallback above safe. Draw them with Fonts::icon, never with a text format.
-//
-// Escapes rather than the characters themselves, so this header means the same thing
-// whatever code page the compiler reads it in.
-namespace glyph {
-constexpr const wchar_t *kCheck    = L"\uE73E";  // CheckMark
-constexpr const wchar_t *kWarning  = L"\uE7BA";  // Warning
-constexpr const wchar_t *kError    = L"\uEA39";  // ErrorBadge
-constexpr const wchar_t *kInfo     = L"\uE946";  // Info
-constexpr const wchar_t *kFolder   = L"\uE8B7";  // FolderOpen
-constexpr const wchar_t *kChevron  = L"\uE70D";  // ChevronDown
-constexpr const wchar_t *kMenu     = L"\uE700";  // GlobalNavButton: a pane's toggle
-constexpr const wchar_t *kRefresh  = L"\uE72C";  // Refresh
-constexpr const wchar_t *kSettings = L"\uE713";  // Settings
-constexpr const wchar_t *kShield   = L"\uEA18";  // Shield
-constexpr const wchar_t *kBusy     = L"\uE895";  // SyncStatus
-constexpr const wchar_t *kCaretUp   = L"\uEDDB";  // CaretUpSolid8, a scroll bar's arrow
-constexpr const wchar_t *kCaretDown = L"\uEDDC";  // CaretDownSolid8
-}  // namespace glyph
+// The icon code points -- the ones the controls draw, and the ones a page wants -- are in
+// glyphs.h, which is the one header of this library a page is expected to add to.
 
 }  // namespace micula

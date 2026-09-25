@@ -27,14 +27,16 @@ constexpr float kCardGap = 4.0f;
 constexpr float kInset   = 18.0f;   // card padding, left and right
 
 // Segoe Fluent Icons code points that theme.h does not name.
-constexpr const wchar_t *kIconDelete   = L"\uE74D";
-constexpr const wchar_t *kIconRecent   = L"\uE823";
-constexpr const wchar_t *kIconDrive    = L"\uEDA2";
-constexpr const wchar_t *kIconColor    = L"\uE790";
-constexpr const wchar_t *kIconCalendar = L"\uE787";
-constexpr const wchar_t *kIconCamera   = L"\uE722";
-constexpr const wchar_t *kIconAdd      = L"\uE710";
-constexpr const wchar_t *kIconBattery  = L"\uE945";
+// The icons this window draws, from the library's own list: nothing here is a code point of its
+// own -- see <micula/glyphs.h>, which is where a page's icons belong.
+constexpr const wchar_t *kIconDelete   = glyph::kDelete;
+constexpr const wchar_t *kIconRecent   = glyph::kRecent;
+constexpr const wchar_t *kIconDrive    = glyph::kDrive;
+constexpr const wchar_t *kIconColor    = glyph::kColor;
+constexpr const wchar_t *kIconCalendar = glyph::kCalendar;
+constexpr const wchar_t *kIconCamera   = glyph::kCamera;
+constexpr const wchar_t *kIconAdd      = glyph::kAdd;
+constexpr const wchar_t *kIconBattery  = glyph::kBolt;
 
 struct NavItem { const wchar_t *icon, *label; };
 const NavItem kNav[] = {

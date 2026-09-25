@@ -774,7 +774,7 @@ struct DropDown : Widget {
         if (selected >= 0 && selected < (int)options.size())
             p.Text(options[selected], { h.left + 11, h.top, h.right - 32, h.bottom },
                    p.font->body, fg);
-        p.Text(glyph::kChevron, { h.right - 28, h.top, h.right, h.bottom }, p.font->icon,
+        p.Text(glyph::kChevronDown, { h.right - 28, h.top, h.right, h.bottom }, p.font->icon,
                c.textSecondary);
         if (focus && owner && owner->showFocusRing) {
             const D2D1_RECT_F o = { h.left - 2, h.top - 2, h.right + 2, h.bottom + 2 };
