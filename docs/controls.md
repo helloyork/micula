@@ -1,6 +1,8 @@
 # Controls
 
-In `micula/widgets.h`. Every control derives from [`Widget`](widget.md), so each also
+In `micula/widgets.h`, which includes one header per control -- `button.h`, `text_box.h` and so
+on -- so a page that draws two of them can include those two and nothing else. Every control
+derives from [`Widget`](widget.md), so each also
 has `rect`, `visible`, `enabled`, `scrolls` and `persistent`. Set `rect` after `Add`.
 
 Callbacks may call `Layout()`, except `Slider::onChange` during a drag (see

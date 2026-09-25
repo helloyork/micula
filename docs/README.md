@@ -14,7 +14,11 @@
 | `micula/micula.h` | The one to include. Includes the others and defines `MICULA_VERSION_MAJOR`, `_MINOR`, `_PATCH` and `MICULA_VERSION_STRING`. |
 | `micula/theme.h` | Palette, fonts, metrics, icon code points, animation curves, system theme queries |
 | `micula/window.h` | `Window`, `Widget`, `Painter`, clipboard and DPI helpers |
-| `micula/widgets.h` | The controls |
+| `micula/widgets.h` | The controls, all of them: it includes the per-control headers below |
+
+Every control has a header of its own, so a page can include the one it draws and parse nothing
+else: `button.h`, `check_box.h`, `toggle_switch.h`, `segmented.h`, `slider.h`, `scroll_bar.h`,
+`drop_down.h`, `side_nav.h`, `text_box.h`, `progress_bar.h`.
 
 Everything is in namespace `micula`.
 
