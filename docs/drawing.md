@@ -111,23 +111,34 @@ vertically centered; `Painter::TextWrapped` makes a layout that wraps.
 | `kControlH` | 32 | Height of buttons, fields, drop-downs. |
 | `kRadiusControl` | 4 | Corner radius of controls. |
 | `kRadiusCard` | 8 | Corner radius of cards and flyouts. |
+| `kTextLift` | 1 | How far a label drawn beside an icon is raised |
 | `kButtonMinW` | 100 | Minimum button width. |
 
+Text is centred in its rectangle by its *line box*, and a line box is not the ink: the ascender
+above the cap band is taller than the descender below the baseline, so a label reads low beside
+a glyph whose ink is centred in its own em -- which is every icon. Lift the text by `kTextLift`
+to put the two back on one line. Both are measured: an unraised label sits 0.7 to 1.7 DIP below
+the icon, depending on whether it has a descender in it.
+
 ## Corners
+
 `struct Corners`, in DIPs, is a panel's four corner radii in XAML's order -- top-left,
 top-right, bottom-right, bottom-left. 0 is a square corner; anything can be mixed, and
 the four may differ. A `Painter::Panel` takes one, and `namespace edge` says which of the
 four edges its border runs along:
+
 ```cpp
 // The content layer of a page: its top-left corner rounded, the other three square, and
 // a border along the two edges that face the rest of the window.
 p.Panel(frame, Corners(metric::kRadiusCard, 0, 0, 0), c.layerBg, c.cardStroke,
         edge::kTop | edge::kLeft);
 ```
+
 Draw the whole shape in one call rather than assembling it from overlapping fills. A
 translucent colour -- and a layer colour is one -- lays down a second coat wherever two
 fills cross, so a rounded rectangle with squares patched onto its corners leaves a band
 of a lighter colour down those edges.
+
 ## Icons
 
 `namespace micula::glyph`: Segoe Fluent Icons code points as `const wchar_t *`. Draw them

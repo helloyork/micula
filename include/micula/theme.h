@@ -470,6 +470,14 @@ inline Palette MakePalette(bool dark) {
 namespace metric {
 constexpr float kRadiusControl = 4.0f;
 constexpr float kRadiusCard    = 8.0f;
+// A label drawn beside an icon is raised by this much. `PARAGRAPH_ALIGNMENT_CENTER` centres a
+// line of text by its line box, and a line box is not the ink: the ascender above the cap band
+// is taller than the descender below the baseline, so the ink sits low in its own box -- by
+// about 0.7 of a DIP at 14 DIP, and up to 1.7 for a label with a descender in it. An icon's
+// ink is centred in its own em, so the two do not line up until the text is lifted. It is
+// roughly (ascent - capHeight - descent) / 2 for the UI face, which is one DIP at every text
+// size this library uses.
+constexpr float kTextLift      = 1.0f;
 constexpr float kControlH      = 32.0f;
 constexpr float kButtonMinW    = 100.0f;
 }  // namespace metric

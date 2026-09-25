@@ -517,11 +517,21 @@ struct SideNav : Widget {
                             metric::kRadiusControl,
                             Fade(pressed && hoverNow > 0.0f ? c.controlBgPressed : c.subtleHover,
                                  fill));
-            if (r.item->glyph)
-                p.Text(r.item->glyph, { iconX, top, iconX + 20, top + rowH }, p.font->icon,
-                       label);
-            p.Text(r.item->label, { labelX, top, box.right - 8, top + rowH }, p.font->body,
-                   Fade(label, frac));
+            if (r.item->glyph) {
+                // Centred in the icon's box by measuring, the way the button at the top of the
+                // rail is. The icon format is left-aligned like every other text format here,
+                // and the glyphs do not fill their advance, so drawn from the box's own edge
+                // they sit a couple of DIPs to the left of the button above them -- which is
+                // the one thing in a rail of icons there is to line up with.
+                const float gw = p.MeasureWidth(r.item->glyph, p.font->icon);
+                p.Text(r.item->glyph,
+                       { iconX + (20.0f - gw) / 2, top, iconX + (20.0f + gw) / 2, top + rowH },
+                       p.font->icon, label);
+            }
+            p.Text(r.item->label,
+                   { labelX, top - metric::kTextLift, box.right - 8,
+                     top + rowH - metric::kTextLift },
+                   p.font->body, Fade(label, frac));
             // The focus ring goes around the row the keyboard is on, which is the choice when
             // it follows the focus and the ring itself when it does not.
             if (focus && owner && owner->showFocusRing &&
