@@ -34,6 +34,7 @@ constexpr const wchar_t *kIconLight    = L"\uE706";
 constexpr const wchar_t *kIconWidth    = L"\uE710";
 constexpr const wchar_t *kIconBattery  = L"\uE945";
 constexpr const wchar_t *kIconCamera   = L"\uE722";
+constexpr const wchar_t *kIconDebug    = L"\uEBE8";
 
 // --- the state: deliberately not saved ------------------------------------------------
 int   page   = 0;
@@ -56,6 +57,13 @@ bool demoScreens = true, demoSkip = true;
 
 const wchar_t *const kStyles[] = { L"Fixed", L"Toggle", L"Peek", L"Minimal" };
 
+// The debug page's two lists: how many rows past the pages the pane is built with, and the DWM
+// backdrops by their `backdrop=` values. Both of them are restarts, because both are settled
+// when the window is made -- the pane's rows as its items, the backdrop as an attribute of a
+// window that is already up -- and it is exactly those two that a page has no way to reach.
+const int kRowChoices[] = { 0, 8, 24, 40 };
+const wchar_t *const kBackdrops[] = { L"Auto", L"None", L"Mica", L"Acrylic", L"Mica Alt" };
+
 template <size_t N>
 std::vector<std::wstring> Names(const wchar_t *const (&names)[N]) {
     return { names, names + N };
@@ -69,6 +77,13 @@ const PageInfo kPages[] = {
     { L"Folders",     L"...and the other one, so the group has two" },
     { L"Settings",    L"A footer row: the last one sits at the bottom" },
 };
+
+// The debug page is not one of those: it is the first of the footer's rows, so it is described
+// here and drawn by its own branch of the layout. It is the command line this window was started
+// with, as controls, which is the point of it -- a state that can only be asked for when the
+// window is made is one that only the command line can ask for, and half of what this window can
+// do now has no control at all.
+const PageInfo kDebugPage = { L"Debug", L"The command line this window was started with" };
 
 std::wstring Dip(float v) {
     wchar_t b[16];
@@ -100,7 +115,9 @@ void ReadState(const wchar_t *cmd) {
     // More rows in the pane than the window can show, which is what the pane's own scrolling is
     // for: `nav=24` puts twenty-four of them above the footer.
     navRows = (std::min)((std::max)(number(L"nav=", navRows), 0), 40);
-    page       = (std::min)((std::max)(number(L"page=", page), 0), 4);
+    // Up to the last row the pane will have: the debug page passes its own place in the pane back
+    // in when it restarts, and that place is `navRows` rows below the pages.
+    page       = (std::min)((std::max)(number(L"page=", page), 0), 6 + navRows);
     paneOpen   = number(L"open=", paneOpen ? 1 : 0) != 0;
     paneSlides = number(L"animate=", paneSlides ? 1 : 0) != 0;
     paneScrim  = number(L"scrim=", paneScrim ? 1 : 0) != 0;
@@ -132,6 +149,9 @@ struct NavDemo : Window {
     // page. Set by Layout, which is the only thing that makes them.
     Button *drive = nullptr;
     int styleCard = -1, openCard = -1;
+    // The row the debug page is, which is the first of the footer's. Worked out by Layout, which
+    // is the only thing that knows how many rows the pane was built with.
+    int debugRow = -1;
 
     const wchar_t *ClassName() const override { return L"MiculaNavDemo"; }
     const wchar_t *Title() const override { return L"Micula - navigation pane"; }
@@ -241,6 +261,45 @@ struct NavDemo : Window {
         Invalidate();
     }
 
+    // What this window was started as, as arguments, which is what a restart passes on. The
+    // window's own geometry is not in it: a debug page is about the state a person can look at,
+    // and the one thing that is not in the state is where the window happens to be.
+    std::wstring CommandLine() const {
+        wchar_t b[256];
+        swprintf(b, 256,
+                 L"style=%d nav=%d page=%d open=%d animate=%d scrim=%d follow=%d own=%d "
+                 L"width=%d backdrop=%d",
+                 paneStyle, navRows, page, paneOpen ? 1 : 0, paneSlides ? 1 : 0,
+                 paneScrim ? 1 : 0, paneFollow ? 1 : 0, paneOwn ? 1 : 0, (int)paneOpenW,
+                 windowBackdrop);
+        return b;
+    }
+    // Starts this window again with the state it is showing. A restart rather than a rebuild,
+    // because not everything here is rebuildable: the pane's rows are its items and are built
+    // once, and the DWM backdrop belongs to a window that already exists. Both of them are things
+    // a debug page has to be able to reach, and both are reachable only from the command line --
+    // so the page hands the command line back to itself. Nothing is saved either way, so this is
+    // also how a person finds out whether the arguments do what they say.
+    void Relaunch() {
+        wchar_t exe[MAX_PATH];
+        if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
+        std::wstring line = L"\"" + std::wstring(exe) + L"\" " + CommandLine();
+        STARTUPINFOW si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(nullptr, &line[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
+                            &pi))
+            return;
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        if (hwnd) PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+    // Which of the debug page's row counts is the one the pane was built with.
+    int RowsChoice() const {
+        for (int i = 0; i < (int)(sizeof(kRowChoices) / sizeof(kRowChoices[0])); i++)
+            if (kRowChoices[i] == navRows) return i;
+        return 0;
+    }
+
     void Layout() override;
     void PaintPage(const Painter &p) override;
 };
@@ -270,7 +329,10 @@ void NavDemo::Layout() {
             { kIconCalendar, L"Schedule" },
             { glyph::kFolder, L"Folders" },
         };
-        pane->footer = { { glyph::kSettings, L"Settings" } };
+        pane->footer = {
+            { kIconDebug, L"Debug" },
+            { glyph::kSettings, L"Settings" },
+        };
         for (int i = 0; i < navRows; i++) {
             wchar_t name[32];
             swprintf(name, 32, L"Row %d", i + 1);
@@ -292,6 +354,12 @@ void NavDemo::Layout() {
             Changed();
         };
     }
+    // The rows the pane has above its footer, which is where the footer's own numbering starts and
+    // where the debug page is. It is the first of the footer's rows rather than the last so that
+    // adding it moves nothing: `page` is a row's place in the pane, and a row added at the end
+    // leaves every other place exactly where it was.
+    debugRow = 0;
+    for (const NavItem &it : pane->items) if (!it.header) debugRow++;
     Dress();
 
     const float left = Inset() + 12.0f, right = ClientW() - 24.0f;
@@ -337,6 +405,33 @@ void NavDemo::Layout() {
               card(icon, title, detail, 40));
     };
 
+    if (page == debugRow) {
+        // The command line, as controls. The two lists below are restarts by nature -- what they
+        // ask for is settled before a page exists -- and the button is there for the state that
+        // has a control somewhere else: this is the one place that starts over from scratch.
+        heading(L"The command line");
+        place(Add(new DropDown({ L"No extra rows", L"8 rows", L"24 rows", L"40 rows" },
+                               RowsChoice(), [this](int i) {
+                                   navRows = kRowChoices[i];
+                                   Relaunch();
+                               })),
+              card(kIconRecent, L"nav=",
+                   L"Rows in the pane past the ones the pages take up", 180));
+        place(Add(new DropDown(Names(kBackdrops), windowBackdrop, [this](int i) {
+                      windowBackdrop = i;
+                      Relaunch();
+                  })),
+              card(kIconLight, L"backdrop=",
+                   L"The DWM backdrop, which a window is given as it is made", 180));
+        card(L"", L"Started with", CommandLine(), 0);
+        {
+            Button *again =
+                Add(new Button(L"Restart", ButtonStyle::Standard, [this] { Relaunch(); }));
+            place(again, card(kIconMotion, L"Again",
+                              L"Close this window and start the same one with these arguments",
+                              again->PreferredWidth(measure)));
+        }
+    } else
     switch (page) {
     case 0:
         heading(L"The pane");
@@ -470,7 +565,14 @@ void NavDemo::Layout() {
 void NavDemo::PaintPage(const Painter &p) {
     const Palette &c = *p.pal;
     const float left = Inset() + 12.0f, right = ClientW() - 24.0f;
-    const PageInfo &info = kPages[page < 5 ? page : 0];
+    // The debug page's row is the footer's first and has a heading of its own, because it is not
+    // one of the pages in `kPages` at all. The row after it is Settings, which is the last of the
+    // About pages: it used to be number four and is one further down now, so it is named here
+    // rather than counted, and selecting it goes on showing the About page it always did. A
+    // `Row N` page is the About one, as it always was.
+    const PageInfo &info = page == debugRow       ? kDebugPage
+                         : page == debugRow + 1   ? kPages[4]
+                         : kPages[page >= 0 && page < 4 ? page : 0];
     // The page is a surface rather than the window: WinUI's NavigationView content is a layer
     // over the backdrop with its top-left corner rounded and its other three square, tucked
     // under the title bar and flush with the other two edges. The pane pushes it -- which is the
