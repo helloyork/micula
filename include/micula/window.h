@@ -2128,6 +2128,40 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 }
             }
         }
+        // Then anything floating over the page. A popup that is up is what a wheel over it is for,
+        // and the page under it is not the thing being turned: a page that scrolled out from under
+        // an open list would take the list's own place in it with it. Tried after the control the
+        // pointer is actually over, so that an ordinary control's wheel still wins where the two
+        // overlap, and only where a floating control says it wants the turn at all.
+        {
+            const float x = pt.x / s, y = pt.y / s;
+            for (auto &w : self->widgets) {
+                if (!w->visible || w->z <= 0) continue;
+                float pdy = 0.0f, popacity = 1.0f;
+                if (w->scrolls) self->ContentTransform(&pdy, &popacity);
+                if (w->OnWheel(x, y - pdy,
+                               (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA)) {
+                    self->Invalidate();
+                    return 0;
+                }
+            }
+        }
+        // The page scrolls only when the wheel is over the page. `ClipRect` is where the page
+        // draws its scrolling content; its *box* is that strip widened up to the top of the page's
+        // own furniture, because the page's title and its caption are the page's -- a wheel over
+        // them is a wheel over the page. What is left out is everything that belongs to the window
+        // rather than to the page: the caption bar and its buttons above, and the pane's rail to
+        // the left. A wheel over one of those used to scroll the page underneath it.
+        //
+        // Where the page names no strip at all -- nothing to scroll -- the box is what is left of
+        // the client under the caption bar, which is the same rule with the page's own answer
+        // missing.
+        const float wx = pt.x / s, wy = pt.y / s;
+        D2D1_RECT_F page = self->ClipRect();
+        if (page.right <= page.left || page.bottom <= page.top)
+            page = D2D1_RECT_F{ 0, 0, self->ClientW(), self->ClientH() };
+        const D2D1_RECT_F box = { page.left, kCaptionH, page.right, self->ClientH() };
+        if (wx < box.left || wx >= box.right || wy < box.top || wy >= box.bottom) return 0;
         return self->OnAppMessage(m, wp, MAKELPARAM(pt.x, pt.y)) ? 0
                                                                  : DefWindowProcW(h, m, wp, lp);
     }
