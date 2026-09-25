@@ -74,5 +74,5 @@ the drag is over, so a resize is live and whatever was animating keeps running.
 
 - COM initialized on the UI thread, apartment-threaded, before `Window::Create`.
 - Per-monitor DPI awareness, from the manifest or `EnablePerMonitorDpi()`.
-- Timer IDs 2 to 7 belong to Micula.
+- a page's own timers stay its own: the window hands its timers out of a pool, and an id the pool did not take reaches `OnAppMessage`.
 - Call everything from the thread that created the window.

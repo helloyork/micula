@@ -65,7 +65,6 @@ All virtual. Points are in DIPs.
 | `bool OnKey(WPARAM vk)` | `false` | Key down while focused. Return true to consume it. |
 | `bool OnChar(wchar_t ch)` | `false` | Typed character while focused. |
 | `void OnBlur()` | nothing | Focus left the control. |
-| `bool OnTimer(UINT_PTR id)` | `false` | A timer the window does not own. Return true if the id is this control's. |
 | `void Dismiss()` | nothing | A click elsewhere, or the window was deactivated. Close anything transient. |
 | `bool TracksPointer() const` | `false` | Return true to repaint on every pointer move over the control, not only when `hover` changes. For a hover highlight inside the control. |
 | `bool PressedVisual() const` | `pressed` | Return true while the press shadow should show. `pressed` is cleared as soon as the pointer leaves the control -- which is what makes a button cancellable by dragging off it -- so a drag that outlives its own rectangle, such as a slider past the end of its track, overrides this. |
@@ -120,6 +119,21 @@ drawing frames.
 
 ## Timers
 
-A control that needs a timer calls `SetTimer(owner->hwnd, id, ms, nullptr)` and claims the
-id in `OnTimer`. Micula uses ids 2 to 7. Kill the timer in the destructor if the
-control can be removed while it runs.
+A control that needs a timer holds a `Timer` and starts it. The window hands the ids out from a
+pool of its own, so nothing is numbered by hand and two owners cannot collide.
+
+```cpp
+Timer blink;                                       // a member
+blink.Start(owner, 500, [this] { Blink(); });      // 500 ms from now, and every 500 ms after
+blink.Stop();                                      // from anywhere, including the callback
+```
+
+A Windows timer repeats until it is stopped, `Stop` is safe from inside the callback, and a
+timer that is still running when its owner is destroyed simply stops with it. The window offers
+every `WM_TIMER` to the timers it is running, so the owner does not have to be in `widgets` for
+the message to arrive.
+
+`kCaretTimer`, `kFrameTimer`, `kScrollBarStateTimer`, `kDropDownBarStateTimer` and the
+`OnTimer` hook are gone: a control that used them holds a `Timer` instead. A page that sets a
+timer of its own is unaffected -- an id the pool did not hand out still reaches
+`OnAppMessage`, which is where a page's messages are answered.

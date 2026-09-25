@@ -75,6 +75,7 @@
 #include <wincodec.h>
 #include <windowsx.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -379,8 +380,6 @@ struct Widget {
     // what Space means there is "the one the list has already arrived at". The default is a
     // click, which is what every other control wants.
     virtual void OnActivate() { OnClick(); }
-    // A WM_TIMER the window does not own. Return true if the id was this control's.
-    virtual bool OnTimer(UINT_PTR /*id*/) { return false; }
     // Something happened that should put away anything transient this control is
     // showing: a press somewhere else, the window being deactivated. Only a flyout has
     // anything to put away, and the reason this is a window-level broadcast rather than
@@ -502,6 +501,35 @@ struct Widget {
     bool persistent = false;
 };
 
+// One Windows timer, whose id nobody had to choose: the window hands them out from a pool of its
+// own, so a control that needs one does not have to know which numbers the library uses -- or
+// which numbers a page picked for itself.
+//
+// It is also the answer to where the timer's message goes. The window keeps the timers that are
+// running and offers every `WM_TIMER` to them by id, so a timer belongs to whatever started it.
+// The window used to walk its *widgets* instead and ask each one `OnTimer(id)`, which required
+// any owner to be in that list: a scroll bar inside a drop-down is not, so its timers arrived
+// nowhere at all -- silently -- and the drop-down carried a forwarder to work around it.
+class Timer {
+public:
+    Timer() = default;
+    Timer(const Timer &) = delete;
+    Timer &operator=(const Timer &) = delete;
+    ~Timer();
+    // Starts it, or moves it: `fn` runs `ms` from now, and again every `ms` -- a Windows timer
+    // repeats until it is stopped. Called on the window's thread, like everything else here.
+    void Start(Window *w, UINT ms, std::function<void()> fn);
+    // Ends it, and gives the id back. Safe to call from inside the callback.
+    void Stop();
+    bool Running() const { return win != nullptr; }
+    // One `WM_TIMER`: true when the id was this timer's.
+    bool Handle(UINT_PTR which);
+private:
+    Window *win = nullptr;
+    UINT_PTR id = 0;
+    std::function<void()> tick;
+};
+
 // ---------------------------------------------------------------- Window
 
 struct Window {
@@ -563,6 +591,18 @@ struct Window {
     // rather than switching, and the close button is the one people notice.
     float captionT[3] = { 0.0f, 0.0f, 0.0f };
     bool active = true;
+
+    // The timers this window is running, and the ids they took -- see Timer, which is where both
+    // the ids and the dispatch come from. Declared before `widgets` because a control's timer
+    // takes itself out of this list as it stops, which happens while the controls are being
+    // destroyed.
+    std::vector<Timer *> timers;
+    std::vector<UINT_PTR> timerIds;
+    UINT_PTR TakeTimerId();
+    void GiveTimerId(UINT_PTR id);
+    // The window's own two, from the same pool: the caret's blink, and the frame loop's stand-in
+    // while Windows is running a modal size or move loop of its own.
+    Timer caretTimer, frameTimer;
 
     std::vector<std::unique_ptr<Widget>> widgets;
     Widget *capture = nullptr;    // the widget the mouse went down on
@@ -773,19 +813,54 @@ struct Window {
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l);
 };
 
-// The one timer left. The animation clock used to be the other one; Window::Run says
-// what replaced it and why. Named so a subclass that adds one of its own does not
-// silently take it over.
-constexpr UINT_PTR kCaretTimer = 2;
+inline UINT_PTR Window::TakeTimerId() {
+    // From the bottom up, and 1 is left out: `SetTimer` refuses 0, and a program that sets a timer
+    // of its own is likelier to have picked 1 than 2. Timers are few, so a scan is a scan.
+    for (UINT_PTR id = 2;; id++) {
+        bool taken = false;
+        for (UINT_PTR used : timerIds) if (used == id) { taken = true; break; }
+        if (!taken) { timerIds.push_back(id); return id; }
+    }
+}
 
-// The stand-in for the frame loop while Windows is running a modal loop of its own: a drag
-// of the border or of the caption, which happens inside DefWindowProc and stops the
-// window's own loop from getting another turn until it is over. See WM_ENTERSIZEMOVE.
-//
-// 3, between the caret's 2 and the scroll bars' 4 to 7: a timer id has to be one the
-// controls do not claim, and one of a page's own would be offered to them first and
-// swallowed.
-constexpr UINT_PTR kFrameTimer = 3;
+inline void Window::GiveTimerId(UINT_PTR id) {
+    for (size_t i = 0; i < timerIds.size(); i++)
+        if (timerIds[i] == id) { timerIds.erase(timerIds.begin() + i); return; }
+}
+
+inline void Timer::Start(Window *w, UINT ms, std::function<void()> fn) {
+    if (!w || !w->hwnd) return;
+    if (win && win != w) Stop();   // a timer belongs to one window at a time
+    if (!win) {
+        win = w;
+        id = w->TakeTimerId();
+        w->timers.push_back(this);
+    }
+    this->tick = std::move(fn);
+    SetTimer(w->hwnd, id, ms, nullptr);   // an id that is already set is simply re-armed
+}
+
+inline void Timer::Stop() {
+    if (!win) return;
+    if (win->hwnd) KillTimer(win->hwnd, id);
+    for (size_t i = 0; i < win->timers.size(); i++)
+        if (win->timers[i] == this) { win->timers.erase(win->timers.begin() + i); break; }
+    win->GiveTimerId(id);
+    win = nullptr;
+    id = 0;
+    tick = nullptr;
+}
+
+inline Timer::~Timer() { Stop(); }
+
+inline bool Timer::Handle(UINT_PTR which) {
+    if (which != id) return false;
+    // Copied, because the callback may stop this timer -- the scroll bar's state timer does --
+    // and stopping clears `tick` out from under the call that is running it.
+    const std::function<void()> f = tick;
+    if (f) f();
+    return true;
+}
 
 inline void ApplyBackdrop(HWND hwnd, bool dark, bool *micaOut) {
     const BOOL d = dark ? TRUE : FALSE;
@@ -1508,7 +1583,16 @@ inline double MonotonicSeconds() {
 }
 
 inline int Window::Run() {
-    SetTimer(hwnd, kCaretTimer, 530, nullptr);   // GetCaretBlinkTime's own default
+    // GetCaretBlinkTime's own default period. The window owns this timer the way a control owns
+    // its own; see Timer.
+    caretTimer.Start(this, 530, [this] {
+        // Only repaint when there is a caret to blink. A window that invalidates twice a second
+        // forever is a window that keeps a laptop's GPU awake.
+        if (focused && focused->CaretPoint(nullptr)) {
+            caretOn = !caretOn;
+            Invalidate();
+        }
+    });
     QueryPerformanceFrequency(&qpcFreq);
     QueryPerformanceCounter(&qpcLast);
     const frameclock::Fn clock = frameclock::Resolve();
@@ -1580,6 +1664,10 @@ inline int Window::Run() {
     // keystroke for one. The exit code is the quit message's, so take it from the queue.
     MSG quit;
     if (PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) exitCode = (int)quit.wParam;
+    // Nothing is left to fire at, and the window is about to go: the caret's and the frame loop's
+    // timers are stopped here rather than in their destructors, which run with no hwnd left.
+    caretTimer.Stop();
+    frameTimer.Stop();
     if (pace) CloseHandle(pace);
     fonts.Release();
     ReleaseDevice();
@@ -1714,11 +1802,19 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // controls caught up with the new size only when the drag was let go, and whatever
         // was animating -- an indeterminate bar, a page's glide -- stood still until then.
         self->inSizeMove = true;
-        SetTimer(h, kFrameTimer, 16, nullptr);
+        // A frame of the loop that cannot run, in the loop's own order: tick, then paint. No
+        // Dispatch of its own -- the one at the top of Proc covers the whole message, which is
+        // what a tick needs to be able to lay the page out.
+        self->frameTimer.Start(self, 16, [self] {
+            if (!self->inSizeMove) { self->frameTimer.Stop(); return; }
+            self->Frame();
+            self->Paint();
+            ValidateRect(self->hwnd, nullptr);
+        });
         return 0;
     case WM_EXITSIZEMOVE:
         self->inSizeMove = false;
-        KillTimer(h, kFrameTimer);
+        self->frameTimer.Stop();
         // And the clock is picked up again here, or the frame loop's first frame after the
         // drag carries the whole drag's worth of `dt` -- which the loop clamps to a tenth of
         // a second, but a tenth of a second of an animation in one step is a jump.
@@ -1963,34 +2059,14 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_TIMER:
-        // Only the caret's and the modal loop's are the window's own. A control's is offered
-        // to the controls (by index: a scroll bar's repeat scrolls, and scrolling replaces
-        // the list), and anything else a page set falls through to OnAppMessage, which is
-        // where a page's messages are answered.
-        if (wp == kFrameTimer) {
-            if (!self->inSizeMove) { KillTimer(h, kFrameTimer); return 0; }
-            // A frame of the loop that cannot run, in the loop's own order: tick, then
-            // paint. No Dispatch of its own -- the one at the top of this function covers
-            // the whole message, which is what the tick needs to be able to lay the page out.
-            self->Frame();
-            self->Paint();
-            ValidateRect(h, nullptr);
-            return 0;
-        }
-        if (wp != kCaretTimer) {
-            for (size_t i = 0; i < self->widgets.size(); i++)
-                if (self->widgets[i]->OnTimer(wp)) return 0;
-            break;
-        }
-        {
-            // Only repaint when there is a caret to blink. A window that invalidates
-            // twice a second forever is a window that keeps a laptop's GPU awake.
-            if (self->focused && self->focused->CaretPoint(nullptr)) {
-                self->caretOn = !self->caretOn;
-                self->Invalidate();
-            }
-        }
-        return 0;
+        // A timer this window is running: see Timer, where the window's own and every control's
+        // come from, and which knows whose id this is. By index, with the size asked again each
+        // turn, because a callback can stop the timer it is running on.
+        for (size_t i = 0; i < self->timers.size(); i++)
+            if (self->timers[i]->Handle(wp)) return 0;
+        // Anything else is a timer a page set for itself, which falls through to OnAppMessage,
+        // which is where a page's messages are answered.
+        break;
     case WM_ERASEBKGND:
         return 1;   // every pixel comes from the composition surface
     case WM_DESTROY:

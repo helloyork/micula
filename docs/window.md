@@ -121,7 +121,7 @@ The next system theme change replaces it through `ReloadTheme()`.
 | Wheel | The control under the pointer gets `OnWheel`. If it returns false, the page gets `OnAppMessage(WM_MOUSEWHEEL, wp, lp)` with `lp` holding the pointer in client pixels. |
 | Key down | The focused control's `OnKey` first. If it returns false: Tab and Shift+Tab move focus, Space activates the focused control (`OnActivate()`), Enter activates it or calls `OnDefaultAction()`, Esc calls `OnCancel()`. |
 | Characters | `WM_CHAR` and `WM_IME_CHAR` go to the focused control's `OnChar`. Control characters are dropped. |
-| `WM_TIMER` | Timer 2 blinks the caret and 3 is the frame loop's stand-in during a size or move drag. Other ids go to each control's `OnTimer` in order, then to `OnAppMessage`. |
+| `WM_TIMER` | Offered to the timers this window is running, by id -- see `Timer` in [Widgets](widget.md#timers). An id none of them took is a page's own, and reaches `OnAppMessage`. |
 | Deactivation | Every control gets `Dismiss()`, `hover` is cleared, and a drag in progress gets its `OnRelease`. |
 | Resize, DPI change | `Layout()`. |
 | Drag of the border or the caption | `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE`. Windows runs a modal loop of its own, in which the frame loop cannot run, so the window paints from a 16 ms timer for the duration: the resize is live and animations keep running. |
@@ -231,8 +231,6 @@ repaint -- so everything a control is holding survives a scroll, and is lost onl
 | `kCaptionH` | 32. Title bar height in DIPs. |
 | `kCaptionBtnW` | 46. Width of each title bar button in DIPs. |
 | `kResizeGrip` | 6. Width of the resize border in DIPs. |
-| `kCaretTimer` | 2. The caret's timer id. |
-| `kFrameTimer` | 3. The frame loop's timer id, used only while a size or move drag has the thread. |
 
 ## Internals
 

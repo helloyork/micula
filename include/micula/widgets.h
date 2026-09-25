@@ -688,16 +688,6 @@ struct Slider : Widget {
 
 // ---------------------------------------------------------------- ScrollBar
 
-// The two timers a scroll bar sets on its window, numbered clear of the window's caret
-// (2). These are the page's bar's; a second bar in the same window -- an open
-// drop-down's list -- takes two ids of its own (see DropDown), because a timer is
-// offered to the controls in order and the first bar to recognise the id takes it.
-//
-// So Micula uses timer ids 2 to 7. A page's own timers should be numbered
-// outside that range; they reach the page through Window::OnAppMessage.
-constexpr UINT_PTR kScrollBarStateTimer  = 4;
-constexpr UINT_PTR kScrollBarRepeatTimer = 5;
-
 // A vertical scroll bar, and it is WinUI's rather than an impression of one: every number
 // below is out of WinUI 2's ScrollBar template (ScrollBar_themeresources.xaml) or the
 // ScrollViewer and RepeatButton code that drives it.
@@ -748,8 +738,9 @@ struct ScrollBar : Widget {
     std::function<void(float to, bool glide)> onScroll;
     // Read once, when the bar is made.
     bool autoHide = SystemAutoHidesScrollBars();
-    // Which timer ids are this bar's. See kScrollBarStateTimer.
-    UINT_PTR stateTimer = kScrollBarStateTimer, repeatTimer = kScrollBarRepeatTimer;
+    // The bar's own two timers, out of the window's pool: the moment one of the three states is
+    // next due to change, and the repeat of an arrow button that is held. See Timer.
+    Timer stateTimer, repeatTimer;
 
     Part  grab = Part::None;             // what the button went down on
     float px = -1.0f, py = -1.0f;        // the pointer, from the last message that had it
@@ -814,8 +805,8 @@ struct ScrollBar : Widget {
         } else {
             repeating = false;
             Step(false);
-            // RepeatButton.Delay's default. The template's Interval takes over in OnTimer.
-            if (owner && owner->hwnd) SetTimer(owner->hwnd, repeatTimer, 250, nullptr);
+            // RepeatButton.Delay's default; RepeatTick takes over from here at its Interval.
+            repeatTimer.Start(owner, 250, [this] { RepeatTick(); });
         }
         Poll();
     }
@@ -827,32 +818,27 @@ struct ScrollBar : Widget {
                  false);
     }
     void OnRelease() override {
-        if (owner && owner->hwnd) KillTimer(owner->hwnd, repeatTimer);
+        repeatTimer.Stop();
         grab = Part::None;
         Poll();
     }
-    bool OnTimer(UINT_PTR id) override {
-        if (!owner || !owner->hwnd) return false;
-        if (id == repeatTimer) {
-            if (grab == Part::None || grab == Part::Thumb) {
-                KillTimer(owner->hwnd, id);
-                return true;
-            }
-            if (!repeating) {
-                repeating = true;
-                SetTimer(owner->hwnd, id, 50, nullptr);   // the template's Interval
-            }
-            Step(true);
-            return true;
+    // The held arrow button repeating: an arrow that did nothing would be an arrow that is
+    // broken, so the first tick also steps. The template's Interval is 50 ms.
+    void RepeatTick() {
+        if (grab == Part::None || grab == Part::Thumb) { repeatTimer.Stop(); return; }
+        if (!repeating) {
+            repeating = true;
+            repeatTimer.Start(owner, 50, [this] { RepeatTick(); });
         }
-        if (id == stateTimer) {
-            KillTimer(owner->hwnd, id);
-            armedFor = 0;
-            Poll();
-            owner->Invalidate();
-            return true;
-        }
-        return false;
+        Step(true);
+    }
+    // The moment one of the three states was due to change, which is what the bar arms itself
+    // a timer for rather than running frames for two seconds.
+    void StateTick() {
+        stateTimer.Stop();
+        armedFor = 0;
+        Poll();
+        if (owner) owner->Invalidate();
     }
 
     // One click of whatever was pressed. `repeat` is the timer's, and RepeatButton only
@@ -927,8 +913,8 @@ struct ScrollBar : Widget {
         }
         if (next != armedFor && owner && owner->hwnd) {
             armedFor = next;
-            if (next == 0) KillTimer(owner->hwnd, stateTimer);
-            else SetTimer(owner->hwnd, stateTimer, (UINT)(next - now), nullptr);
+            if (next == 0) stateTimer.Stop();
+            else stateTimer.Start(owner, (UINT)(next - now), [this] { StateTick(); });
         }
     }
 
@@ -995,11 +981,6 @@ struct ScrollBar : Widget {
 
 // ---------------------------------------------------------------- DropDown
 
-// The timers of an open list's scroll bar, clear of the page's (kScrollBarStateTimer).
-// Only one list is ever open, so every drop-down can share the pair.
-constexpr UINT_PTR kDropDownBarStateTimer  = 6;
-constexpr UINT_PTR kDropDownBarRepeatTimer = 7;
-
 struct DropDown : Widget {
     std::vector<std::wstring> options;
     int selected = 0;
@@ -1027,10 +1008,7 @@ struct DropDown : Widget {
     // A list thrown away while open -- the page laid out again under it -- must not leave
     // its bar's timers firing at the window with nobody to answer them.
     ~DropDown() override {
-        if (bar && owner && owner->hwnd) {
-            if (bar->armedFor) KillTimer(owner->hwnd, bar->stateTimer);
-            if (bar->grab != ScrollBar::Part::None) KillTimer(owner->hwnd, bar->repeatTimer);
-        }
+        // The list's own scroll bar goes with it, and its timers go with the bar: see Timer.
     }
 
     // The control's own row. While the list is open `rect` grows to cover the popup, so
@@ -1328,8 +1306,6 @@ struct DropDown : Widget {
                 if (!bar) {
                     bar = std::make_unique<ScrollBar>(
                         [this](float to, bool glide) { ScrollTo(to, glide); });
-                    bar->stateTimer = kDropDownBarStateTimer;
-                    bar->repeatTimer = kDropDownBarRepeatTimer;
                 }
                 bar->owner = owner;
                 bar->visible = true;
@@ -1351,7 +1327,7 @@ struct DropDown : Widget {
             // drawn.
             z = 1;
             if (head.right > head.left) rect = head;
-            // Its timers go with it; see kDropDownBarStateTimer.
+            // Its timers go with it: the bar's own, which stop with the bar. See Timer.
             if (bar) {
                 bar->OnRelease();
                 bar->hover = false;
@@ -1532,7 +1508,6 @@ struct DropDown : Widget {
         if (!barGrab) bar->hover = hover && Inside(bar->rect, x, y);
         bar->OnPointerMove(x, y);
     }
-    bool OnTimer(UINT_PTR id) override { return BarShown() && bar->OnTimer(id); }
     bool OnWheel(float x, float y, float notches) override {
         if (!open || !Inside(Shown(), x, y)) return false;
         // One row a notch, and the row that arrives at the control's own row is the choice.

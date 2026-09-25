@@ -204,8 +204,7 @@ neither the title bar nor the space beside the control is part of the list. Its 
 appears when the list is taller than that room, which is `ClipRect()` or, on a page that
 does not scroll, the client area below the title bar.
 
-`rect` must be 32 DIPs tall: while the list is open, `rect` grows to cover it. An open
-list's scroll bar uses timers 6 and 7.
+`rect` must be 32 DIPs tall: while the list is open, `rect` grows to cover it.
 
 ## SideNav
 
@@ -370,7 +369,6 @@ scrolls -- which is the only two of them that move on their own:
 | `onScroll(float to, bool glide)` | The bar asks the page to scroll to `to`. `glide` is false while the thumb is dragged, when the content must follow the pointer exactly. |
 | `void Wake()` | Shows the indicator and restarts its 2-second timeout. Call it when the page scrolls. |
 | `void Poll()` | Updates the bar's state and timers. Call it after `Wake()`. |
-| `UINT_PTR stateTimer`, `repeatTimer` | Timer ids, 4 and 5 by default. A second bar in the same window needs two other ids. |
 
 Make the bar once, set `persistent` on it, and reposition it in each `Layout()`; a scroll
 touches only `value` and `drawn`. See [Scrolling](window.md#scrolling).
