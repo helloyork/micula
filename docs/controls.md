@@ -250,6 +250,33 @@ page beside it belongs to the window: `onSelect` is where another page happens -
 field the page is built from and call `Layout()`, the way a `Segmented` control's callback
 does.
 
+A pane with more in it than the window is tall scrolls, and a `footer` row is not one of the
+rows that does. `Settings` pinned at the bottom has to be reachable from anywhere in a list
+that runs off the pane, so the footer is drawn in a strip of its own under the band the rows
+scroll in -- two clips and one loop, which is also why a row the scroll is carrying past it is
+not painted over it -- and the row that is chosen is brought into view in the same frame,
+without a glide: a choice that has been made and cannot be seen has not been made. The wheel
+over the pane is the pane's wherever in it the pointer is, and a wheel that reaches the end of
+the list is the end of the list: a pane is its own region, and the page behind it is not what
+is under the pointer.
+
+Two things mark where the list is cut, because a list that has been cut looks exactly like a
+list that has ended. A one DIP line is drawn across the pane at each edge of the band, fading
+in with how much of the list is hidden past it; and while the pane is a rail, an arrow sits in
+each of its two end strips. Pressing an arrow scrolls a row and then repeats, 250 ms and then
+every 50 -- a `ScrollBar`'s own two numbers, because it is the same gesture.
+
+The accent bar rides its row instead of holding a place of its own: however the row it is on
+moves -- a scroll, a window resized, the headings going away when the pane narrows, which takes
+the height of every row below them with it -- the bar moves with it, and before rather than
+after, because a bar left standing where its row used to be is a bar that is seen to catch up.
+It travels between the rows as they are drawn rather than between their places in the list, so
+that the way down to the pinned footer is walked at the pace of a row's step, and no move is
+given longer than a fixed time however far it has to go. A bar whose row is off the pane is not
+drawn at all, being clipped to the list it belongs to, and a move that would begin off the pane
+is not travelled: the bar is put where it is going and grows from half its height, which is the
+half of that move somebody would have been able to see.
+
 **Make it `persistent`.** A pane is the one control a page really is laid out while it is
 being operated: choosing a page rebuilds the page, and the rebuild would take the open state,
 a width half way through its animation, the hover and the accent bar's travel with it. Make

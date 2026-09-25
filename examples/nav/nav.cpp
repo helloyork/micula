@@ -40,6 +40,7 @@ int   page   = 0;
 float scroll = 0.0f, drawn = 0.0f, maxScroll = 0.0f;
 
 int   paneStyle  = 1;              // PaneStyle: Fixed, Toggle, Peek, Minimal
+int   navRows    = 0;              // extra pane rows: `nav=24` for a pane taller than the window
 bool  paneSlides = true;           // whether the width animates
 bool  paneScrim  = false;          // whether an overlay pane dims the page
 bool  paneFollow = true;           // whether the arrow keys carry the choice
@@ -96,6 +97,9 @@ void ReadState(const wchar_t *cmd) {
         return at ? (int)wcstol(at + wcslen(key), nullptr, 10) : fallback;
     };
     paneStyle  = (std::min)((std::max)(number(L"style=", paneStyle), 0), 3);
+    // More rows in the pane than the window can show, which is what the pane's own scrolling is
+    // for: `nav=24` puts twenty-four of them above the footer.
+    navRows = (std::min)((std::max)(number(L"nav=", navRows), 0), 40);
     page       = (std::min)((std::max)(number(L"page=", page), 0), 4);
     paneOpen   = number(L"open=", paneOpen ? 1 : 0) != 0;
     paneSlides = number(L"animate=", paneSlides ? 1 : 0) != 0;
@@ -267,6 +271,11 @@ void NavDemo::Layout() {
             { glyph::kFolder, L"Folders" },
         };
         pane->footer = { { glyph::kSettings, L"Settings" } };
+        for (int i = 0; i < navRows; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"Row %d", i + 1);
+            pane->items.push_back({ kIconRecent, name });
+        }
         pane->onSelect = [this](int i) {
             page = i;
             // A page starts at the top: this is the one thing here that does reset the scroll,
