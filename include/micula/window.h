@@ -1169,11 +1169,21 @@ inline void Window::Paint() {
         // Clip first, transform second. The clip is a fixed window onto the page and
         // must not move with what is being drawn inside it -- pushed the other way round
         // it slides too, and the cards then run off under the header.
-        if (clipping) dc->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+        //
+        // The clip is the *page's*, so it is the page's contents that take it. Anything
+        // with a z is over the page rather than in it -- a lid, a flyout, a pane that
+        // covers the content -- and is drawn whole: its shadow reaches outside its own
+        // rectangle by design, and a panel whose shadow is sliced off at the header stops
+        // reading as something floating above the page at all. What such a control still
+        // does is keep *itself* inside the room it has, which is `Bounds()` in the
+        // drop-down and the window's own edges in a pane.
+        const bool pageArea = z == 0;
+        const bool clipped = clipping && pageArea;
+        if (clipped) dc->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
         if (dy != 0.0f) dc->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, dy));
         const bool layered = op < 1.0f;
         if (layered) {
-            const D2D1_RECT_F b = clipping
+            const D2D1_RECT_F b = clipped
                 ? D2D1_RECT_F{ clip.left, clip.top - 32, clip.right, clip.bottom + 32 }
                 : D2D1::InfiniteRect();
             dc->PushLayer(D2D1::LayerParameters(b, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
@@ -1183,7 +1193,7 @@ inline void Window::Paint() {
             if (w->z == z && w->scrolls && shown(w.get())) w->Paint(p);
         if (layered) dc->PopLayer();
         if (dy != 0.0f) dc->SetTransform(D2D1::Matrix3x2F::Identity());
-        if (clipping) dc->PopAxisAlignedClip();
+        if (clipped) dc->PopAxisAlignedClip();
     };
     pass(0);
     pass(1);

@@ -54,7 +54,7 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `void OnTick(float dt)` | nothing | Every animation frame. `dt` is seconds since the last frame, at most 0.1. |
 | `bool AnimationWanted() const` | `false` | Before every frame. Return true to keep frames coming for an animation of the page's own. |
 | `bool OnAppMessage(UINT m, WPARAM wp, LPARAM lp)` | `false` | Messages the window does not consume. Return true if handled. See [Messages](#messages). |
-| `D2D1_RECT_F ClipRect() const` | empty | The scrolling part of the page. Controls with `scrolls` set are clipped to it and take input only inside it. Empty means the page does not scroll. |
+| `D2D1_RECT_F ClipRect() const` | empty | The scrolling part of the page. Controls with `scrolls` set are clipped to it and take input only inside it. A control that floats over the page -- one with a `z` -- is not: it is drawn whole, because its shadow is meant to reach outside its own rectangle, and it keeps itself inside whatever room it has. Empty means the page does not scroll. |
 | `void ContentTransform(float *dy, float *opacity) const` | `0`, `1` | Vertical offset and opacity for the scrolling controls while painting. **A page's scroll lives here** (`dy = -drawn`); hit testing subtracts the same offset, and the points a control is given in its callbacks have had it taken off already. The opacity is for a page arriving or fading in. `PaintPage` is not transformed. |
 | `void MinSize(int *w, int *h) const` | `0`, `0` | Smallest client size in DIPs the window can be resized to. 0 means no limit. |
 
