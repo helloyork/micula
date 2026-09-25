@@ -133,6 +133,15 @@ struct SideNav : Widget {
     // Peek, and the pane was closed by a click: the pointer is still on the rail, and opening
     // again at once is what makes the button look broken. It has to leave first.
     bool peekHeld = false;
+    // Peek, and the page is still making room for the pane: it was pinned a moment ago and is on
+    // its way back to the rail. Without it `Pushes()` follows `open`, which the click has already
+    // cleared -- and the retraction then happens over a page that has closed up behind it, with a
+    // flyout's fill and its shadow and a raised z, like a pane arriving rather than one leaving.
+    // Set by the toggle and cleared in the frame the width reaches the rail, so the next hover is
+    // a peek again: the pointer covers the page, the button does not. A style switched to Peek
+    // while the pane is already open is the case that wants this to be written where the pane is
+    // *closed* rather than where it is opened.
+    bool peekPushes = false;
     // 0 is the rail, 1 is the pane at its full width, and what is between them is a pane
     // still arriving. A track rather than a follower: this is one move per decision, and the
     // two directions are different shapes -- a pane arriving settles, a pane leaving gets out
@@ -215,7 +224,10 @@ struct SideNav : Widget {
     // asked to show.
     bool Pushes() const {
         if (style == PaneStyle::Fixed || style == PaneStyle::Toggle) return true;
-        return style == PaneStyle::Peek && open;
+        // Pinned, or on its way back from having been pinned: a peek the pointer asked for goes
+        // over the page, and one a person asked for is a pane the page is laid out around -- for
+        // as long as it is wider than the rail, and not only while `open` says so.
+        return style == PaneStyle::Peek && (open || peekPushes);
     }
     // The width the pane is drawn at right now.
     float Width() const { return RailW() + (openW - RailW()) * wide.value; }
@@ -326,6 +338,9 @@ struct SideNav : Widget {
     // `Toggle`, whatever style the pane is in without asking which one that is.
     void SetOpen(bool o) {
         if (style == PaneStyle::Minimal || open == o) return;
+        // A peek a person touched is a pane the page makes room for, in both directions and from
+        // here: opening is the state, and closing is the retraction that has to be pushed too.
+        if (style == PaneStyle::Peek) peekPushes = true;
         open = o;
         // Closed while the pointer is still resting on the rail: the peek is held back until it
         // leaves and comes back, or the pane opens again from under the button that closed it and
@@ -412,7 +427,14 @@ struct SideNav : Widget {
                 if (!hover) { peekHeld = false; wasHover = false; }
             } else {
                 if (!wasHover) { wasHover = true; arrivedAt = now; }
-                if (!open && now - arrivedAt >= (ULONGLONG)(peekIn * 1000.0f)) peeking = true;
+                if (!open && now - arrivedAt >= (ULONGLONG)(peekIn * 1000.0f)) {
+                    // The pointer has taken the pane over from whatever a person asked for -- a
+                    // close from a page's own button leaves the pointer free to rest on the rail
+                    // while the pane is still on its way out. From here it is a peek, and a peek
+                    // covers the page, retraction or not.
+                    peekPushes = false;
+                    peeking = true;
+                }
             }
         }
 
@@ -422,6 +444,11 @@ struct SideNav : Widget {
         else if (!animate || style == PaneStyle::Fixed) wide.Set(target);
         else if (target > 0.0f) wide.Step(dt, motion::kFast, motion::Decel);
         else                    wide.Step(dt, motion::kFast, motion::Accel);
+        // The retraction is over when the width reaches the rail, and the page stops making room
+        // in the same frame -- this runs while the width is still moving, so the frame that
+        // settles is also the frame that clears it, and nothing is left behind for the next
+        // hover to be mistaken for.
+        if (peekPushes && !open && style == PaneStyle::Peek && wide.value <= 0.0f) peekPushes = false;
 
         bar.To((float)selected);
         bar.Step(dt);
@@ -441,8 +468,11 @@ struct SideNav : Widget {
         rect.right = rect.left + (std::max)(Width(), ButtonRoom());
         if (owner) rect.right = (std::min)(rect.right, owner->ClientW());
         // And it is raised over the page exactly while it is wider than the room the page left
-        // for it, which is the part of the animation where it is over the page at all.
-        z = Width() > (std::max)(RailW(), Reserved()) + 0.5f ? 2 : 0;
+        // for it, which is the part of the animation where it is over the page at all -- and a
+        // pane that pushes is never over the page, however wide it is on the way past. A peek
+        // retracting to the rail is what makes that worth saying: for the whole animation it is
+        // wider than the room the page was given, and it is still the page's neighbour.
+        z = !Pushes() && Width() > (std::max)(RailW(), Reserved()) + 0.5f ? 2 : 0;
     }
 
     void Paint(const Painter &p) override {
