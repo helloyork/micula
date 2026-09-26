@@ -129,12 +129,12 @@ struct DropDown : Widget {
     // that often would stutter between the notches.
     static constexpr float kSlideLag = 0.05f;
     // How far the mark is drawn off the control's own row, in DIPs: the chosen row's own place,
-    // followed rather than stepped. This is the mark's one motion -- the list under it may be
-    // scrolled and the panel it is in may be slid, and neither of those is the mark's business --
-    // and it is a follower because a choice that changes has to be *seen* to change: the row does
-    // not move, so the mark is the only thing on screen that can show it. Where the row itself is
-    // what is moving -- a bar being dragged, a wheel with Shift -- the mark is put on the row
-    // outright instead; see scrolledByHand.
+    // followed rather than stepped. The list under it may be scrolled, the panel it is in may be
+    // slid, and the room may have pinned that panel where it stands: none of those is the mark's
+    // business, and where they leave the chosen row is. It is a follower because a choice that
+    // changes has to be *seen* to change -- the row does not move, so the mark is the only thing
+    // on screen that can show it. Where the row itself is what is moving -- a bar being dragged,
+    // a wheel with Shift -- the mark is put on the row outright instead; see scrolledByHand.
     float drift = 0.0f;
     // The room's own top edge as it stood when the list opened. A page scrolled under an open list
     // takes the list's place in that page with it -- what the list hangs off has moved -- so the
@@ -258,6 +258,25 @@ struct DropDown : Widget {
     // because its offset is nothing and the panel is what travels; a longer one scrolls under a
     // panel that stays where the room put it. Both come out of the same two quantities.
     float RowTop(int i) const { return LidTop() + kPad + rowH * ((float)i - slid); }
+
+    // Where the mark is to be drawn, in DIPs off the control's own row: the chosen row's own
+    // place as the control has settled it, which is the panel where the room let it stand and the
+    // list at the offset the choice asked for. Followed by `drift` rather than stepped, because a
+    // choice that changes has to be *seen* to change: the row does not move, so the mark is the
+    // only thing on screen that can show it.
+    //
+    // The room's clamp is inside this rather than added on where the mark is painted, and that is
+    // the whole of it. Where the room has pinned the panel -- the chosen row cannot be brought down
+    // to the control's own row, which a list near an edge of the room cannot manage and one as tall
+    // as the room never can -- the rows cannot move at all, and then the mark is the only thing
+    // left that can carry the change; carried means travelled. Added on at paint time the clamp
+    // read as a settled offset instead, so a step moved the mark a whole row with nothing in
+    // between: a change that is not seen at all. The rows are drawn from the same clamp, so the
+    // two still agree -- the mark comes to rest exactly on its row.
+    float MarkWant() const {
+        return PanelTop() + kPad +
+               rowH * ((float)selected - (scrolledByHand ? slid : viewTo)) - RowLine();
+    }
 
     // The panel: a window of PanelH() onto the list, its top edge as close to the control's
     // own row as the room allows.
@@ -422,8 +441,8 @@ struct DropDown : Widget {
             // Opening is a lid growing, not a slide: the panel is put where it is to be before
             // the first frame of it. And the mark starts on its row, wherever that turned out.
             lid = place;
-            drift = place + kPad + rowH * ((float)selected - slid) - RowLine();
             scrolledByHand = false;
+            drift = MarkWant();
             roomTop = Bounds().top;
             const bool cut = Overflows();
             if (cut) {
@@ -465,9 +484,7 @@ struct DropDown : Widget {
         return Widget::Animating() || openT.Wants(open ? 1.0f : 0.0f) ||
                (open && slid != viewTo) ||
                (open && lid != place) ||
-               (open && drift != place + kPad + rowH * ((float)selected -
-                                                        (scrolledByHand ? slid : viewTo)) -
-                                     RowLine()) ||
+               (open && drift != MarkWant()) ||
                refuse > 0.0f || knockHeld ||
                knock > 0.0f || knockLag > 0.0f ||
                (BarShown() && bar->Animating());
@@ -509,19 +526,10 @@ struct DropDown : Widget {
                 if (std::fabs(place - lid) < 0.004f) lid = place;
                 SyncBar();
             }
-            // The mark's own place, followed: where the chosen row is against the panel as the
-            // panel *asked* to be -- `place`, not where the room has put it. This is the only
-            // motion the mark has that is worth animating: a choice that changes has to be *seen*
-            // to change, and the row does not move, so the mark is the only thing that can show
-            // it. A view scrolled by hand is put on the row outright instead, because there the
-            // row *is* what is moving and a follower is the mark coming loose from the option it
-            // points at. And the room's own displacement is not in here at all: it is a move of
-            // the room rather than a motion of this control, and PaintMark adds it on at once --
-            // a mark that followed it slid with the page for a tenth of a second and then sprang
-            // back to where its row was.
-            const float driftWant = place + kPad +
-                                    rowH * ((float)selected - (scrolledByHand ? slid : viewTo)) -
-                                    RowLine();
+            // The mark's own place, followed: see MarkWant. A view scrolled by hand is put on the
+            // row outright instead, because there the row *is* what is moving and a follower is
+            // the mark coming loose from the option it points at.
+            const float driftWant = MarkWant();
             if (scrolledByHand) {
                 drift = driftWant;
             } else if (drift != driftWant) {
@@ -730,15 +738,16 @@ struct DropDown : Widget {
     // still on the control's own row while a different option comes under it, which is a dial
     // rather than a menu. A wheel through a longer list moves the *choice* down a window that
     // stays where it is, and there the mark is what travels -- by one row per notch, followed, so
-    // that the change is seen. What it never does is read an animating offset as if it were a
-    // settled one: see scrolledByHand, which is the one case where the row is the moving thing
-    // and the mark is carried along with it exactly.
+    // that the change is seen. Where the room has pinned the panel neither of those is left, and
+    // the two change places: the rows stand still and the mark travels down them, because a clamp
+    // is not something a row can slide under. What it never does is read an animating offset as
+    // if it were a settled one: see scrolledByHand, which is the one case where the row is the
+    // moving thing and the mark is carried along with it exactly.
     void PaintMark(const Painter &p, float alpha) {
         const D2D1_RECT_F h = Head();
-        // The followed half and the room's own half, added at once. The clamp is what the room
-        // did to the panel, not a motion of the control's: the rows are drawn from it too, so it
-        // has to be where they are on this frame rather than where a follower has got to.
-        const float line = RowLine() + drift + (PanelTop() - place);
+        // The chosen row's own place, followed: where it is to be is MarkWant, the room's clamp
+        // and all.
+        const float line = RowLine() + drift;
         const float inset = 8.0f + 4.8f * refuse;    // the refusal's own shrink
         // The knock, in DIPs of offset per edge. The fast edge is capped at what the edge
         // behind it has already given: the mark may be shorter than it is at rest and never

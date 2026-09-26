@@ -191,8 +191,13 @@ is open or closed -- a control whose keys and wheel disagree about its ends has 
 The list's own scroll bar is not part of it, and neither is the room the popup is shown
 through: both have two ends.
 
-The accent mark is drawn on the control's own row and stays there: the list slides past it,
-so which option is under the mark is the choice, and the mark itself never travels.
+The accent mark is drawn on the chosen row, and it is a follower rather than something put
+there: a choice that changes is a change to be *seen*, so the mark travels to its row rather
+than appearing on it. What the room leaves it to travel over is what changes. Where the panel
+can slide the mark holds still on the control's own row and the rows move past it, so which
+option stands under the mark is the choice. Where the room has pinned the panel the rows
+cannot move at all and the two change places: the mark travels down a list that stands still.
+Either way it comes to rest exactly on its row.
 
 The keyboard can search, **while the list is open**: typing letters chooses the option that
 starts with what has been typed, and the list slides to it. Only the first letter of a search
