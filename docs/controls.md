@@ -271,6 +271,14 @@ in with how much of the list is hidden past it; and while the pane is a rail, an
 each of its two end strips. Pressing an arrow scrolls a row and then repeats, 250 ms and then
 every 50 -- a `ScrollBar`'s own two numbers, because it is the same gesture.
 
+A wide pane has the bar those two stand in for: a `ScrollBar` at the pane's own right edge,
+over the rows and no taller than they are, hidden until the pointer comes over the rows or the
+pane scrolls, and expanded once the pointer rests on it. It is the same control the page uses
+and the drop-down puts in its list, it is made only for a pane that has something to scroll,
+and the rail keeps the arrows instead -- a bar over a column of icons is a bar over the icons.
+The pane's own width is the bar's name for that, so a pane collapsing to the rail takes its bar
+with it rather than leaving one standing where the pane used to be.
+
 The accent bar rides its row instead of holding a place of its own: however the row it is on
 moves -- a scroll, a window resized, the headings going away when the pane narrows, which takes
 the height of every row below them with it -- the bar moves with it, and before rather than
@@ -413,6 +421,7 @@ scrolls -- which is the only two of them that move on their own:
 | `float value` | Current scroll position, 0 to `extent - viewport`. |
 | `float drawn` | The position the content is drawn at. Equal to `value` unless the page glides. |
 | `bool visible` | Set false when there is nothing to scroll. |
+| `float alpha` | What the bar is drawn at, for a bar on a surface that fades: a navigation pane, whose bar has to go with it. 1 by default. |
 
 | Member | Description |
 |---|---|

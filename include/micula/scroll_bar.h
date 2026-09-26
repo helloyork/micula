@@ -64,6 +64,12 @@ struct ScrollBar : Widget {
     std::function<void(float to, bool glide)> onScroll;
     // Read once, when the bar is made.
     bool autoHide = SystemAutoHidesScrollBars();
+    // What the bar is drawn at, for a bar on a surface that is itself on its way somewhere: a
+    // navigation pane opens and closes, and the bar at its edge has to go with it. The bar's own
+    // two alphas are the states it goes through and say nothing about the surface under it, so this
+    // is the one thing from outside that has a say -- a control that owns a corner of a surface
+    // owns its share of the surface's fade too. See Paint.
+    float alpha = 1.0f;
     // The bar's own two timers, out of the window's pool: the moment one of the three states is
     // next due to change, and the repeat of an arrow button that is held. See Timer.
     Timer stateTimer, repeatTimer;
@@ -264,9 +270,10 @@ struct ScrollBar : Widget {
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
+        if (alpha <= 0.0f) return;      // a surface that has faded out draws nothing of it
         if (fadeT > 0.0f) {
             // ScrollBarCornerRadius, doubled by the track's converter: a pill.
-            p.FillRound(rect, 6.0f, Fade(c.acrylicInApp, fadeT));
+            p.FillRound(rect, 6.0f, Fade(c.acrylicInApp, fadeT * alpha));
             PaintArrow(p, Part::Up);
             PaintArrow(p, Part::Down);
         }
@@ -277,7 +284,7 @@ struct ScrollBar : Widget {
         const float top = ThumbTop(drawn);
         // Inside the transparent stroke.
         const D2D1_RECT_F fill = { left + 3, top + 3, left + w - 3, top + ThumbLength() - 3 };
-        p.FillRound(fill, (std::min)(3.0f, Width(fill) / 2), Fade(c.controlStrong, showT));
+        p.FillRound(fill, (std::min)(3.0f, Width(fill) / 2), Fade(c.controlStrong, showT * alpha));
     }
 
     void PaintArrow(const Painter &p, Part part) {
@@ -300,7 +307,7 @@ struct ScrollBar : Widget {
             p.rt->SetTransform(D2D1::Matrix3x2F::Scale(0.875f, 0.875f, D2D1::Point2F(cx, cy)) * was);
         }
         p.Text(g, { cx - gw / 2, box.top, cx + gw / 2 + 1, box.bottom }, p.font->iconTiny,
-               Fade(over ? c.textSecondary : c.controlStrong, fadeT));
+               Fade(over ? c.textSecondary : c.controlStrong, fadeT * alpha));
         if (down) p.rt->SetTransform(was);
     }
 };

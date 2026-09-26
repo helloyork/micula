@@ -2,12 +2,14 @@
 
 #pragma once
 
+#include "scroll_bar.h"
 #include "window.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -197,6 +199,15 @@ struct SideNav : Widget {
     float scrollTo = 0.0f;
     // How long the scroll takes to close most of its gap, in seconds.
     static constexpr float kGlide = 0.05f;
+    // The pane's own scroll bar, for the wide pane: WinUI's NavigationView keeps its rows in a
+    // ScrollViewer, and this is the bar every ScrollViewer has -- the same control the page uses
+    // and the drop-down puts in its list. Not made until there is something to scroll, because a
+    // bar for a pane that will never need one is two timers and a frame's work for nothing. The
+    // rail has the arrows instead, which is what Windows' own compact pane does.
+    std::unique_ptr<ScrollBar> scrollBar;
+    // In from the pane's own edge, about where the rows' own pills stop: the bar is over the rows,
+    // and one hanging off the edge would be over the page beside the pane.
+    static constexpr float kBarPad = 4.0f;
     // The mark's pace. A step between two rows that touch keeps `Span`'s own, `kMarkSlide` -- and
     // `kMarkClose` is `Span`'s other, kept here because Tick works the trailing edge out from the
     // leading one. A way longer than a step is walked at `kMarkSpeed` instead, and no way at all
@@ -278,6 +289,52 @@ struct SideNav : Widget {
         float bottom = rect.bottom - kBottomPad;
         if (!footer.empty()) bottom -= (float)footer.size() * (rowH + kRowGap);
         return { rect.left, top, rect.left + Width(), (std::max)(top, bottom) };
+    }
+    // The bar's place: the pane's own right edge, over the rows and no taller than they are. Worked
+    // out from the width as it is drawn, like everything else here, so that a pane on its way out
+    // takes its bar with it rather than leaving one behind at the width it used to be.
+    D2D1_RECT_F BarBox() const {
+        const D2D1_RECT_F band = Band();
+        const float right = rect.left + Width() - kBarPad;
+        return { right - ScrollBar::kSize, band.top, right, band.bottom };
+    }
+    // Whether there is a bar to draw or to click: the wide pane's, and only where the rows do not
+    // all fit. The rail's own ends are where the arrows are.
+    bool HasBar() const { return scrollBar && wide.value > 0.0f && ScrollMax() > 0.0f; }
+    // The bar itself, made on demand and shown: `Wake` is the bar's own -- see ScrollBar -- and a
+    // scroll, or a move over the rows, is what asks for it. A pane with nothing to scroll is left
+    // with no bar at all rather than one armed for a range that has gone.
+    void WakeBar() {
+        if (!scrollBar && ScrollMax() > 0.0f) {
+            scrollBar = std::make_unique<ScrollBar>(
+                [this](float to, bool glide) { BarScrolled(to, glide); });
+            scrollBar->visible = true;
+        }
+        if (!scrollBar) return;
+        scrollBar->owner = owner;
+        scrollBar->Wake();
+    }
+    // Everything the bar is told, in one place: every number it works from is the pane's own
+    // geometry, and the width, the band and the range all move under an animation.
+    void SyncScrollBar(float frac) {
+        if (!scrollBar) return;
+        Build();
+        const D2D1_RECT_F band = Band();
+        scrollBar->rect = BarBox();
+        // The rows' own strip. A move anywhere over them is a move over a scrolling area, which is
+        // what an overlay bar is shown for -- so the bar is woken by the pointer the pane hears and
+        // not only by the one on its own twelve DIPs.
+        scrollBar->area = band;
+        scrollBar->viewport = band.bottom - band.top;
+        scrollBar->extent = contentH;
+        scrollBar->value = scrollTo;
+        // The thumb goes where the rows are *drawn*, through the same glide they are: a thumb that
+        // went straight to the new place while the rows were still on their way is the one thing on
+        // a pane that is not moving with its own scroll.
+        scrollBar->drawn = scrolled;
+        // And the pane's own width is the bar's fade. A pane on its way back to the rail takes its
+        // bar with it, rather than leaving one standing over the icons it ends as.
+        scrollBar->alpha = frac;
     }
     // How much of the rows is hidden at each end of the band. Nothing to hide is zero or negative
     // -- a list shorter than the band is not cut at all -- and the two marks are drawn only when
@@ -482,6 +539,20 @@ struct SideNav : Widget {
     // The rows' hover and the bar follow the pointer *inside* this control, which is the one
     // thing the window cannot see: the same widget is hovered from the first row to the last.
     bool TracksPointer() const override { return true; }
+    void OnPointerMove(float x, float y) override {
+        // The bar is not one of the window's controls, so its own pointer arrives from here or not
+        // at all -- and a move over the rows is the one gesture an overlay bar is always out for.
+        // The rows' own strip only: the button above them and the footer below are not scrolled.
+        if (wide.value <= 0.0f || !Inside(Band(), x, y)) return;
+        WakeBar();
+        if (!HasBar()) return;
+        // And the bar's own twelve DIPs, from here rather than from a frame: a pointer going from a
+        // row onto the bar is a move that changes nothing about the rows, so nothing else will ask
+        // for the frame a bar waiting to be expanded would need. Tick keeps it right for the other
+        // direction -- see there -- because a pointer that leaves the pane is not delivered here.
+        scrollBar->hover = Inside(scrollBar->rect, x, y);
+        scrollBar->OnPointerMove(x, y);
+    }
 
     bool OnWheel(float /*x*/, float /*y*/, float notches) override {
         if (!enabled) return false;
@@ -520,16 +591,30 @@ struct SideNav : Widget {
     // The arrows are a scroll bar's arrows and are driven the way a scroll bar drives its own: the
     // first row on the press, then a repeat that starts after a pause and then runs fast, so that
     // a held arrow keeps going and a tapped one moves once. The two numbers are ScrollBar's own.
-    void OnPress(float /*x*/, float y) override {
+    void OnPress(float x, float y) override {
+        // A press on the bar is the bar's: it scrolls the rows, it does not choose one, and it does
+        // not close the pane -- the same rule the drop-down's list follows for its own bar.
+        if (HasBar() && Inside(scrollBar->rect, x, y)) {
+            held = 0;
+            repeat.Stop();
+            scrollBar->OnPress(x, y);
+            if (owner) owner->Invalidate();
+            return;
+        }
         held = AtArrow(y, true) ? -1 : (AtArrow(y, false) ? 1 : 0);
         if (held == 0 || !owner) return;
         ScrollBy((rowH + kRowGap) * (float)held);
         repeat.Start(owner, 250, [this] { RepeatTick(); });
         owner->Invalidate();
     }
+    void OnDrag(float x, float y) override {
+        // A drag is the bar's and nothing else's: a row is chosen by a click on it.
+        if (HasBar()) scrollBar->OnDrag(x, y);
+    }
     void OnRelease() override {
         held = 0;
         repeat.Stop();
+        if (HasBar()) scrollBar->OnRelease();
     }
     void RepeatTick() {
         if (held == 0 || !enabled || !owner) { held = 0; repeat.Stop(); return; }
@@ -562,6 +647,10 @@ struct SideNav : Widget {
         if (wide.Wants(Expanded() ? 1.0f : 0.0f) || bar.Wants(MarkY())) return true;
         if (barGrow != 1.0f) return true;
         if (scrolled != scrollTo) return true;
+        // And the bar's own states are frames to keep running for -- the indicator going out at the
+        // end of its two seconds, the pointer arriving on it to expand it. Nobody else will run
+        // them: it is not one of the window's controls.
+        if (scrollBar && scrollBar->Animating()) return true;
         // The peek's delay is a wait, and a wait nobody animates is a wait that never ends:
         // the frame loop has to keep running while the pointer rests on the rail.
         if (style == PaneStyle::Peek && hover && !Expanded() && !peekHeld) return true;
@@ -637,16 +726,48 @@ struct SideNav : Widget {
             seenSelected = selected;
             // The choice is followed by the view, because a page sets `selected` as directly as
             // a person chooses, and a choice nobody can see is a choice that was not made.
+            const float was = scrollTo;
             BringIntoView(selected);
             scrollTo = (std::min)((std::max)(scrollTo, 0.0f), ScrollMax());
             // Brought there at once rather than glided to: a choice that has left the band is a
             // row that has to be visible *now*, and a follower on its way to it is a band that
             // springs the wrong way first and a choice that arrives late.
             scrolled = scrollTo;
+            // And the bar is woken only where the view actually moved: a bar that comes out for a
+            // choice that was in sight all along is a bar answering a scroll nobody made.
+            if (scrollTo != was) WakeBar();
         }
         if (scrolled != scrollTo) {
             scrolled += (scrollTo - scrolled) * (1.0f - std::exp(-dt / kGlide));
             if (std::fabs(scrollTo - scrolled) < 0.5f) scrolled = scrollTo;
+        }
+
+        // The bar, which is the wide pane's: over the rows, no taller than they are, and worked
+        // out again every frame because the width, the band and the range all move. It is not one
+        // of the window's controls -- it belongs to the pane the way the drop-down's belongs to its
+        // list -- so this is also the only place it is run.
+        if (scrollBar) {
+            if (ScrollMax() > 0.0f) {
+                scrollBar->owner = owner;
+                scrollBar->visible = true;
+                SyncScrollBar(wide.value);
+                // Its hover for the other direction, from the pane's own: a pointer that leaves the
+                // pane is not delivered to this control as a move, so the frame that runs while the
+                // rows' hover fades is what tells the bar the pointer has gone -- and the pane does
+                // run frames then, because the rows' own hovers are on their way out. Not while a
+                // drag of the bar's thumb is in flight: then the pointer is the drag's.
+                if (scrollBar->grab == ScrollBar::Part::None) {
+                    const D2D1_POINT_2F at = Cursor();
+                    scrollBar->hover = hover && Inside(scrollBar->rect, at.x, at.y);
+                }
+                scrollBar->Tick(dt);
+            } else {
+                // Nothing to scroll after all -- a window grown taller, a list cut down -- and the
+                // bar goes with it rather than being left armed for a range that has gone.
+                scrollBar->OnRelease();
+                scrollBar->visible = false;
+                scrollBar->Poll();
+            }
         }
 
         // The mark is aimed at where the row is *drawn* rather than at its place in the list. The
@@ -888,6 +1009,10 @@ struct SideNav : Widget {
                 p.Fill({ x0, band.bottom - 1.0f, x1, band.bottom },
                        Fade(c.textSecondary, fillF * (std::min)(1.0f, cutBottom / 4.0f) * 0.5f));
         }
+        // The bar last of the things that scroll and over all of them: it belongs to the rows and
+        // follows the pane's edge as it goes. Its own fade is the pane's width -- see
+        // SyncScrollBar -- so there is nothing to ask here but whether there is one at all.
+        if (HasBar()) scrollBar->Paint(p);
         p.rt->PopAxisAlignedClip();
         const float arrowF = 1.0f - (std::min)(1.0f, frac);
         if (arrowF > 0.0f) {
@@ -933,7 +1058,18 @@ private:
     }
     // One scroll, in DIPs, from wherever the wheel, an arrow or the bar asked to be. Clamped
     // here so that nothing has to remember the range.
-    void ScrollBy(float d) { scrollTo = (std::min)((std::max)(scrollTo + d, 0.0f), ScrollMax()); }
+    void ScrollBy(float d) {
+        scrollTo = (std::min)((std::max)(scrollTo + d, 0.0f), ScrollMax());
+        // A scroll is the one gesture an overlay bar is always shown for, whoever asked for it.
+        WakeBar();
+    }
+    // The bar's own request, which is the only one that can come with no glide: a thumb being
+    // dragged has to stay under the pointer, and the rows with it -- the same rule the drop-down's
+    // list follows for its own bar. Clamped here like every other scroll.
+    void BarScrolled(float to, bool glide) {
+        scrollTo = (std::min)((std::max)(to, 0.0f), ScrollMax());
+        if (!glide) scrolled = scrollTo;
+    }
     // Whether the point is over an arrow that exists. The arrows are the rail's, so a pane at
     // full width has none: there the line marks the cut and a click on it is a click on the row
     // behind it.
