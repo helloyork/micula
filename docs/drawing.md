@@ -141,26 +141,16 @@ of a lighter colour down those edges.
 
 ## Icons
 
-`namespace micula::glyph`: Segoe Fluent Icons code points as `const wchar_t *`. Draw them
-with `fonts.icon` (or another icon size), never with a text format. Each also exists in
-Segoe MDL2 Assets.
+`namespace micula::glyph`, in `micula/glyphs.h`: Segoe Fluent Icons code points as
+`const wchar_t *`, named after the icon each one is. Draw them with `fonts.icon` (or another
+icon size), never with a text format -- that is the icon font's own format, and a text format
+draws the substitution box instead. Each also exists in Segoe MDL2 Assets, which is what makes
+the font fallback safe on Windows 10.
 
-| Constant | Icon |
-|---|---|
-| `kCheck` | CheckMark |
-| `kWarning` | Warning |
-| `kError` | ErrorBadge |
-| `kInfo` | Info |
-| `kFolder` | FolderOpen |
-| `kChevron` | ChevronDown |
-| `kMenu` | GlobalNavButton, the pane toggle in a `SideNav` |
-| `kRefresh` | Refresh |
-| `kSettings` | Settings |
-| `kShield` | Shield |
-| `kBusy` | SyncStatus |
-| `kCaretUp`, `kCaretDown` | CaretUpSolid8, CaretDownSolid8 |
-
-Other icons can be written as escapes, for example `L"\uE74D"` for Delete.
+The header is the list, and it is the one header of the library a page is expected to add to:
+an icon that is not in it belongs there, beside the others, with the icon's own name in a
+trailing comment. The font has well over a thousand; the header carries the ones a desktop
+page reaches for.
 
 ## Motion
 
