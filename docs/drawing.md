@@ -156,6 +156,10 @@ page reaches for.
 
 `namespace micula::motion`, in `micula/theme.h`. Durations and curves from WinUI.
 
+Every follower here is **put on its target instead of moving towards it** when animations are
+off -- see [Animations](#animations) below. Nothing that uses one has to ask, and nothing is
+left standing half way when the switch moves.
+
 | Name | Description |
 |---|---|
 | `kFaster` | 0.083 s. Pointer states. |
@@ -165,6 +169,7 @@ page reaches for.
 | `float Accel(float u)` | Ease-in for things leaving: cubic-bezier(1, 0, 1, 1). |
 | `float InOut(float u)` | Ease in and out, for something crossing a track: cubic-bezier(0.4, 0, 0.6, 1), the curve `KeySpline="0.4, 0.0, 0.6, 1.0"` draws. Solved numerically, unlike the two above. |
 | `bool Ramp(float *now, float want, float dt, float seconds)` | Moves `*now` linearly towards `want`, covering 0 to 1 in `seconds`. Returns true while still moving. For color fades. |
+| `bool Follow(float &at, float to, float dt, float lag, float snap)` | Exponential approach to `to`, time constant `lag` seconds, arriving once within `snap`. Retargetable at any point. Returns true while still moving. For the wheel, the scroll bar, a page's glide -- anything whose target moves several times inside one frame. |
 
 `struct Track` animates one value along a curve:
 
@@ -190,6 +195,34 @@ page reaches for.
 | `bool Step(float dt)` | Advances by `dt`. Returns true while moving. |
 | `bool Wants(float at) const` | Anything left to do to reach `at`. Use this in `Animating()` and `AnimationWanted()`. |
 | `float Lo() const`, `float Hi() const` | The two edges, the lower one first: draw between them, in DIPs of one slot's pitch. |
+
+## Animations
+
+In `micula/theme.h`. Whether the library animates at all.
+
+Three states, because a program's own answer and the machine's are different things and each has
+to survive the other: `Auto` follows the machine, `On` and `Off` override it. `Auto` is the
+default.
+
+| Function | Description |
+|---|---|
+| `bool Animations()` | True while the library animates. What every follower in `motion` asks, and what a page with an animation of its own should ask. |
+| `void Animations(bool on)` | This program's answer, which the system setting does not override. |
+| `void Animations(AnimationMode mode)` | The same, as one of the three states. |
+| `void AnimationsAuto()` | Follow the machine again. |
+| `AnimationMode AnimationsSetting()` | Which of the three it is in. |
+| `void RefreshAnimations()` | Re-read the machine. The window calls it on `WM_SETTINGCHANGE`, so a setting that moves while the window is open is picked up. |
+
+The machine's answer is `SPI_GETCLIENTAREAANIMATION`: Settings > Accessibility > Visual effects >
+Animation effects, which is the switch `UISettings.AnimationsEnabled` reports. There is no second
+setting for smooth scrolling -- scrolling that is smooth *is* scrolling that is animated, and this
+is what it answers to, which is also how WinUI treats it. (The "smooth-scroll list boxes"
+checkbox in the same dialog belongs to the Win32 list box and is not asked here.)
+
+Turning animations off does not freeze what is in flight: the next frame puts every follower on
+its target. What is not an animation keeps running -- the caret blinks, a scroll bar's auto-hide
+comes out and goes away at once instead of fading, and a progress bar's phase is still read from
+the clock.
 
 ## System
 

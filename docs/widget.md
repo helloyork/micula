@@ -117,6 +117,11 @@ Use `Wants()` rather than `Moving()` in `Animating()`: between a click and the n
 the new target has not been set with `To()` yet, and `Moving()` would let the window stop
 drawing frames.
 
+Nothing here has to ask whether animations are on: `Track`, `Span`, `Ramp` and `Follow` put
+their value on its target instead of moving towards it, so the expander above is drawn open in
+the frame after the click rather than over the next 250 ms. See
+[Animations](drawing.md#animations).
+
 ## Timers
 
 A control that needs a timer holds a `Timer` and starts it. The window hands the ids out from a

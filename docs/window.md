@@ -142,7 +142,7 @@ The next system theme change replaces it through `ReloadTheme()`.
 | Resize, DPI change | `Layout()`. |
 | Drag of the border or the caption | `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE`. Windows runs a modal loop of its own, in which the frame loop cannot run, so the window paints from a 16 ms timer for the duration: the resize is live and animations keep running. |
 | Scroll | Nothing is laid out: the controls move through `ContentTransform()` and the frame loop repaints them. |
-| Light/dark change | `ReloadTheme()`. |
+| Settings change | `ReloadTheme()` when the machine switched between light and dark, and the animation switch is re-read -- see [Animations](drawing.md#animations). |
 
 Messages not consumed reach `OnAppMessage` and then `DefWindowProc`: `WM_CLOSE`,
 `WM_COMMAND`, `WM_APP` messages, `WM_ACTIVATE`, right and middle mouse buttons, timers

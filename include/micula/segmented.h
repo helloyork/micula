@@ -114,10 +114,9 @@ struct Segmented : Widget {
         // curve: a drag retargets this several times a frame, and a curve restarted each time
         // would jump to whichever cell it was last pointed at -- the block teleporting from
         // cell to cell while the pointer was dragged across them.
-        pillLag += (pillPos.value - pillLag) * (1.0f - std::exp(-dt / kPillLag));
         // Snapped when it is close, or the two are never quite equal and the window animates
         // for the rest of its life, a thousandth of a cell out.
-        if (std::fabs(pillPos.value - pillLag) < 0.002f) pillLag = pillPos.value;
+        motion::Follow(pillLag, pillPos.value, dt, kPillLag, 0.002f);
     }
 
     void Paint(const Painter &p) override {

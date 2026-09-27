@@ -87,13 +87,10 @@ struct Gallery : Window {
     bool AnimationWanted() const override { return drawn != scroll; }
     void OnTick(float dt) override {
         if (drawn == scroll) return;
-        // A follower rather than a curve with a duration, for the reason the segmented
-        // control's block trails with one too: a wheel spun through six notches retargets
-        // this six times inside a single frame, and a storyboard restarted each time would
-        // stutter between them. Exponential, so the page sets off at a speed that depends
-        // on how far it has to go and eases into place, which is what a glide is.
-        drawn += (scroll - drawn) * (1.0f - std::exp(-dt / kGlide));
-        if (std::fabs(scroll - drawn) < 0.5f) drawn = scroll;
+        // A follower rather than a curve with a duration, so that a wheel spun through six
+        // notches -- which retargets this six times inside a single frame -- sets off at a
+        // speed that depends on how far it has to go and eases into place.
+        motion::Follow(drawn, scroll, dt, kGlide, 0.5f);
         SyncBar();
     }
 

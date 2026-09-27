@@ -75,6 +75,11 @@ A drag of the window's border or its caption runs in a modal loop of Windows' ow
 which that frame loop gets no turn. The window stands in for it with a 16 ms timer until
 the drag is over, so a resize is live and whatever was animating keeps running.
 
+Whether anything animates at all is one switch, `micula::Animations()`, which follows
+Windows unless the program says otherwise -- see [Animations](drawing.md#animations). A
+window nobody can see runs no frames, and neither does a control the page has scrolled out
+of `ClipRect()`, whatever is animating in it.
+
 ### Requirements
 
 - COM initialized on the UI thread, apartment-threaded, before `Window::Create`.

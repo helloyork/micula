@@ -514,16 +514,14 @@ struct DropDown : Widget {
             // SetOpen puts it on the chosen row before it is seen again.
             const float want = viewTo;
             if (slid != want) {
-                slid += (want - slid) * (1.0f - std::exp(-dt / kSlideLag));
-                if (std::fabs(want - slid) < 0.004f) slid = want;
+                motion::Follow(slid, want, dt, kSlideLag, 0.004f);
                 SyncBar();
             }
             // The panel's own place, followed. This is the whole of the motion a wheel through a
             // list that fits makes: the popup slides a row, the rows go with it, and the mark
             // stays where it was -- options travelling under it rather than it down them.
             if (lid != place) {
-                lid += (place - lid) * (1.0f - std::exp(-dt / kSlideLag));
-                if (std::fabs(place - lid) < 0.004f) lid = place;
+                motion::Follow(lid, place, dt, kSlideLag, 0.004f);
                 SyncBar();
             }
             // The mark's own place, followed: see MarkWant. A view scrolled by hand is put on the
@@ -533,22 +531,28 @@ struct DropDown : Widget {
             if (scrolledByHand) {
                 drift = driftWant;
             } else if (drift != driftWant) {
-                drift += (driftWant - drift) * (1.0f - std::exp(-dt / kSlideLag));
-                if (std::fabs(driftWant - drift) < 0.004f) drift = driftWant;
+                motion::Follow(drift, driftWant, dt, kSlideLag, 0.004f);
             }
         } else if (!openT.Step(dt, motion::kFast, motion::Accel)) {
             z = 0;          // the lid has finished closing; stop keeping it raised
         }
         // The refusal, if there is one: an impulse that fades, so a letter with nowhere to go
-        // is answered for about a fifth of a second and then is not.
-        if (refuse > 0.0f) {
+        // is answered for about a fifth of a second and then is not. Nothing answers it with
+        // animations off: a refusal nobody sees move is not worth showing.
+        if (!Animations()) {
+            refuse = 0.0f;
+        } else if (refuse > 0.0f) {
             refuse *= std::exp(-dt / kRefuseLag);
             if (refuse < 0.002f) refuse = 0.0f;
         }
         // And the knock at the end of the list: the fast edge out in a thirtieth of a second
         // and held, the one behind it following in three times that, and both springing back
         // in about a fifth. A lean and a spring rather than a move.
-        if (knockHeld) {
+        if (!Animations()) {
+            knock = knockLag = 0.0f;
+            knockHeld = false;
+            knockDir = 0;
+        } else if (knockHeld) {
             // Both edges set off on this frame, and everything the gesture shows comes of
             // that. The edge behind goes three times as far, so a ramp for it -- three times
             // the distance in three times the time -- would run at exactly the fast edge's

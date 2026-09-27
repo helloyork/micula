@@ -737,10 +737,7 @@ struct SideNav : Widget {
             // choice that was in sight all along is a bar answering a scroll nobody made.
             if (scrollTo != was) WakeBar();
         }
-        if (scrolled != scrollTo) {
-            scrolled += (scrollTo - scrolled) * (1.0f - std::exp(-dt / kGlide));
-            if (std::fabs(scrollTo - scrolled) < 0.5f) scrolled = scrollTo;
-        }
+        if (scrolled != scrollTo) motion::Follow(scrolled, scrollTo, dt, kGlide, 0.5f);
 
         // The bar, which is the wide pane's: over the rows, no taller than they are, and worked
         // out again every frame because the width, the band and the range all move. It is not one

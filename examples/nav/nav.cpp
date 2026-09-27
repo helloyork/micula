@@ -127,6 +127,29 @@ void ReadState(const wchar_t *cmd) {
     paneOwn    = number(L"own=", paneOwn ? 1 : 0) != 0;
     paneOpenW  = (float)number(L"width=", (int)paneOpenW);
     windowBackdrop = (std::min)((std::max)(number(L"backdrop=", windowBackdrop), 0), 4);
+    // The library's animation switch, which is not the pane's: `animate=` above is the pane's
+    // own. -1, or absent, follows Windows; 0 is off; 1 is on.
+    switch ((std::min)((std::max)(number(L"anim=", -1), -1), 1)) {
+    case 0: Animations(false); break;
+    case 1: Animations(true); break;
+    default: AnimationsAuto(); break;
+    }
+}
+
+// The same switch as an argument: -1 follows Windows, 0 off, 1 on. The debug page's list is
+// the argument plus one, so its three entries read in the order the numbers run.
+int AnimArg() {
+    switch (AnimationsSetting()) {
+    case AnimationMode::On:  return 1;
+    case AnimationMode::Off: return 0;
+    default:                 return -1;
+    }
+}
+
+void SetAnim(int choice) {
+    if (choice == 1) Animations(false);
+    else if (choice == 2) Animations(true);
+    else AnimationsAuto();
 }
 
 }  // namespace
@@ -201,8 +224,7 @@ struct NavDemo : Window {
         // it is moved rather than laid out again. See FollowPane.
         if (pane && pane->Pushes()) FollowPane();
         if (drawn == scroll) return;
-        drawn += (scroll - drawn) * (1.0f - std::exp(-dt / kGlide));
-        if (std::fabs(scroll - drawn) < 0.5f) drawn = scroll;
+        motion::Follow(drawn, scroll, dt, kGlide, 0.5f);
         SyncBar();
     }
     void SyncBar() {
@@ -270,10 +292,10 @@ struct NavDemo : Window {
         wchar_t b[256];
         swprintf(b, 256,
                  L"style=%d nav=%d page=%d open=%d animate=%d scrim=%d follow=%d own=%d "
-                 L"width=%d backdrop=%d",
+                 L"width=%d backdrop=%d anim=%d",
                  paneStyle, navRows, page, paneOpen ? 1 : 0, paneSlides ? 1 : 0,
                  paneScrim ? 1 : 0, paneFollow ? 1 : 0, paneOwn ? 1 : 0, (int)paneOpenW,
-                 windowBackdrop);
+                 windowBackdrop, AnimArg());
         return b;
     }
     // Starts this window again with the state it is showing. A restart rather than a rebuild,
@@ -425,6 +447,11 @@ void NavDemo::Layout() {
                   })),
               card(kIconLight, L"backdrop=",
                    L"The DWM backdrop, which a window is given as it is made", 180));
+        // Live, unlike the two above: what it changes is not settled before a page exists.
+        place(Add(new DropDown({ L"Follow Windows", L"Off", L"On" }, AnimArg() + 1,
+                               [this](int i) { SetAnim(i); Invalidate(); })),
+              card(kIconMotion, L"anim=",
+                   L"The library's animation switch, which scrolling follows too", 180));
         card(L"", L"Started with", CommandLine(), 0);
         {
             Button *again =

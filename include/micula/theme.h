@@ -199,6 +199,72 @@ inline D2D1_COLOR_F Shade(const D2D1_COLOR_F &c, float towardsWhite) {
     return D2D1::ColorF(c.r * (1.0f + t), c.g * (1.0f + t), c.b * (1.0f + t), c.a);
 }
 
+// ---------------------------------------------------------------- animation
+
+// Whether the library animates at all.
+//
+// Three states rather than a flag, because "the program decided" and "nobody decided" are
+// different things and each has to survive the other: a command line that turns animations
+// off must not be undone by Windows announcing a settings change, and the default has to be
+// Windows' own answer rather than a constant.
+//
+// The system's answer is the one switch Windows has for this -- Settings > Accessibility >
+// Visual effects > Animation effects, which is what WinRT reports as
+// UISettings.AnimationsEnabled. There is no second setting for smooth scrolling: scrolling
+// that is smooth *is* scrolling that is animated, and this is what it answers to. (The
+// "smooth-scroll list boxes" checkbox in the same dialog is
+// SPI_GETLISTBOXSMOOTHSCROLLING, the Win32 list box's own, and is not asked here.)
+//
+// Read once, and read again when Windows says a setting changed -- see Window::Proc.
+enum class AnimationMode { Auto, On, Off };
+
+namespace detail {
+inline AnimationMode &ModeSlot() {
+    static AnimationMode mode = AnimationMode::Auto;
+    return mode;
+}
+inline bool SystemAnimates() {
+    BOOL on = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0);
+    return on != FALSE;
+}
+inline bool &ResolvedSlot() {
+    static bool on = SystemAnimates();
+    return on;
+}
+}  // namespace detail
+
+// Does the library animate? What every follower in `motion` below asks, and what a page
+// with an animation of its own should ask before starting it.
+inline bool Animations() { return detail::ResolvedSlot(); }
+
+// This program's answer, which the system setting does not override. Set it before the
+// window is created: a value that is already half way somewhere is put on its target by the
+// next frame rather than left where it stands.
+inline void Animations(bool on) {
+    detail::ModeSlot() = on ? AnimationMode::On : AnimationMode::Off;
+    detail::ResolvedSlot() = on;
+}
+
+// Follow the system's setting, or say so explicitly.
+inline void Animations(AnimationMode mode) {
+    detail::ModeSlot() = mode;
+    detail::ResolvedSlot() = mode == AnimationMode::On    ? true
+                             : mode == AnimationMode::Off ? false
+                                                          : detail::SystemAnimates();
+}
+inline void AnimationsAuto() { Animations(AnimationMode::Auto); }
+
+// Which of the three it is in.
+inline AnimationMode AnimationsSetting() { return detail::ModeSlot(); }
+
+// Re-read the system's answer. Called by the window when the settings change, and harmless
+// at any time; a program that has set its own answer is left alone.
+inline void RefreshAnimations() {
+    if (detail::ModeSlot() == AnimationMode::Auto)
+        detail::ResolvedSlot() = detail::SystemAnimates();
+}
+
 // ---------------------------------------------------------------- motion
 
 // Time, and what a control is allowed to do with it.
@@ -281,12 +347,35 @@ inline float InOut(float u) {
 // rate from wherever it got to, which is what BrushTransition does and is the reason
 // this is a rate rather than a storyboard -- a pointer that crosses a control and
 // leaves again has no "from" worth remembering.
+//
+// With animations off it is put on its target and answers false, which is how a control
+// changes state between two frames.
 inline bool Ramp(float *now, float want, float dt, float seconds) {
+    if (!Animations()) { *now = want; return false; }
     if (*now == want) return false;
     const float step = dt / seconds;
     if (*now < want) *now = (*now + step > want) ? want : *now + step;
     else             *now = (*now - step < want) ? want : *now - step;
     return *now != want;
+}
+
+// A value that follows another one: exponential approach, no duration, retargetable while
+// it runs.
+//
+// A follower rather than a curve each, for the same reason `Span` gives: the wheel and the
+// scroll bar move their target several times inside one frame, and a curve restarted each
+// time jumps to whichever target it was last pointed at, while a follower is continuous by
+// construction.
+//
+// `lag` is the time constant and `snap` is how close counts as arrived -- a follower never
+// quite arrives, and a window that animates for the rest of its life a thousandth of a DIP
+// out is a window that never goes to sleep. Returns true while it is still moving. With
+// animations off it is put on its target at once.
+inline bool Follow(float &at, float to, float dt, float lag, float snap) {
+    if (!Animations() || at == to) { at = to; return false; }
+    at += (to - at) * (1.0f - std::exp(-dt / lag));
+    if (std::fabs(to - at) < snap) at = to;
+    return at != to;
 }
 
 // A value on its way somewhere: a start, a target, a duration and a curve. One
@@ -325,6 +414,9 @@ struct Track {
     // screen that way -- closed as far as every click was concerned, still drawn.
     bool Wants(float target) const { return t < 1.0f || to != target; }
     bool Step(float dt, float seconds, float (*ease)(float) = Decel) {
+        // Animations off: the storyboard is not run, it is finished. A control that has just
+        // been retargeted is already where it was going by the time it is painted.
+        if (!Animations()) { t = 1.0f; value = to; return false; }
         if (t >= 1.0f) return false;
         t += dt / seconds;
         if (t >= 1.0f) { t = 1.0f; value = to; return false; }
@@ -363,6 +455,8 @@ struct Span {
     // it about this slot yet. Use this in `Animating()` and `AnimationWanted()`.
     bool Wants(float at) const { return lead != at || trail != lead; }
     bool Step(float dt) {
+        // Animations off: both edges are put on the slot rather than sent to it.
+        if (!Animations()) { lead = trail = to; return false; }
         if (!Wants(to)) return false;
         lead += (to - lead) * (1.0f - std::exp(-dt / slide));
         trail += (lead - trail) * (1.0f - std::exp(-dt / close));

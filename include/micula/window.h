@@ -2005,6 +2005,10 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // the only signal there is short of WinRT.
         if (lp && _wcsicmp(reinterpret_cast<const wchar_t *>(lp), L"ImmersiveColorSet") == 0)
             self->ReloadTheme();
+        // And the animation switch, which arrives as its own action code with no string at
+        // all -- so it is re-read whatever this message was for. Whatever was half way
+        // somewhere is put on its target by the next frame, which is already running.
+        RefreshAnimations();
         return 0;
     case WM_MOUSEMOVE: {
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
