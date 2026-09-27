@@ -1,6 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(micula VERSION 0.1.0 DESCRIPTION "A small Fluent control set for plain Win32" LANGUAGES CXX)
+# The version is written down once, in the header, and read back out of it here. The header owns
+# it because the library is header-only: somebody who fetches include/micula and never runs CMake
+# still gets the numbers, which a generated header would not give them. See include/micula/version.h.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/micula/version.h" _micula_version_lines
+     REGEX "^#define MICULA_VERSION_(MAJOR|MINOR|PATCH) ")
+set(_micula_version_parts "")
+foreach(_part MAJOR MINOR PATCH)
+    # No ^ anchor: file(STRINGS) hands back a list, which reaches string() as one string joined
+    # with semicolons, so only the first line would ever be at the start of it.
+    string(REGEX MATCH "#define MICULA_VERSION_${_part} ([0-9]+)" _match "${_micula_version_lines}")
+    if(NOT _match)
+        message(FATAL_ERROR "include/micula/version.h does not define MICULA_VERSION_${_part}")
+    endif()
+    list(APPEND _micula_version_parts "${CMAKE_MATCH_1}")
+endforeach()
+list(JOIN _micula_version_parts "." _micula_version)
+unset(_match)
+unset(_part)
+
+project(micula VERSION ${_micula_version} DESCRIPTION "A small Fluent control set for plain Win32" LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Micula is a Windows library: it draws with Direct2D over DirectComposition.")
@@ -47,8 +66,18 @@ if(MICULA_BUILD_EXAMPLES)
     endforeach()
 endif()
 
+include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 install(DIRECTORY include/micula DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(TARGETS micula EXPORT micula-targets)
 install(EXPORT micula-targets FILE micula-config.cmake NAMESPACE micula::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/micula)
+# Without this file `find_package(micula 0.2)` is a request nothing can answer: it is what turns
+# the version into a check. SameMinorVersion, because this is 0.x -- a minor version may break,
+# so a request for one must not be answered with another.
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/micula-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMinorVersion)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/micula-config-version.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/micula)

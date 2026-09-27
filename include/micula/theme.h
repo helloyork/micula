@@ -41,6 +41,7 @@
 #endif
 
 #include "glyphs.h"
+#include "version.h"
 #include <windows.h>
 
 // Before <d2d1.h>, and that ordering is the whole of it.
