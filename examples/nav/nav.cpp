@@ -9,8 +9,10 @@
 
 #include <micula/micula.h>
 
+#include <atomic>
 #include <cwchar>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace micula;
@@ -177,6 +179,13 @@ struct NavDemo : Window {
     // The row the debug page is, which is the first of the footer's. Worked out by Layout, which
     // is the only thing that knows how many rows the pane was built with.
     int debugRow = -1;
+    // The two worker-thread tests on the debug page. The counters are written by the worker and
+    // read by this thread, which is the whole of what they are for; `slotValue` is the number
+    // the worker has reached, and is one too rather than the window's own.
+    std::atomic<int> posted{ 0 }, ran{ 0 };
+    std::atomic<int> asked{ 0 }, slotRan{ 0 }, slotValue{ 0 };
+    PostSlot postSlot;
+    int postCard = -1, slotCard = -1;
 
     const wchar_t *ClassName() const override { return L"MiculaNavDemo"; }
     const wchar_t *Title() const override { return L"Micula - navigation pane"; }
@@ -317,6 +326,57 @@ struct NavDemo : Window {
         CloseHandle(pi.hProcess);
         if (hwnd) PostMessageW(hwnd, WM_CLOSE, 0, 0);
     }
+
+    // A worker thread asking the window to do something, the plain way, n times. The thread is
+    // joined here on the window's thread, and that is safe because posting does not block: all n
+    // envelopes are in the queue before the first of them runs, and the window runs them over the
+    // frames that follow.
+    void PostFromWorker(int n) {
+        posted = 0;
+        ran = 0;
+        std::thread worker([this, n] {
+            for (int i = 0; i < n; i++) {
+                posted.fetch_add(1, std::memory_order_relaxed);
+                Post(this, [this] { CountRan(); });
+            }
+        });
+        worker.join();
+    }
+    void CountRan() {
+        const int done = ran.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (done % 100 != 0) return;    // one of each hundred is enough to look at
+        if (postCard >= 0 && postCard < (int)cards.size())
+            cards[postCard].detail = L"posted " + std::to_wstring(posted.load()) + L", ran " +
+                                     std::to_wstring(done);
+        Invalidate();
+    }
+
+    // The same n asks through a slot: one is pending at a time, so the window is asked once and
+    // then told ninety-nine more times that it has already been asked.
+    void SlotFromWorker(int n) {
+        asked = 0;
+        slotRan = 0;
+        std::thread worker([this, n] {
+            for (int i = 0; i < n; i++) {
+                asked.fetch_add(1, std::memory_order_relaxed);
+                slotValue.store(i + 1, std::memory_order_relaxed);
+                postSlot.Post(this, [this] { CountSlot(); });
+            }
+        });
+        worker.join();
+        // Asked once more from this thread, so that the card cannot sit on a number the worker has
+        // since passed. It is dropped when the worker's own ask is still pending -- which is the
+        // case where the call that is about to run reads the settled numbers anyway.
+        postSlot.Post(this, [this] { CountSlot(); });
+    }
+    void CountSlot() {
+        slotRan.fetch_add(1, std::memory_order_relaxed);
+        if (slotCard >= 0 && slotCard < (int)cards.size())
+            cards[slotCard].detail = L"asked " + std::to_wstring(asked.load()) + L", ran " +
+                                     std::to_wstring(slotRan.load()) + L", value " +
+                                     std::to_wstring(slotValue.load());
+        Invalidate();
+    }
     // Which of the debug page's row counts is the one the pane was built with.
     int RowsChoice() const {
         for (int i = 0; i < (int)(sizeof(kRowChoices) / sizeof(kRowChoices[0])); i++)
@@ -452,6 +512,25 @@ void NavDemo::Layout() {
                                [this](int i) { SetAnim(i); Invalidate(); })),
               card(kIconMotion, L"anim=",
                    L"The library's animation switch, which scrolling follows too", 180));
+        // Two worker threads, as controls: what one may ask the window to do, and what happens
+        // when it asks a thousand times for the same thing.
+        heading(L"Other threads");
+        {
+            Button *go = Add(new Button(L"Post 1000 times", ButtonStyle::Standard,
+                                        [this] { PostFromWorker(1000); }));
+            postCard = (int)cards.size();
+            place(go, card(kIconRecent, L"Post",
+                           L"Ask the window to run something, from another thread",
+                           go->PreferredWidth(measure)));
+        }
+        {
+            Button *go = Add(new Button(L"Ask 1000 times", ButtonStyle::Standard,
+                                        [this] { SlotFromWorker(1000); }));
+            slotCard = (int)cards.size();
+            place(go, card(kIconCalendar, L"PostSlot",
+                           L"One pending at a time: the same thousand, coalesced",
+                           go->PreferredWidth(measure)));
+        }
         card(L"", L"Started with", CommandLine(), 0);
         {
             Button *again =

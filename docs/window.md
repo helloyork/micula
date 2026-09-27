@@ -244,9 +244,50 @@ repaint -- so everything a control is holding survives a scroll, and is lost onl
 | `void SetClipboardText(HWND owner, const std::wstring &s)` | Replaces the clipboard's contents with `s`. |
 | `void StartAnimation(Window *w)` | Wakes the message loop so it checks for animation. Only needed when a control starts animating outside a message. |
 | `double MonotonicSeconds()` | Seconds since the process started, monotonic. For an animation that is periodic and holds nothing else, so that a control rebuilt by a layout does not restart it. |
+| `bool Post(Window *w, std::function<void()> fn)` | Runs `fn` on the thread that owns `w`, once the message in hand is finished. Safe to call from any thread; false if the window is already gone. See [Threads](#threads). |
+| `struct PostSlot` | A place for a worker to post from, one call at a time: `slot.Post(w, fn)` drops the call when one is already pending. See [Threads](#threads). |
 | `kCaptionH` | 32. Title bar height in DIPs. |
 | `kCaptionBtnW` | 46. Width of each title bar button in DIPs. |
 | `kResizeGrip` | 6. Width of the resize border in DIPs. |
+
+## Threads
+
+The window and everything in it belong to the thread that made it. Nothing in Micula
+synchronises anything, so a control touched from another thread is a race and not a
+slower way of doing it.
+
+What a worker thread has instead is `Post`, which hands the window a callable to run in its
+own turn:
+
+```cpp
+// On the worker. Nothing here is locked, and nothing has to be polled.
+Post(&page, [&page, snapshot] { page.ShowState(snapshot); });
+```
+
+The callback runs between two messages, with the same rights a control's callback has: it
+may lay the page out again, add controls, invalidate. What it may not do is block -- it is
+holding the window's thread.
+
+`PostSlot` is for a worker with more news than the window needs. One call is pending at a
+time and the rest are dropped, so a thousand updates cost one turn:
+
+```cpp
+std::atomic<float> progress;   // the worker's, the page only ever reads it
+PostSlot slot;
+
+// On the worker, as often as it likes.
+progress.store(done);
+slot.Post(&page, [&page, &progress, &slot] {
+    page.SetProgress(progress.load());   // reads the latest, does not carry a change
+});
+```
+
+That is the whole contract: a call that is dropped is a change that is never reported, so
+the callable reads the state rather than carrying a snapshot of it. The state stays on the
+worker's side of the boundary and the page only ever sees what it asks for.
+
+A call posted to a window that is destroyed before it runs never runs, and the window frees
+it on the way out; `Post` answers false if the window is already gone.
 
 ## Internals
 

@@ -75,6 +75,7 @@
 #include <wincodec.h>
 #include <windowsx.h>
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <memory>
@@ -1836,6 +1837,11 @@ inline int Window::Run() {
     return exitCode;
 }
 
+// Both are defined at the end of this header beside Post, and both are wanted here: the
+// message a deferred call arrives on, and the call that takes back the ones that never did.
+inline UINT InvokeMessage();
+inline void DrainInvokes(HWND hwnd);
+
 inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     Window *self = reinterpret_cast<Window *>(GetWindowLongPtrW(h, GWLP_USERDATA));
     if (m == WM_NCCREATE) {
@@ -1852,6 +1858,16 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     const float s = self->scale();
     const float mx = (float)GET_X_LPARAM(lp) / s;
     const float my = (float)GET_Y_LPARAM(lp) / s;
+
+    // A deferred call, from Post below. Compared rather than given a case label: a registered
+    // message id is not a constant. Inside the dispatch opened above, so a callback that lays
+    // the page out again is doing what a widget callback does.
+    if (m == InvokeMessage()) {
+        std::function<void()> *call = reinterpret_cast<std::function<void()> *>(wp);
+        (*call)();
+        delete call;
+        return 0;
+    }
 
     switch (m) {
     case WM_NCCALCSIZE: {
@@ -2269,12 +2285,90 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND:
         return 1;   // every pixel comes from the composition surface
     case WM_DESTROY:
+        // Before it stops being a window: the deferred calls that never arrived are freed
+        // here. See DrainInvokes.
+        DrainInvokes(h);
         self->alive = false;
         PostQuitMessage(0);
         return 0;
     }
     if (self->OnAppMessage(m, wp, lp)) return 0;
     return DefWindowProcW(h, m, wp, lp);
+}
+
+// Run `fn` on the thread that owns `w`, once the message being handled now is finished.
+// Safe to call from any thread, which is the whole point of it.
+//
+// The envelope is a `std::function` on the heap, and who frees it is settled by the same
+// thing that settles whether it runs: if the post fails -- the window is already gone -- the
+// caller frees it and gets false back, and otherwise the window does, either when it runs it
+// or, if it is destroyed first, in the drain. Windows discards a posted message when its
+// window goes away, and the envelope would go with it.
+//
+// The `Window` has to outlive the call. A window made in `wWinMain` does: it is destroyed
+// before `Run` returns, not after.
+inline bool Post(Window *w, std::function<void()> fn) {
+    if (!w || !w->hwnd) return false;
+    auto *envelope = new std::function<void()>(std::move(fn));
+    if (PostMessageW(w->hwnd, InvokeMessage(), reinterpret_cast<WPARAM>(envelope), 0))
+        return true;
+    delete envelope;
+    return false;
+}
+
+// A place to post from, one turn at a time.
+//
+// A worker with a hundred updates a second has one thing to tell the window -- that there is
+// something new -- and asking it a hundred times is asking once and then doing nothing
+// ninety-nine times. `pending` answers that question, and it belongs to the caller, so the
+// coalescing costs no lock and the library stays as single-threaded as it was.
+//
+// What `fn` may therefore not do is *carry* a change: a call that is dropped is a change that
+// is never reported. It reads the latest state instead, which is the shape a page wants
+// anyway -- the state lives on the worker's side of the boundary and the page can only ever
+// see a snapshot of it.
+//
+// The slot has to outlive everything posted through it.
+struct PostSlot {
+    std::atomic<bool> pending{ false };
+
+    bool Post(Window *w, std::function<void()> fn) {
+        bool expected = false;
+        if (!pending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+            return false;
+        const bool posted = micula::Post(w, [this, fn = std::move(fn)] {
+            // Cleared before it runs, so a call made from inside one is not dropped.
+            pending.store(false, std::memory_order_release);
+            fn();
+        });
+        if (!posted) pending.store(false, std::memory_order_release);
+        return posted;
+    }
+};
+
+// The deferred calls that never arrived, freed as the window is destroyed -- while it is
+// still a window, because that is when PeekMessage can still find what is queued for it.
+// A `WM_NCDESTROY` drain would come too late: by then Windows has taken the messages away.
+inline void DrainInvokes(HWND hwnd) {
+    if (!hwnd) return;
+    const UINT id = InvokeMessage();
+    MSG msg;
+    while (PeekMessageW(&msg, hwnd, id, id, PM_REMOVE))
+        delete reinterpret_cast<std::function<void()> *>(msg.wParam);
+}
+
+// The message a deferred call arrives on.
+//
+// Registered rather than taken from the `WM_APP` range, which a page is free to use for its
+// own messages: this id is unique for the whole system, so the two cannot collide, and there
+// is no range for a page to remember to keep clear.
+//
+// Cached, because it is read on every poke at the message queue and registering is a call
+// into the kernel. 0 -- the only way it fails -- is not a message anything can be posted as,
+// so Post answers false rather than queueing something nothing will ever deliver.
+inline UINT InvokeMessage() {
+    static const UINT id = RegisterWindowMessageW(L"micula::Invoke");
+    return id;
 }
 
 // Kept for its callers, and now it only has to wake the loop.
