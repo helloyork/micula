@@ -737,6 +737,34 @@ struct Window {
     float ClientW() const { RECT r; GetClientRect(hwnd, &r); return r.right / scale(); }
     float ClientH() const { RECT r; GetClientRect(hwnd, &r); return r.bottom / scale(); }
 
+    // Whether any of this window is on a screen at all: shown, not minimised, and not cloaked --
+    // which is what the system reports for a window on another virtual desktop, or one a shell has
+    // put away. The frame loop asks this before it runs a frame; see Run, where the reason is.
+    //
+    // **Occlusion is not asked about and cannot be.** No query answers "is another window over
+    // this one", and the guesses are worse than the waste: sampling points with WindowFromPoint is
+    // wrong for a window that is partly covered, wrong for a layered one, and wrong for every
+    // window in a session that is not the foreground one.
+    bool Visible() const {
+        if (!hwnd || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+        DWORD cloaked = 0;
+        return FAILED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) ||
+               cloaked == 0;
+    }
+
+    // Whether a control that scrolls with the page is inside the strip the page shows, with the
+    // page's own offset already applied. Four DIPs of slack, because a control may draw a little
+    // outside its own rectangle: a focus ring, a shadow, a flyout it has not grown its rect to
+    // cover.
+    //
+    // Two callers, and they are meant to be the same question: `pass` asks it before drawing a
+    // control, and `Animating` asks it before counting one as something to run frames for.
+    static bool Reaches(const D2D1_RECT_F &rect, float dy, const D2D1_RECT_F &clip) {
+        const D2D1_RECT_F r = { rect.left, rect.top + dy, rect.right, rect.bottom + dy };
+        return r.right + 4.0f > clip.left && r.left - 4.0f < clip.right &&
+               r.bottom + 4.0f > clip.top && r.top - 4.0f < clip.bottom;
+    }
+
     virtual ~Window() {}
 
     // --- to implement -----------------------------------------------------------
@@ -787,10 +815,25 @@ struct Window {
     // Everything the window animates on its own account: every control's pointer states
     // and the three caption buttons. Distinct from AnimationWanted(), which is the
     // page's own answer -- the frame loop runs while either of them says so.
+    //
+    // A control the page has scrolled out of sight is not counted. Nothing it does can be seen,
+    // so nothing it does is a reason to run a frame -- and a page scrolled past a control that
+    // animates for ever, an indeterminate progress bar being the one that does, would otherwise
+    // keep the loop turning for as long as that page was open. It is the same test `pass` uses to
+    // skip *drawing* one, which is the whole point: what is not drawn is not animated either. The
+    // animation is not lost, only paused -- scrolling back brings it into the strip and this
+    // answers yes again, and the control lands where it was going.
     bool Animating() const {
         for (int i = 0; i < 3; i++)
             if (captionT[i] != (captionHot == i ? 1.0f : 0.0f)) return true;
-        for (const auto &w : widgets) if (w->visible && w->Animating()) return true;
+        const D2D1_RECT_F clip = ClipRect();
+        const bool clipping = clip.right > clip.left && clip.bottom > clip.top;
+        float dy = 0.0f, op = 1.0f;
+        if (clipping) ContentTransform(&dy, &op);
+        for (const auto &w : widgets) {
+            if (!w->visible || !w->Animating()) continue;
+            if (!clipping || !w->scrolls || Reaches(w->rect, dy, clip)) return true;
+        }
         return false;
     }
     void Tick(float dt) {
@@ -1147,12 +1190,7 @@ inline void Window::Paint() {
     // frame of a scroll. Four DIPs of slack, because a control may draw a little outside
     // its own rectangle: a focus ring, a shadow, a flyout the control has not grown its
     // rect to cover.
-    auto reaches = [&](const Widget *w) {
-        const D2D1_RECT_F r = { w->rect.left, w->rect.top + dy,
-                                w->rect.right, w->rect.bottom + dy };
-        return r.right + 4.0f > clip.left && r.left - 4.0f < clip.right &&
-               r.bottom + 4.0f > clip.top && r.top - 4.0f < clip.bottom;
-    };
+    auto reaches = [&](const Widget *w) { return Reaches(w->rect, dy, clip); };
     auto shown = [&](const Widget *w) {
         return w->visible && (!clipping || !w->scrolls || reaches(w));
     };
@@ -1722,7 +1760,15 @@ inline int Window::Run() {
     MSG msg = {};
     int exitCode = 0;
     while (alive) {
-        const bool moving = Animating() || AnimationWanted();
+        // A window nobody can see runs no frames. Something animating in it -- an indeterminate
+        // progress bar is the one that never stops -- would otherwise paint the whole frame at the
+        // display's rate into a surface nobody is looking at, and a minimised window is where that
+        // is pure waste: there is not even a "later" for it, the frames are simply thrown away.
+        //
+        // Nothing is lost when it does run again: animOn is cleared here and the clock is picked up
+        // when it comes back on, so an animation resumes where it was rather than jumping forward
+        // by however long the window spent out of sight. See Visible.
+        const bool moving = Visible() && (Animating() || AnimationWanted());
         if (!moving) {
             animOn = false;
             if (GetMessageW(&msg, nullptr, 0, 0) <= 0) { exitCode = (int)msg.wParam; break; }

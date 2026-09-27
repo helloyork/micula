@@ -39,6 +39,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
 Esc and the title bar's close button post `WM_CLOSE`. To ask before closing, handle
 `WM_CLOSE` in `OnAppMessage` and return true to keep the window open.
 
+Frames are run only while something asks for them, and only while the window is somewhere
+it can be seen. A hidden, minimised or cloaked window gets none at all -- an animation still
+going does not paint into a window nobody is looking at, and a minimised window is the
+worst of it, because every one of those frames is drawn and then thrown away. A control the
+page has scrolled out of `ClipRect()` does not ask for frames either: it is not drawn, so it
+is not animated. Neither case loses the animation -- the frame clock is picked up again when
+frames resume, so an ease carries on from where it was rather than jumping forward by
+however long the window was away.
+
+Occlusion is not part of that. Windows has no query for "another window is over this one",
+and the approximations of one are wrong for a partly covered window and for a layered one,
+so a window that is merely covered still paints. `Visible()` is the same test the frame loop
+uses, for a page that wants to ask it of itself.
+
 ## Page callbacks
 
 All virtual. `ClassName()` and `Title()` must be overridden.
@@ -79,6 +93,7 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `UINT dpi` | Current DPI of the window. |
 | `float scale() const` | `dpi / 96`. |
 | `float ClientW() const`, `float ClientH() const` | Client size in DIPs. |
+| `bool Visible() const` | Whether any of the window is on a screen: shown, not minimised, not cloaked. Occlusion is not part of it, and cannot be. |
 | `Palette pal` | Current colors. See [Drawing](drawing.md#palette). |
 | `Fonts fonts` | Text formats. See [Drawing](drawing.md#fonts). |
 | `bool micaActive` | True when DWM accepted the backdrop that was asked for. False on Windows 10 and Windows 11 before 22H2; the page then has an opaque background. |
@@ -235,8 +250,8 @@ repaint -- so everything a control is holding survives a scroll, and is lost onl
 
 ## Internals
 
-Public because `Window` is a struct, but not part of the interface: `Paint`, `Resize`,
-`Frame`, `Tick`, `Animating`, `RefreshHover`, `HitTest`, `CaptionHitTest`,
+Public because `Window` is a struct, but not part of the interface: `Paint`, `Reaches`,
+`Resize`, `Frame`, `Tick`, `Animating`, `RefreshHover`, `HitTest`, `CaptionHitTest`,
 `PaintCaption`, `MeasureFrame`, `CreateDevice`, `ReleaseDevice`, `Proc`, the Direct2D
 and DirectComposition pointers (`dw`, `d3d`, `dxgi`, `d2d`, `d2dDevice`, `dc`, `swap`,
 `target`, `comp`, `compTarget`, `compVisual`, `brush`), and the `dpiapi` and `frameclock`
