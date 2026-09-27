@@ -20,7 +20,7 @@
 | `void Line(float x0, float y0, float x1, float y1, const D2D1_COLOR_F &c, float width = 1) const` | Draws a line. |
 | `void Text(const std::wstring &s, const D2D1_RECT_F &r, IDWriteTextFormat *fmt, const D2D1_COLOR_F &c) const` | One line of text, left-aligned, vertically centered in `r` and clipped to it. |
 | `float TextWrapped(const std::wstring &s, const D2D1_RECT_F &r, IDWriteTextFormat *fmt, const D2D1_COLOR_F &c, bool measureOnly = false, bool clip = false) const` | Wrapped text from the top of `r`. Returns its height. `measureOnly` measures without drawing; `clip` cuts it off at the bottom of `r`. |
-| `float MeasureWidth(const std::wstring &s, IDWriteTextFormat *fmt) const` | Width of one line of text. |
+| `float MeasureWidth(const std::wstring &s, IDWriteTextFormat *fmt) const` | Width of one line of text, in DIPs. Measured once per string and format and kept in `Fonts`, so asking again is a lookup rather than a DirectWrite layout: a control that centres its label by measuring can do it in `Paint` every frame. |
 
 To measure outside of painting, in `Layout()`:
 

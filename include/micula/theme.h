@@ -62,6 +62,8 @@
 #include <dwrite.h>
 
 #include <cmath>
+#include <string>
+#include <unordered_map>
 
 namespace micula {
 
@@ -527,6 +529,25 @@ struct Fonts {
     IDWriteTextFormat *iconSmall  = nullptr;   // 10, the size Windows draws a caption at
     IDWriteTextFormat *iconTiny   = nullptr;   // 8, a scroll bar's arrows (ScrollBarButtonArrowIconFontSize)
 
+    // The width of a label, kept. A label does not get wider between one frame and the next, and
+    // measuring one is a DirectWrite layout -- a heap block and a shaping pass over the string --
+    // so a control that centres its label by measuring pays for the same answer every frame it is
+    // drawn: a pane of forty rows asks forty times a frame, a page of buttons once per button.
+    //
+    // One map per format rather than one keyed by the format and the string together: that key
+    // would be a `std::pair`, and a lookup that has to build one allocates the very thing this is
+    // here to save. Ten small maps, and a string is only copied when an answer is added.
+    //
+    // Cleared by Create, which is where the formats are made again after the device was lost --
+    // an answer in here belongs to the format object it was measured with, and that object is not
+    // the same one afterwards. A DPI change does not come through here and does not need to: a
+    // format's size is in DIPs and its width comes back in DIPs too.
+    mutable std::unordered_map<std::wstring, float> widths[10];
+    // How wide `s` wants to be in `fmt`, measured once per pair. A format that is not one of the
+    // ten is measured and not kept: there is nowhere to keep it, and a page that makes its own is
+    // better off paying per call than this header growing a general-purpose layout cache.
+    float Measure(IDWriteTextFormat *fmt, const std::wstring &s) const;
+
     bool Create(IDWriteFactory *factory);
     void Release();
 };
@@ -559,6 +580,9 @@ inline bool HasFamily(IDWriteFactory *dw, const wchar_t *family) {
 }
 
 inline bool Fonts::Create(IDWriteFactory *factory) {
+    // The formats about to be replaced are what every width in here was measured with; see the
+    // note over `widths`. Nothing measured against this factory is kept across a rebuild.
+    for (auto &w : widths) w.clear();
     dw = factory;
     const wchar_t *display = HasFamily(dw, L"Segoe UI Variable Display")
                                  ? L"Segoe UI Variable Display" : L"Segoe UI";
@@ -596,6 +620,33 @@ inline void Fonts::Release() {
     for (IDWriteTextFormat *f : all) if (f) f->Release();
     title = subtitle = bodyStrong = body = caption = mono = nullptr;
     icon = iconLarge = iconSmall = iconTiny = nullptr;
+}
+
+inline float Fonts::Measure(IDWriteTextFormat *fmt, const std::wstring &s) const {
+    if (!dw || !fmt || s.empty()) return 0.0f;
+    const IDWriteTextFormat *all[] = { title, subtitle, bodyStrong, body, caption, mono,
+                                       icon, iconLarge, iconSmall, iconTiny };
+    int slot = -1;
+    for (int i = 0; i < 10; i++) if (all[i] == fmt) { slot = i; break; }
+    if (slot >= 0) {
+        const std::unordered_map<std::wstring, float>::const_iterator it = widths[slot].find(s);
+        if (it != widths[slot].end()) return it->second;
+    }
+    IDWriteTextLayout *layout = nullptr;
+    if (FAILED(dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt, 100000.0f, 100.0f,
+                                    &layout)) || !layout)
+        return 0.0f;
+    DWRITE_TEXT_METRICS m = {};
+    layout->GetMetrics(&m);
+    layout->Release();
+    if (slot < 0) return m.width;
+    // A label that changes every frame -- a clock, a byte count, a path -- would add an entry
+    // every time and look none of them up. There is no telling one of those from a label that has
+    // merely not been seen yet, so the map is dropped whole when it gets silly: the next frame
+    // measures its labels again, which is what it was doing anyway.
+    if (widths[slot].size() > 256) widths[slot].clear();
+    widths[slot].emplace(s, m.width);
+    return m.width;
 }
 
 // Settings > Accessibility > Visual effects > "Always show scrollbars", which WinUI reads

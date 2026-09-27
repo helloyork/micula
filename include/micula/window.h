@@ -371,16 +371,13 @@ struct Painter {
     // How wide a single line wants to be. Buttons size themselves from this rather
     // than from a guess, which is what keeps a Chinese label and an English one both
     // fitting without a magic constant per string.
+    //
+    // Measured once per string and format and kept there -- see Fonts::Measure. Every
+    // caller here is either laying a control out or drawing one, and both of those ask
+    // again next frame with the same string: a label's width is not a per-frame
+    // question, and answering it is a DirectWrite layout and a shaping pass.
     float MeasureWidth(const std::wstring &s, IDWriteTextFormat *fmt) const {
-        if (s.empty()) return 0.0f;
-        IDWriteTextLayout *layout = nullptr;
-        if (FAILED(font->dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt,
-                                              100000.0f, 100.0f, &layout)) || !layout)
-            return 0.0f;
-        DWRITE_TEXT_METRICS m = {};
-        layout->GetMetrics(&m);
-        layout->Release();
-        return m.width;
+        return font->Measure(fmt, s);
     }
 };
 
