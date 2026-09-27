@@ -6,6 +6,30 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **Layers.** `Layer` is a control that floats over the page -- a dialog, a flyout, a menu, a tip --
+  with the things a control that merely has a `z` does not have: it takes the input under it, it can
+  light-dismiss, it can dim what is behind it, and it **fades in and out over `motion::kFast`** as
+  one group with its smoke and the controls the page put on it. A leaving layer outlives the layout
+  its dismissal causes, and so do the controls on it -- otherwise they would vanish from under a
+  panel that was still on screen -- and none of them answers the pointer, the Tab ring, Enter or Esc
+  while it goes. `lightDismiss` is **off by default**: a `Popup` carries `IsLightDismissEnabled` and
+  a `ContentDialog` has no such property, and a question that has to be answered is not answered by
+  a stray click on the dim. `Layer::Close()`, `CoverPage()`, `Body()`, `FocusRing()`,
+  `DefaultButton()`, `Arrival()`. The rectangle stops at the caption bar on purpose, so dragging the
+  window and the snap-layout flyout keep working with a modal open.
+- **`Painter::Shadow`**, the shadow a surface over the page casts. It is the stack of rounded
+  rectangles the drop-down used to build for itself, in one place and with the numbers as arguments --
+  a flyout's are narrow, a dialog's are wide -- because what reads as height over a dim is the spread
+  rather than the darkness.
+- **`Window::DismissOthers` spares the layer that was clicked**, and a click on a layer's dim is
+  handled by `Layer::OnPress` rather than by the window's "something else was clicked" broadcast --
+  which cannot reach the layer it dismisses, because the layer covers the page and is itself the
+  thing that was clicked.
+- The `nav` example has a layer of its own on the Debug page: a panel with two controls on it, and
+  a card that says how many times the button on it has been pressed without the layer going away.
+
 ## [0.2.0] - 2026-09-28
 
 0.1.0 was the number this library was written under and was never tagged or published, so this is

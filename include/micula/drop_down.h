@@ -817,23 +817,10 @@ struct DropDown : Widget {
         // A flyout is not a card: it is over the page rather than part of it, so it gets
         // an opaque surface of its own and a shadow.
         //
-        // The shadow is Fluent's, which is a blur, and there is no cheap real blur in
-        // Direct2D without an effect and a layer per frame -- so this is twelve rounded
-        // rectangles at 0.9 per cent, the largest and faintest outermost, which stack into
-        // a falloff smooth enough to read as one. It was five at four per cent, and five at
-        // four per cent is a black band with an edge on it: at the size of a flyout the
-        // steps show as bands, and the four per cent at the outermost layer is not faint
-        // enough to disappear. Four DIPs down and none up, because the light is above the
-        // popup and the popup hangs off the control it belongs to.
-        constexpr int kShadowLayers = 12;
-        constexpr float kShadowReach = 14.0f;
-        constexpr float kShadowDrop = 4.0f;
-        for (int i = kShadowLayers; i >= 1; i--) {
-            const float e = kShadowReach * (float)i / (float)kShadowLayers;
-            p.FillRound({ s.left - e, s.top - e + kShadowDrop,
-                          s.right + e, s.bottom + e + kShadowDrop },
-                        8.0f + e, Fade(Rgb(0x000000, 0.009f), openF));
-        }
+        // The shadow is a flyout's rather than a dialog's, which is to say a narrow one: it hangs off
+        // the control it belongs to rather than sitting off the page, and four DIPs of drop is what
+        // that costs. See Painter::Shadow for how it is drawn.
+        p.Shadow(s, 8.0f, openF, 14.0f, 4.0f);
         p.FillRound(s, 8.0f, Fade(c.flyoutBg, openF));
         p.StrokeRound(s, 8.0f, Fade(c.flyoutStroke, openF));
 

@@ -156,6 +156,39 @@ void SetAnim(int choice) {
 
 }  // namespace
 
+// A layer of the demo's own: smoke, a panel, and two controls on it. What a dialog will be made
+// of -- the library's Layer is the mechanism, and this is a page using it.
+struct DemoLayer : Layer {
+    D2D1_RECT_F panel = {};
+    std::vector<Widget *> ring;
+    Widget *def = nullptr;
+
+    void Paint(const Painter &p) override {
+        Layer::Paint(p);            // the smoke, when it is on
+        // flyoutBg, not cardBg: a card is part of the page and is meant to let it show through,
+        // and this panel is over the page. Painting it in the card's colour is what left the
+        // page's own text readable through it -- see the note on flyoutBg in theme.h.
+        // A dialog's shadow, and a dialog's numbers: further off the page than a flyout, so wider and
+        // softer than the drop-down's -- see Painter::Shadow. Over the smoke the page is already down
+        // to about four fifths of itself, so what has to read here is the spread rather than the
+        // darkness: a shadow a few units darker than the dim is not elevation, it is nothing.
+        p.Shadow(panel, metric::kRadiusCard, 1.0f, 26.0f, 8.0f, 16, 0.011f);
+        p.FillRound(panel, metric::kRadiusCard, p.pal->flyoutBg);
+        // Boxes a line tall, not a bit taller than the text looks: the format is centred in its
+        // rectangle and the drawing is clipped to it, so a box shorter than the line box cuts the
+        // descenders off -- "g" and "p" here, and nothing else, which is why it reads as a font
+        // problem rather than as a rectangle that is too small. A 28 DIP title wants about 44.
+        p.Text(L"Over the page", {panel.left + 20, panel.top + 14, panel.right - 20, panel.top + 58},
+               p.font->title, p.pal->textPrimary);
+        p.Text(L"Opaque surface, translucent smoke.",
+               {panel.left + 20, panel.top + 58, panel.right - 20, panel.top + 78},
+               p.font->body, p.pal->textSecondary);
+    }
+    std::vector<Widget *> FocusRing() override { return ring; }
+    Widget *DefaultButton() override { return def; }
+    D2D1_RECT_F Body() const override { return panel; }
+};
+
 struct NavDemo : Window {
     // What PaintPage draws, worked out by Layout.
     struct Card {
@@ -186,6 +219,11 @@ struct NavDemo : Window {
     std::atomic<int> asked{ 0 }, slotRan{ 0 }, slotValue{ 0 };
     PostSlot postSlot;
     int postCard = -1, slotCard = -1;
+    // The layer test: whether it is up, and how many times the button on it has been pressed --
+    // which is the number that says the layer's own controls are reachable and that pressing one
+    // does not dismiss the layer it sits on.
+    bool layerOpen = false;
+    int layerCount = 0, layerCard = -1;
 
     const wchar_t *ClassName() const override { return L"MiculaNavDemo"; }
     const wchar_t *Title() const override { return L"Micula - navigation pane"; }
@@ -377,6 +415,17 @@ struct NavDemo : Window {
                                      std::to_wstring(slotValue.load());
         Invalidate();
     }
+
+    // The layer's own card, which stays up while the layer does.
+    void DrawLayerCard() {
+        if (layerCard < 0 || layerCard >= (int)cards.size()) return;
+        if (layerCount == 0)
+            cards[layerCard].detail = L"A modal layer over the page, with two controls on it";
+        else
+            cards[layerCard].detail = L"Count pressed " + std::to_wstring(layerCount) +
+                                      (layerOpen ? L" times, and the layer is still up" : L" times; the layer is closed");
+        Invalidate();
+    }
     // Which of the debug page's row counts is the one the pane was built with.
     int RowsChoice() const {
         for (int i = 0; i < (int)(sizeof(kRowChoices) / sizeof(kRowChoices[0])); i++)
@@ -531,6 +580,15 @@ void NavDemo::Layout() {
                            L"One pending at a time: the same thousand, coalesced",
                            go->PreferredWidth(measure)));
         }
+        {
+            Button *go = Add(new Button(L"Show a layer", ButtonStyle::Standard,
+                                        [this] { layerOpen = true; Layout(); }));
+            layerCard = (int)cards.size();
+            place(go, card(kIconDebug, L"Layer",
+                           L"A modal layer over the page, with two controls on it",
+                           go->PreferredWidth(measure)));
+            DrawLayerCard();
+        }
         card(L"", L"Started with", CommandLine(), 0);
         {
             Button *again =
@@ -538,6 +596,47 @@ void NavDemo::Layout() {
             place(again, card(kIconMotion, L"Again",
                               L"Close this window and start the same one with these arguments",
                               again->PreferredWidth(measure)));
+        }
+        // The layer comes last, and what sits on it after the layer itself: the hit test reaches
+        // the last added of the raised controls, so this is the order that makes the pointer meet
+        // them in the order the painter draws them.
+        if (layerOpen) {
+            auto *box = new DemoLayer();
+            box->smoke = true;
+            // A click outside closes this one: it is a suggestion, and abandoning it is what a
+            // click on the dim means. A question that has to be answered would leave this alone
+            // -- the default -- and only its buttons would close it.
+            box->lightDismiss = true;
+            box->z = 1;
+            box->onDismiss = [this] {
+                layerOpen = false;
+                Layout();
+            };
+            Layer *layer = Add(box);
+            layer->rect = layer->CoverPage();
+
+            const float w = 340.0f, h = 150.0f;
+            box->panel = { (ClientW() - w) / 2, (ClientH() - h) / 2, (ClientW() + w) / 2,
+                           (ClientH() + h) / 2 };
+
+            Button *count = Add(new Button(L"Count", ButtonStyle::Standard, [this] {
+                layerCount++;
+                DrawLayerCard();
+            }));
+            // Not "layerOpen = false; Layout()": that pulls the layer out of the page on the same
+            // frame, and the fade-out -- which needs the layer to outlive one layout -- is never
+            // seen. Close() tells the page when to do that, through onDismiss above.
+            Button *close = Add(new Button(L"Close", ButtonStyle::Standard, [box] { box->Close(); }));
+            const float bh = metric::kControlH;
+            const float by = box->panel.bottom - 16.0f - bh;
+            count->z = close->z = 2;
+            close->rect = { box->panel.right - 16.0f - close->PreferredWidth(measure), by,
+                            box->panel.right - 16.0f, by + bh };
+            count->rect = { close->rect.left - 8.0f - count->PreferredWidth(measure), by,
+                            close->rect.left - 8.0f, by + bh };
+            box->ring = { count, close };
+            box->def = close;
+            SetFocusTo(count);
         }
     } else
     switch (page) {

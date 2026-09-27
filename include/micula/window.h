@@ -233,6 +233,30 @@ struct Painter {
               float width = 1.0f) const {
         rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), Brush(c), width);
     }
+    // The shadow a surface over the page casts: a flyout, a dialog, a menu, a pane arriving.
+    //
+    // Fluent's is a blur, and there is no cheap real blur in Direct2D without an effect and a layer
+    // per frame -- so this is a stack of rounded rectangles at a fraction of a per cent each, the
+    // largest and faintest outermost, which read as one falloff. It has to be a stack: five at four
+    // per cent was a black band with an edge on it, and the outermost step has to be faint enough to
+    // disappear rather than to end.
+    //
+    // `reach` is how far it spreads, `drop` how far it sits below the surface -- the light is above,
+    // and what hangs off something hangs downward -- and `layers` how many steps there are. **What
+    // reads as height is the spread rather than the darkness**: over a dim, a merely darker shadow
+    // has nowhere left to be darker than, and it is the size of the thing that says the surface is
+    // off the page. A dialog is further off it than a flyout, and wants both numbers larger.
+    //
+    // `opacity` fades the whole thing with whatever the caller is already animating. A surface that
+    // fades while its shadow stays is the one thing that gives a fade away.
+    void Shadow(const D2D1_RECT_F &r, float radius, float opacity = 1.0f, float reach = 14.0f,
+                float drop = 4.0f, int layers = 12, float perLayer = 0.009f) const {
+        for (int i = layers; i >= 1; i--) {
+            const float e = reach * (float)i / (float)layers;
+            FillRound({ r.left - e, r.top - e + drop, r.right + e, r.bottom + e + drop },
+                      radius + e, Rgb(0x000000, perLayer * opacity));
+        }
+    }
     // A panel whose four corners are chosen one by one, and whose border runs along any
     // combination of its edges -- WinUI's content layer is one rounded corner, three square ones,
     // a border along the two edges that face the rest of the window, and none along the two that
@@ -392,6 +416,10 @@ inline bool  Inside(const D2D1_RECT_F &r, float x, float y) {
 // ---------------------------------------------------------------- Widget
 
 struct Window;
+// A control that floats over the page -- a dialog, a flyout, a menu. Forward-declared for
+// Widget::AsLayer() below and defined further down this same header, after Widget: the window
+// routes Esc, Enter and the Tab ring through the top one, so the two belong together.
+struct Layer;
 
 // The whole control vocabulary derives from this. Deliberately small: a rectangle,
 // three interaction flags, a paint call and a click.
@@ -485,6 +513,9 @@ struct Widget {
     // the flyout's own business is that a control cannot see a click it did not get --
     // which is exactly why the drop-down used to stay open until it was clicked again.
     virtual void Dismiss() {}
+    // The layer this control is, when it is one. Asked by the window, which routes Esc, Enter and
+    // the Tab ring through the top layer before the page sees them. See Layer.
+    virtual Layer *AsLayer() { return nullptr; }
     // This control draws something that follows the pointer *inside* itself: an open
     // flyout's hovered row, a segmented control's hovered cell, a slider being dragged.
     //
@@ -598,6 +629,16 @@ struct Widget {
     // so is anything else a page repositions on every layout that a person can hold on
     // to. The page makes such a control once and repositions it in each Layout().
     bool persistent = false;
+    // The layer this control is on its way out with, or null. The window's bookkeeping, set for the
+    // controls a leaving layer was carrying and cleared when it is gone.
+    //
+    // A page lays itself out the moment a layer starts leaving -- that is what `onDismiss` is for --
+    // so without this the controls on the layer would be pulled out of the page on that same frame
+    // and vanish while the panel under them was still fading. Instead they stay in the list and in
+    // their places until the fade is over, and answer nothing while it runs: they are what the
+    // window drops afterwards, and z alone cannot say which of them belonged to which layer when two
+    // layers are leaving at once.
+    Layer *leavingWith = nullptr;
 };
 
 // One Windows timer, whose id nobody had to choose: the window hands them out from a pool of its
@@ -606,6 +647,157 @@ struct Widget {
 //
 // It is also the answer to where the timer's message goes. The window keeps the timers that are
 // running and offers every `WM_TIMER` to them by id, so a timer belongs to whatever started it.
+// ---------------------------------------------------------------- Layer
+
+// A control that floats over the page: a dialog, a flyout, a menu, a tip.
+//
+// A widget with a `z` already paints over the page and is reached by the pointer before it. What
+// this adds are the three things that make a layer a layer rather than a control that happens to
+// be raised:
+//
+//   - `modal` takes the input *under* it. The layer's rectangle is the whole page -- see
+//     CoverPage, which leaves the title bar out on purpose -- so a click that is not on top of
+//     something the layer itself put there lands on the layer and stops there.
+//   - `lightDismiss` closes it when a click misses it, or when the window loses activation: both
+//     arrive through the `Dismiss()` every control gets. What "closed" *means* is the page's, and
+//     is given as `onDismiss` -- for a dialog, that is its cancel.
+//
+//     **It is off by default, and having it as a switch at all is the point.** A click that
+//     misses a flyout closing it is what a flyout is; a question that has to be answered -- *this
+//     file has unsaved changes* -- is not answered by a stray click on the dim, and Windows draws
+//     the same line: `Popup` carries `IsLightDismissEnabled`, which a flyout turns on, while
+//     `ContentDialog` has no property of the kind and can only be answered with a button. A
+//     dialog that *can* be abandoned says so by turning this on, or by having a cancel button --
+//     which is `escape` below, and separate on purpose: a dialog with a job still running refuses
+//     both, and one that is merely dismissible refuses neither.
+//   - `smoke` dims what is behind it, over the same black the pane puts on a page it floats over.
+//   - and it arrives by fading in -- itself, its smoke and the controls the page put on it, as one
+//     group -- rather than appearing whole on the next frame. See `arrive` below.
+//
+// **Add the layer first, and what sits on it after it**, with a higher `z`: the hit test reaches
+// the last added of the raised controls, while the painter orders by `z`, and adding them in this
+// order is what makes the two agree.
+//
+// The rectangle stops at the caption bar. Windows' own modal dialogs keep their title bar -- it
+// belongs to the window, and the smoke of a WinUI ContentDialog does not reach past the client
+// area either -- so dragging the window, double-clicking the caption and the Windows 11
+// snap-layout flyout all keep working with a modal open. `CoverPage()` is that rectangle.
+struct Layer : Widget {
+    bool modal = true;
+    bool lightDismiss = false;
+    bool smoke = false;
+    // Esc closes it: the window offers Esc to the top layer before the page's cancel. A layer
+    // that must not be closed this way -- a dialog with a job still running -- says so.
+    bool escape = true;
+    // The dim's own alpha, over black. A dialog that wants to be the only thing on screen turns
+    // it up; a suggestion can turn it down.
+    float smokeAlpha = 0.14f;
+
+    std::function<void()> onDismiss;
+
+    // A layer arrives rather than appearing, and leaves the same way: the whole of it fades up over
+    // `motion::kFast` and back down over the same, the dim with it. `kFast` rather than `kNormal`,
+    // which is what a page and a flyout take: those are watched, and this is *read* -- the panel is
+    // legible well before the fade is over, and a quarter of a second of dim creeping over the page
+    // is a quarter of a second of "not yet" for nothing. `Track::Step` already eases with `Decel`,
+    // so 0.9 of the way there is about 90 ms into the 167.
+    //
+    // A panel that is simply there on the next frame is the other half of it: the page behind it
+    // changes in one step, which reads as a repaint rather than as something coming up.
+    //
+    // The fade is the *window's* work, not this widget's: the window paints everything over the
+    // page through one opacity layer while `Arrival()` is short of where it is going (see Paint).
+    // That is what a group needs and what a per-widget opacity could not give -- the panel and the
+    // controls the page put on it are separate widgets with their own rectangles, so fading each on
+    // its own would show the page through the gaps between them and come out darker where two
+    // overlap.
+    //
+    // The track is started on its target, and `Arrival()` answers 1 for as long as the animation
+    // switch is off -- so with animations off the layer is drawn whole on the first frame that asks
+    // for it, with no invisible frame in between and no frame run to get there.
+    float Arrival() const { return Animations() ? arrive.value : (leaving ? 0.0f : 1.0f); }
+    bool leaving = false;
+    motion::Track arrive{};
+    Layer() { arrive.To(1.0f); }
+
+    // How far the layer has arrived: 0 as it comes up, 1 at rest, and on its way back down while it
+    // is leaving. Exposed because a subclass that draws a panel of its own may want to bring it in
+    // on the same clock -- a few DIPs of rise, the way a page arrives -- and because the two ends
+    // are worth being able to tell apart by test.
+    //
+    // It is not the whole of Windows' own entrance, which also scales the dialog up from about
+    // 1.05. A scale is not offered here on purpose: it resamples every glyph in the panel, and the
+    // text of a control that is resampled for a sixth of a second is text that shimmers.
+    //
+    // Read it rather than `Arrival()` for a position that follows the fade both ways; `Arrival()`
+    // is the same number until the layer starts leaving.
+
+    // Ask it to go away. `onDismiss` fires at once rather than at the end of the fade, and that is
+    // the point of the fence: what the page keeps is the page's own state, and a page that has been
+    // told can lay itself out and put the focus somewhere sensible while the layer is still on its
+    // way out. The layer outlives that layout -- ClearWidgets keeps it until it has gone -- and the
+    // window drops it when the fade is over. Defined below, beside CoverPage, because it asks the
+    // window things only the window can answer.
+    void Close();
+
+    // On its way out, and gone. `HasLeft()` is what the window sweeps for.
+    bool Leaving() const { return leaving; }
+    bool HasLeft() const { return leaving && !arrive.Wants(arrive.to); }
+
+    bool Animating() const override { return Widget::Animating() || arrive.Wants(arrive.to); }
+    void Tick(float dt) override {
+        Widget::Tick(dt);
+        arrive.Step(dt, motion::kFast);
+    }
+
+    // The part of the layer that is the layer's own content. A click in `rect` that is not in
+    // this is a click on the dim, which is what light-dismissing is. The default is the whole
+    // rectangle -- a layer with no dim, and so nothing to miss.
+    virtual D2D1_RECT_F Body() const { return rect; }
+
+    // A click that missed. This is where light-dismissing actually happens, and it has to be
+    // here: a layer *covers* the page, so a click that misses its content lands on the layer
+    // itself rather than on a control beside it -- and the window's own "something else was
+    // clicked, dismiss the rest" never fires for the thing that was clicked.
+    void OnPress(float x, float y) override {
+        if (!lightDismiss || !onDismiss) return;
+        if (!Inside(Body(), x, y)) Close();
+    }
+
+    // What a layer covers: the page, and not the title bar above it. A page sets its layer's
+    // `rect` to this in `Layout()`. Defined below, beside the window it asks for the size of.
+    D2D1_RECT_F CoverPage() const;
+
+    // The click missed what the layer put on screen, or the window was deactivated: for a layer
+    // that light-dismisses, that is a dismissal.
+    void Dismiss() override {
+        if (lightDismiss && onDismiss) Close();
+    }
+
+    void Paint(const Painter &p) override {
+        if (smoke) p.Fill(rect, Rgb(0x000000, smokeAlpha));
+    }
+
+    // What Tab walks while this is open, in order. Empty leaves the page's own order alone, which
+    // is right for a layer that is only a picture.
+    virtual std::vector<Widget *> FocusRing() { return {}; }
+    // Enter, when nothing in the layer holds the focus. The page's `OnDefaultAction()` is what is
+    // left after this.
+    virtual Widget *DefaultButton() { return nullptr; }
+
+    // Esc, offered by the window to the top layer first. True means it was taken.
+    bool Escape() {
+        // On its way out already: Esc is answered rather than passed on, or the page's cancel --
+        // usually "close the window" -- would get it from a dialog that is visibly already gone.
+        if (leaving) return true;
+        if (!escape || !onDismiss) return false;
+        Close();
+        return true;
+    }
+
+    Layer *AsLayer() override { return this; }
+};
+
 // The window used to walk its *widgets* instead and ask each one `OnTimer(id)`, which required
 // any owner to be in that list: a scroll bar inside a drop-down is not, so its timers arrived
 // nowhere at all -- silently -- and the drop-down carried a forwarder to work around it.
@@ -860,6 +1052,10 @@ struct Window {
         RefreshHover();
         Tick(dt);
         OnTick(dt);
+        // A layer that has finished leaving is dropped here rather than from inside its own Tick:
+        // the callback that told the page has long returned, the tick loop above is done walking the
+        // list, and nothing is left that can be looking at it.
+        DropGoneLayers();
     }
 
     // Hover, recomputed from where the cursor actually is rather than from the last
@@ -921,16 +1117,32 @@ struct Window {
         if (focused && !focused->persistent) focused = nullptr;
         std::vector<std::unique_ptr<Widget>> kept;
         for (auto &w : widgets) {
+            // A control that is leaving with a layer keeps its place until that layer is gone,
+            // whether or not it was marked persistent: the page was told the moment the layer
+            // started leaving (see Layer::Close) and the call that told it is the one that lays the
+            // page out -- so without this, every dismissal would pull the panel and the buttons on
+            // it out on the same frame and the fade would never be seen. One that has already
+            // arrived at nothing is not kept: that is the one this layout is meant to drop.
+            if (w->leavingWith && !w->leavingWith->HasLeft()) {
+                kept.emplace_back(std::move(w));
+                continue;
+            }
             if (w->persistent)          kept.emplace_back(std::move(w));
             else if (dispatchDepth > 0) retired.emplace_back(std::move(w));
         }
         widgets = std::move(kept);
     }
-
     // --- internals --------------------------------------------------------------
     void ApplyThemeToFrame();
     void ReloadTheme();
     bool CreateDevice();
+    // A layer that is on its way out, if there is one. The window takes no clicks while there is:
+    // what is being dismissed is not a place to be pressed again, the controls on it are on their
+    // way to being gone, and the page under it was not clickable a moment ago either.
+    Layer *LeavingLayer();
+    // Drops the layers that have finished leaving, the way ClearWidgets drops the rest. Called from
+    // Frame, after the tick, so that the list is not rebuilt while it is being walked.
+    void DropGoneLayers();
     bool CreateSizedResources();
     void ReleaseSizedResources();
     void ReleaseDevice();
@@ -949,7 +1161,13 @@ struct Window {
     // Everything but `except` puts away what it is showing -- an open list, a peeked pane. From
     // a copy of the list, because a dismissal is allowed to lay the page out again and the list
     // itself may not survive that. See `retired`.
-    void DismissOthers(Widget *except);
+    // A click on nothing, or on something raised: everything the click was not over is told, so
+    // that a drop-down left open closes. The point is in window DIPs, the space a layer's own
+    // rectangle is in.
+    void DismissOthers(Widget *except, float x, float y);
+    // The last raised control that is a layer, which is where Esc, Enter and the Tab ring go
+    // first. See Widget::AsLayer.
+    Layer *TopLayer();
     void MoveFocus(int delta);
     void SetFocusTo(Widget *w);
     // Ends a gesture the pointer is no longer allowed to finish, and hands the widget
@@ -1232,8 +1450,20 @@ inline void Window::Paint() {
         if (clipped) dc->PopAxisAlignedClip();
     };
     pass(0);
+    // Everything over the page is one group for as long as the layer on top of it is mid-fade, in
+    // either direction -- the length of one fade, and at rest nothing is pushed here at all. An
+    // opacity layer is what fades a group; see `arrive` in Layer for why the group cannot be each
+    // widget's own opacity.
+    Layer *top = TopLayer();
+    const float arrival = top ? top->Arrival() : 1.0f;
+    const bool fading = top && arrival != (top->Leaving() ? 0.0f : 1.0f);
+    if (fading)
+        dc->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
+                                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                            D2D1::IdentityMatrix(), arrival), nullptr);
     pass(1);
     pass(2);
+    if (fading) dc->PopLayer();
     // Last, so a page that draws to the top of its own area cannot run under the
     // caption -- which is now client area like any other, and has nothing but paint
     // order protecting it.
@@ -1457,7 +1687,20 @@ inline LRESULT Window::CaptionHitTest(POINT screen) const {
     return HTCLIENT;
 }
 
+inline Layer *Window::LeavingLayer() {
+    for (auto &w : widgets) {
+        Layer *l = w->AsLayer();
+        if (l && l->Leaving()) return l;
+    }
+    return nullptr;
+}
+
 inline Widget *Window::HitTest(float x, float y) {
+    // One fade's worth of "no": while a layer is on its way out, nothing answers the pointer. What
+    // is being dismissed is not a place to be pressed again, the controls on it are on their way to
+    // being gone, and the page under it was not clickable a moment ago either -- a click in the
+    // middle of a dismissal was aimed at what is leaving.
+    if (LeavingLayer()) return nullptr;
     // A scrolled-away control is not there. Without this the half of a card that has
     // slid under the header still answers the mouse, which is worse than invisible:
     // the click lands on something the person cannot see.
@@ -1487,16 +1730,97 @@ inline Widget *Window::HitTest(float x, float y) {
     return nullptr;
 }
 
-inline void Window::DismissOthers(Widget *except) {
+inline void Window::DismissOthers(Widget *except, float x, float y) {
     std::vector<Widget *> shown;
     shown.reserve(widgets.size());
     for (auto &w : widgets) shown.push_back(w.get());
-    for (Widget *w : shown)
-        if (w != except) w->Dismiss();
+    // Three things survive a click. What the click was over, obviously. What is *above* it -- a
+    // layer over a layer keeps its place while the lower one is being used. And **any layer whose
+    // own body holds the click**, wherever the click was aimed: a dialog sits below the button on
+    // it, so z alone would read a click on that button as a click outside the dialog, and close
+    // the dialog that was just used. Geometry settles it: a layer owns everything inside it.
+    for (Widget *w : shown) {
+        if (w == except) continue;
+        if (except && w->z > except->z) continue;
+        if (Layer *l = w->AsLayer()) {
+            if (Inside(l->Body(), x, y)) continue;
+        }
+        w->Dismiss();
+    }
+}
+
+// The layer the window's keyboard goes to first: the last of the raised controls that is one,
+// which is the same one the pointer would reach -- the hit test walks the list this way round.
+inline Layer *Window::TopLayer() {
+    for (auto it = widgets.rbegin(); it != widgets.rend(); ++it) {
+        Widget *w = it->get();
+        if (w->visible) {
+            if (Layer *l = w->AsLayer()) return l;
+        }
+    }
+    return nullptr;
+}
+
+inline D2D1_RECT_F Layer::CoverPage() const {
+    if (!owner) return {};
+    return { 0.0f, kCaptionH, owner->ClientW(), owner->ClientH() };
+}
+
+inline void Layer::Close() {
+    if (leaving) return;
+    leaving = true;
+    // Everything at or above this layer's `z` came out with it -- that is the convention the page was
+    // given when it added them: the layer first, and what sits on it after it, with a higher `z` --
+    // and each of them is marked with the layer it is leaving with. That mark is what keeps them in
+    // the list and out of reach for the length of the fade (see ClearWidgets and MoveFocus) and what
+    // tells the window what to take out at the end, which `z` alone could not: two layers can be
+    // leaving at once, and the one that set off first finishes first.
+    if (owner) {
+        for (auto &w : owner->widgets)
+            if (w->z >= z) w->leavingWith = this;
+        // The focus goes too, and before the page is told, so that whatever the page does about it
+        // wins and no caret is left in a control that is on its way out.
+        if (owner->focused && owner->focused->leavingWith == this) owner->SetFocusTo(nullptr);
+    }
+    if (Animations()) {
+        arrive.To(0.0f);
+    } else {
+        // Nothing to watch: gone now. `visible` false rather than a fade of no frames, so that the
+        // layout the page is about to do drops it -- ClearWidgets keeps a layer while it is leaving
+        // *and* still has somewhere to go, and this one has arrived.
+        arrive.Set(0.0f);
+        visible = false;
+    }
+    if (onDismiss) onDismiss();
+}
+
+inline void Window::DropGoneLayers() {
+    for (size_t i = 0; i < widgets.size(); ) {
+        Layer *l = widgets[i]->AsLayer();
+        if (!l || !l->HasLeft()) { i++; continue; }
+        // Everything that came out with it goes out of the window's hands the same frame -- off,
+        // unmarked, and left for the page's next layout to drop, which is the page's own trade and
+        // not the window's to make. One layer at a time, so that a second one still fading in the
+        // same list is not taken with it.
+        for (auto &w : widgets)
+            if (w->leavingWith == l) { w->leavingWith = nullptr; w->visible = false; }
+        if (focused && focused->leavingWith == l) focused = nullptr;
+        if (capture && capture->leavingWith == l) capture = nullptr;
+        // Retired rather than deleted while a message is being dispatched, the same way ClearWidgets
+        // retires one: the page was told inside a callback of its own, and a page that kept a
+        // pointer to the layer has a live object to read until that message returns.
+        if (dispatchDepth > 0) retired.emplace_back(std::move(widgets[i]));
+        widgets.erase(widgets.begin() + i);
+    }
 }
 
 inline bool Window::RefreshHover() {    POINT pt = {};
     if (!GetCursorPos(&pt)) return false;
+    // Nothing changes state while a layer is on its way out. The pointer cannot reach anything (see
+    // HitTest), so the answer is the same as last frame's -- and a highlight going out under the
+    // cursor as a panel began to fade would be the one thing in the picture moving that is not the
+    // fade.
+    if (LeavingLayer()) return false;
     // Whose window the pointer is actually over. A cursor resting on something else
     // must not leave a control lit: this is called from the tick, not from a mouse
     // message, so there is no WM_MOUSELEAVE to lean on.
@@ -1565,8 +1889,17 @@ inline void Window::SetFocusTo(Widget *w) {
 
 inline void Window::MoveFocus(int delta) {
     std::vector<Widget *> tab;
-    for (auto &w : widgets)
-        if (w->visible && w->enabled && w->Focusable()) tab.push_back(w.get());
+    // A layer that names a ring takes the whole of Tab. It is what makes a modal dialog modal to
+    // the keyboard as well as to the pointer, and it is how a flyout keeps the focus inside
+    // itself. An empty ring leaves the page's own order alone. A layer on its way out names nothing:
+    // its ring is on its way to being gone, and Tab in the middle of a dismissal belongs to the page
+    // that is about to be the only thing there.
+    if (Layer *top = TopLayer()) {
+        if (!top->Leaving()) tab = top->FocusRing();
+    }
+    if (tab.empty())
+        for (auto &w : widgets)
+            if (w->visible && w->enabled && w->Focusable() && !w->leavingWith) tab.push_back(w.get());
     if (tab.empty()) return;
     int at = -1;
     for (size_t i = 0; i < tab.size(); i++) if (tab[i] == focused) at = (int)i;
@@ -2087,7 +2420,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // Everything else puts away whatever it was showing. This is what closes an open
         // drop-down when the click lands somewhere else -- including on nothing, which is
         // the case the control itself can never see.
-        self->DismissOthers(w);
+        self->DismissOthers(w, mx, my);
         // Those dismissals can lay the page out again -- a pane that closes tells the page, and
         // a page that lays itself out is a different list of widgets. What the pointer was over
         // is then a control that has been retired, freed when this message returns, and a press
@@ -2260,15 +2593,33 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case VK_SPACE:
             if (self->focused) { self->focused->OnActivate(); self->Invalidate(); }
             return 0;
-        case VK_RETURN:
+        case VK_RETURN: {
             // Enter operates the focused control if it is one that can be operated,
             // and otherwise the page's default action. Without the first half, tabbing
-            // to "Browse" and pressing Enter would press the page's default button.
-            if (self->focused) self->focused->OnActivate();
-            else               self->OnDefaultAction();
+            // to "Browse" and pressing Enter would press the page's default button. A
+            // layer in between gets the turn before the page does: a dialog's default
+            // button is the page's default action for as long as the dialog is up.
+            Widget *operate = self->focused;
+            if (!operate) {
+                Layer *top = self->TopLayer();
+                // Not if it is on its way out: Enter pressed again in the middle of a dismissal
+                // would press a button that is already gone.
+                operate = (top && !top->Leaving()) ? top->DefaultButton() : nullptr;
+            }
+            if (operate) operate->OnActivate();
+            else         self->OnDefaultAction();
             self->Invalidate();
             return 0;
+        }
         case VK_ESCAPE:
+            // A layer first: Esc is how a dialog and a flyout are closed, and the page's cancel
+            // -- usually "close the window" -- is what is left when there is no layer to take it.
+            if (Layer *top = self->TopLayer()) {
+                if (top->Escape()) {
+                    self->Invalidate();
+                    return 0;
+                }
+            }
             self->OnCancel();
             return 0;
         }

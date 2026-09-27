@@ -85,6 +85,80 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `Widget *capture` | The control the mouse button went down on, until it is released. |
 | `bool showFocusRing` | Set when Tab moves focus, cleared by a click. Controls draw a focus ring only while it is set. |
 
+## Layers
+
+A `Layer` is a control that floats over the page: a dialog, a flyout, a menu, a tip. A widget with
+a `z` already paints over the page and is reached by the pointer before it; a layer adds the things
+that make it a layer rather than a control that happens to be raised.
+
+| Member | Description |
+|---|---|
+| `bool modal` | Default true. The layer takes the input *under* it: its rectangle is the page (see `CoverPage()`), so a click that is not on something the layer itself put there lands on the layer and stops there. |
+| `bool lightDismiss` | Default **false**. A click that misses `Body()`, or the window losing activation, calls `onDismiss`. **A flyout turns this on; a dialog does not** -- Windows draws the same line: `Popup` carries `IsLightDismissEnabled`, and `ContentDialog` has no property of the kind and can only be answered with a button. |
+| `bool smoke` | Default false. Dims what is behind it, over black, by `smokeAlpha`. The same black the pane puts on a page it floats over. |
+| `float smokeAlpha` | Default 0.14. The dim's own alpha: a dialog that wants to be the only thing on screen turns it up, a suggestion turns it down. |
+| `bool escape` | Default true. Esc closes it -- the window offers Esc to the layer before the page's `OnCancel()`. A dialog with a job still running says false. |
+| `std::function<void()> onDismiss` | What "closed" *means*, which is the page's: it clears its flag and lays out again. |
+| `virtual D2D1_RECT_F Body() const` | The part of the layer that is the layer's own content. A click in `rect` outside it is a click on the dim. The default is the whole rectangle -- a layer with no dim, and so nothing to miss. |
+| `virtual std::vector<Widget *> FocusRing()` | What Tab walks while the layer is open, in order. Empty leaves the page's own order alone, which is right for a layer that is only a picture. |
+| `virtual Widget *DefaultButton()` | Enter, when nothing in the layer holds the focus. |
+| `D2D1_RECT_F CoverPage() const` | What a layer covers: the page, and not the title bar above it. A page sets its layer's `rect` to this in `Layout()`. |
+| `void Close()` | Asks the layer to go away, and the page's `onDismiss` runs **at once**: what the page keeps is its own state, and a page that has been told can lay itself out and put the focus somewhere sensible while the layer is still on its way out. The layer survives that layout and fades out; the window drops it when the fade is over. Calling it twice does nothing the second time. Ignored -- no fade at all -- with animations off. |
+| `bool Leaving() const` | On its way out. The window takes no clicks while a layer is: what is being dismissed is not a place to be pressed again. |
+| `bool HasLeft() const` | Leaving, and the fade has finished. The window sweeps these away after the frame's tick. |
+| `float Arrival() const` | How far the layer has arrived: 0 as it comes up, 1 at rest, and on its way back down while it leaves. For a subclass that draws a panel of its own and wants it to come in on the same clock. |
+
+**Add the layer first and what sits on it after it**, with a higher `z`: the hit test reaches the
+last added of the raised controls while the painter orders by `z`, and this is the order that makes
+the two agree.
+
+```cpp
+if (asking) {
+    auto *box = new ConfirmLayer();              // your Layer subclass
+    box->smoke = true;
+    box->z = 1;
+    box->onDismiss = [this] { asking = false; Layout(); };
+    Layer *layer = Add(box);
+    layer->rect = layer->CoverPage();
+
+    // Close() first, then whatever the button is for: a page that lays itself out while the layer
+    // is not yet leaving pulls the layer out before it can be seen to go.
+    Button *ok = Add(new Button(L"OK", ButtonStyle::Accent, [this, box] { box->Close(); Apply(); }));
+    ok->z = 2;                                   // over the layer, and after it in the list
+    ok->rect = { ... };
+    box->ring = { ok };                          // what its FocusRing() returns
+    box->def  = ok;
+}
+```
+
+Three things worth knowing before writing one:
+
+- **A layer arrives and leaves by fading**, over `motion::kFast` (167 ms) in both directions, and
+the dim fades with it. `kFast` rather than the `kNormal` a page or a flyout takes: those are
+watched, and a panel is *read* -- it is legible well before the fade is over, and a quarter of a
+second of dim creeping over the page is a quarter of a second of "not yet" for nothing. The curve
+is `Decel`, so it is 0.9 of the way there about 90 ms in. It is one fade for the whole group: the
+window paints everything over the page through a single opacity layer while it runs, because fading
+each widget on its own would show the page through the gaps between them and come out darker where
+two overlap. With animations off the layer is drawn whole on the first frame that asks for it and
+gone on the next layout, with no fade and no invisible frame in between. **The controls the page put
+on it leave with it**: they keep their places while the fade runs, so a button does not vanish from
+under a panel that is still on screen, and none of them answers the pointer, the Tab ring, Enter or
+Esc until it is gone.
+- **The surface has to be opaque, and wants a shadow.** Painting the panel over the page in
+`pal.cardBg` is exactly what the note over `pal.flyoutBg` warns about: a card is part of the page and
+is meant to let it show through, so the page's own text reads through the dialog -- and the library
+has no blur to hide it behind. `pal.flyoutBg` and `pal.flyoutStroke` are the colours for a surface
+over the page, and `Painter::Shadow` is what puts it off the page: a dialog's numbers are wider and
+softer than a flyout's, `p.Shadow(panel, radius, 1.0f, 26.0f, 8.0f, 16, 0.011f)`.
+- **The caption bar stays live**, on purpose: the layer covers the page and not the title bar, so
+dragging the window, double-clicking the caption and the Windows 11 snap-layout flyout all keep
+working with a modal open. Windows' own modal dialogs keep their title bar too, and the smoke of a
+`ContentDialog` does not reach past the client area either.
+
+A drop-down's flyout is a raised control rather than a layer: it light-dismisses, but the page under
+it is still the page. A layer is what a page reaches for when the *page* should not be reachable.
+
 ## Window state
 
 | Member | Description |
