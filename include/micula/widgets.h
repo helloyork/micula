@@ -1,7 +1,8 @@
 // Micula / widgets.h
 //
 // The control vocabulary: Button, CheckBox, ToggleSwitch, Segmented, Slider,
-// ScrollBar, DropDown, SideNav, TextBox and ProgressBar.
+// ScrollBar, DropDown, SideNav, TextBox, ProgressBar, and the Dialog a page asks its questions
+// with.
 //
 // Kept small on purpose. Every control here is drawn by hand in four states, and the
 // next one is not free -- it is another rest/hover/pressed/disabled quartet to get
@@ -31,6 +32,7 @@
 
 #include "button.h"
 #include "check_box.h"
+#include "dialog.h"
 #include "drop_down.h"
 #include "progress_bar.h"
 #include "scroll_bar.h"

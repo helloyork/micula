@@ -90,7 +90,6 @@ struct Settings : Window {
     int   olderThan = 3;
     float freeGb = 20.0f;
     std::wstring archive = L"D:\\Archive\\Downloads";
-    int   theme = 0;                 // System, Light, Dark
 
     int   when = 1;
     int   hour = 1;
@@ -130,12 +129,9 @@ struct Settings : Window {
     const wchar_t *Title() const override { return L"Folder Cleanup"; }
     void MinSize(int *w, int *h) const override { *w = 680; *h = 600; }
 
-    void ApplyTheme() {
-        const bool dark = theme == 0 ? SystemUsesDarkTheme() : theme == 2;
-        pal = MakePalette(dark);
-        ApplyThemeToFrame();
-        Invalidate();
-    }
+    // The theme is the library's switch now -- `micula::Theme` and `micula::ThemeSetting` -- rather
+    // than an `int` here and a palette this page built for itself. See Window::ReloadTheme for why
+    // the local version was wrong: it lasted until Windows announced that the colours had changed.
 
     void Layout() override;
     void PaintPage(const Painter &p) override;
@@ -230,9 +226,9 @@ void Settings::Layout() {
         }
 
         heading(L"Appearance");
-        Add(new Segmented({ L"System", L"Light", L"Dark" }, theme, [this](int i) {
-            theme = i;
-            ApplyTheme();
+        Add(new Segmented({ L"System", L"Light", L"Dark" }, (int)ThemeSetting(), [this](int i) {
+            Theme((ThemeMode)i);
+            ReloadTheme();
         }))->rect = card(kIconColor, L"Theme", L"Follow Windows or pick one", 210);
 
         y += 8;

@@ -44,6 +44,58 @@ auto *ok = Add(new micula::Button(L"Save", micula::ButtonStyle::Accent, [this] {
 ok->rect = micula::Rect(24, y, ok->PreferredWidth(measure), micula::metric::kControlH);
 ```
 
+## Dialog
+
+A question with buttons on it, and not a control a page repeats: it makes one when it has a
+question, and the answer comes back as a number.
+
+It is a `Layer` -- see [Window](window.md#layers) -- so everything said there holds: it takes the
+input under it, it fades in and out over 167 ms as one group with its smoke, Tab stays inside it
+while it is up, Esc closes it, and the title bar above it stays live so the window can still be
+dragged with a question open.
+
+```cpp
+if (asking) {
+    auto *d = new Dialog(L"Restart to apply?",
+                         L"Some of these settings only take effect on the next start.");
+    d->AddButton(L"Later", 0);
+    d->AddButton(L"Restart now", 1, ButtonStyle::Accent);
+    d->onResult = [this](int r) {
+        if (r == 1) Restart();
+        asking = false;
+        Layout();
+    };
+    Add(d);                    // and nothing else: the dialog adds its own buttons
+}
+```
+
+| Member | Description |
+|---|---|
+| `Dialog(std::wstring title, std::wstring body = {})` | The heading, and the text under it. Either may be empty. |
+| `Dialog &AddButton(std::wstring label, int result, ButtonStyle style = ButtonStyle::Standard)` | Adds a button to the footer, left to right: **the one that means "yes" is added last**, because Windows puts the primary at the right-hand end with the cancel to its left. `result` is the number this button answers with, and it is the page's own. |
+| `std::function<void(int)> onResult` | The answer, with that number. It runs *after* the dialog has started leaving, so laying the page out in it cannot take the panel off the screen in the middle of its fade. |
+| `int cancelResult` | What Esc and the window deactivating report. Default 0 -- give it the number of the button that means cancel. |
+| `bool enterTakesPrimary` | Whether Enter presses the accent button. True by default, and **turn it off for a dialog whose primary destroys something**: Enter arriving from nowhere is how people lose files, which is why Windows leaves a `ContentDialog` with no default button unless a page names one. |
+
+Worth knowing:
+
+- **A page adds the dialog and nothing else.** The buttons are the dialog's own, added through
+  `Widget::OnAdded` when the dialog joins the window -- they have to come after it in the list and
+  above it in `z`, and that hook is the one moment a control can do that without the page being told
+  to. They are its Tab ring, and the accent one is its default button and takes the focus.
+- It is as wide as its content wants to be, with the button row's own width as a floor: 320 DIPs at
+  the least and 548 at the most, centred in the page -- the client under the caption bar, which is
+  where Windows puts one.
+- The panel is `flyoutBg`, stroked with `dialogStroke` and behind `Painter::Shadow` with a dialog's
+  numbers -- tighter and lighter than a flyout's, because that is what Fluent's ambient shadow is
+  (a blur of 8, no offset) and because on Windows the sharp half of a shadow is a 1-DIP **stroke**
+  instead. `dialogStroke` is heavier than a flyout's contour for that reason: at 5.78 per cent a
+  line of 234 along a 249 panel is a contour nobody can find. The button area is a surface of its
+  own, a shade down from the body, under a separator line: what Windows' own prompts look like, and
+  what stops the last row of buttons reading as one more line of the text.
+- `smoke` is on and `lightDismiss` is off: a click on the dim is how a flyout is abandoned, and a
+  question is answered.
+
 ## CheckBox
 
 ```cpp

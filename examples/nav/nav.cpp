@@ -136,6 +136,10 @@ void ReadState(const wchar_t *cmd) {
     case 1: Animations(true); break;
     default: AnimationsAuto(); break;
     }
+    // 0 follows Windows, 1 light, 2 dark -- the library's own three, set here rather than after
+    // Create: `Create` builds the palette *from* this, so a window that has been told before it has
+    // been made comes up in the right theme on its first frame.
+    Theme((ThemeMode)(std::min)((std::max)(number(L"theme=", (int)ThemeSetting()), 0), 2));
 }
 
 // The same switch as an argument: -1 follows Windows, 0 off, 1 on. The debug page's list is
@@ -224,6 +228,10 @@ struct NavDemo : Window {
     // does not dismiss the layer it sits on.
     bool layerOpen = false;
     int layerCount = 0, layerCard = -1;
+    // The dialog's own state: whether it is up, and what it answered last. -1 is "not asked yet",
+    // which is worth telling apart from an answer of 0.
+    bool dialogOpen = false;
+    int dialogAnswer = -1, dialogCard = -1;
 
     const wchar_t *ClassName() const override { return L"MiculaNavDemo"; }
     const wchar_t *Title() const override { return L"Micula - navigation pane"; }
@@ -426,6 +434,19 @@ struct NavDemo : Window {
                                       (layerOpen ? L" times, and the layer is still up" : L" times; the layer is closed");
         Invalidate();
     }
+
+    // The same for the dialog, which reports the number a button carried rather than counting them:
+    // a dialog's answer is the whole point of it, and a page does something with it.
+    void DrawDialogCard() {
+        if (dialogCard < 0 || dialogCard >= (int)cards.size()) return;
+        if (dialogAnswer < 0)
+            cards[dialogCard].detail = L"A title, a body, and a footer of buttons";
+        else if (dialogAnswer == 1)
+            cards[dialogCard].detail = L"Answered Restart now: the page's own number came back";
+        else
+            cards[dialogCard].detail = L"Answered Later";
+        Invalidate();
+    }
     // Which of the debug page's row counts is the one the pane was built with.
     int RowsChoice() const {
         for (int i = 0; i < (int)(sizeof(kRowChoices) / sizeof(kRowChoices[0])); i++)
@@ -589,6 +610,15 @@ void NavDemo::Layout() {
                            go->PreferredWidth(measure)));
             DrawLayerCard();
         }
+        {
+            Button *go = Add(new Button(L"Show a dialog", ButtonStyle::Standard,
+                                        [this] { dialogOpen = true; Layout(); }));
+            dialogCard = (int)cards.size();
+            place(go, card(kIconDebug, L"Dialog",
+                           L"A title, a body, and a footer of buttons",
+                           go->PreferredWidth(measure)));
+            DrawDialogCard();
+        }
         card(L"", L"Started with", CommandLine(), 0);
         {
             Button *again =
@@ -638,6 +668,39 @@ void NavDemo::Layout() {
             box->def = close;
             SetFocusTo(count);
         }
+        // And the dialog, which does the same job with none of the page's work: it adds its own
+        // buttons, draws its own panel, and reports which one was pressed. `onResult` is where the
+        // answer arrives, and by then the dialog is already on its way out -- see Dialog::Pick -- so
+        // laying the page out here cannot take the panel off the screen in the middle of its fade.
+        if (dialogOpen) {
+            auto *d = new Dialog(L"Restart to apply?",
+                                 L"Some of these settings only take effect the next time Micula "
+                                 L"starts. Nothing is lost by waiting.");
+            d->AddButton(L"Later", 0);
+            d->AddButton(L"Restart now", 1, ButtonStyle::Accent);
+            d->onResult = [this](int r) {
+                dialogAnswer = r;
+                dialogOpen = false;
+                Layout();
+            };
+            Add(d);
+        }
+    } else if (page == 5 + navRows) {
+        // The pane's second footer row, and the one page in here that is not about the pane: the
+        // palette, which is the `settings` example's own card with the same three labels. It is here
+        // as much as on the Debug page because the thing worth looking at is the *dialog* in both
+        // themes, and a switch on a page is the only way to get there without restarting.
+        heading(L"Theme");
+        Add(new Segmented({ L"System", L"Light", L"Dark" }, (int)ThemeSetting(), [this](int i) {
+            // The library's switch, so this choice is the program's and a system theme change does
+            // not walk over it -- which is what setting `pal` alone would have let it do.
+            Theme((ThemeMode)i);
+            ReloadTheme();
+        }))->rect = card(kIconColor, L"Theme", L"Follow Windows or pick one", 210);
+        heading(L"About");
+        card(glyph::kInfo, L"Micula " MICULA_VERSION_STRING,
+             L"Header-only Fluent controls for Win32", 0);
+        card(kIconLight, L"Backdrop", BackdropName(), 0);
     } else
     switch (page) {
     case 0:

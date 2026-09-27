@@ -158,6 +158,8 @@ working with a modal open. Windows' own modal dialogs keep their title bar too, 
 
 A drop-down's flyout is a raised control rather than a layer: it light-dismisses, but the page under
 it is still the page. A layer is what a page reaches for when the *page* should not be reachable.
+`Dialog` is this, ready made -- a title, a body, a footer of buttons, and an answer -- with the
+buttons it adds itself: see [Controls](controls.md).
 
 ## Window state
 
@@ -182,17 +184,22 @@ it is still the page. A layer is what a page reaches for when the *page* should 
 | Member | Description |
 |---|---|
 | `void ApplyThemeToFrame()` | Applies `pal.dark` to the frame: DWM dark mode, rounded corners, Mica. Call after replacing `pal`. |
-| `void ReloadTheme()` | Rebuilds `pal` from the system theme and accent, applies it and repaints. Runs automatically when Windows switches between light and dark. |
+| `void ReloadTheme()` | Rebuilds `pal` from `DarkTheme()` and the accent, applies it and repaints. Runs automatically when Windows says the colours changed. |
+| `void Theme(ThemeMode)` | Which theme the window paints in: `Auto` (the default, following the machine), `Light` or `Dark`. Set it before `Create` and the window comes up in it; set it while one is up and call `ReloadTheme()`. |
+| `ThemeMode ThemeSetting()` | Which of the three it is in. For a settings page's initial selection. |
+| `bool DarkTheme()` | What that resolves to right now -- the machine's answer under `Auto`, and the program's otherwise. **`ReloadTheme()` goes through this**, so a program that has said Dark stays dark when Windows announces that the colours changed. |
 
 A window can use its own theme:
 
 ```cpp
-pal = micula::MakePalette(true);   // dark
-ApplyThemeToFrame();
-Invalidate();
+micula::Theme(micula::ThemeMode::Dark);
+ReloadTheme();                             // rebuild the palette and repaint
 ```
 
-The next system theme change replaces it through `ReloadTheme()`.
+Setting `pal` yourself and calling `ApplyThemeToFrame()` still works, and it is what a page with a
+palette of its own -- one that is not `MakePalette` -- should do. What it does **not** survive is a
+system theme change: `ReloadTheme()` runs on that message, and without a `ThemeMode` there is nothing
+for it to know that this program had an opinion.
 
 ## Pictures
 

@@ -220,14 +220,22 @@ struct Painter {
     void FillRound(const D2D1_RECT_F &r, float radius, const D2D1_COLOR_F &c) const {
         rt->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), Brush(c));
     }
-    // Stroked on the *inside* of the rectangle. A 1-DIP stroke centred on the edge
-    // straddles the pixel boundary and comes out as two half-covered rows of pixels,
-    // which at 100% scaling reads as a blurry grey line instead of a crisp one.
+    // Stroked on the *inside* of the rectangle, and the corner comes in with it.
+    //
+    // Two things this gets right that a plain DrawRoundedRectangle does not. A 1-DIP stroke
+    // centred on the edge straddles the pixel boundary and comes out as two half-covered rows of
+    // pixels, which at 100% scaling reads as a blurry grey line instead of a crisp one -- so the
+    // rectangle is inset by half of it. And the radius has to be reduced by the same half, or the
+    // four curves stop being concentric with the shape they follow: the edge of an 8-DIP corner,
+    // inset by 0.5, is a 7.5-DIP corner. That arithmetic -- outer radius minus the margin between
+    // the two shapes is the inner radius -- is the same one `Panel` does for its border, and
+    // anything else shows as a corner that is not quite round where the stroke meets it.
     void StrokeRound(const D2D1_RECT_F &r, float radius, const D2D1_COLOR_F &c,
                      float width = 1.0f) const {
         const D2D1_RECT_F in = { r.left + width / 2, r.top + width / 2,
                                  r.right - width / 2, r.bottom - width / 2 };
-        rt->DrawRoundedRectangle(D2D1::RoundedRect(in, radius, radius), Brush(c), width);
+        const float rad = radius > width / 2 ? radius - width / 2 : 0.0f;
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(in, rad, rad), Brush(c), width);
     }
     void Line(float x0, float y0, float x1, float y1, const D2D1_COLOR_F &c,
               float width = 1.0f) const {
@@ -241,20 +249,31 @@ struct Painter {
     // per cent was a black band with an edge on it, and the outermost step has to be faint enough to
     // disappear rather than to end.
     //
-    // `reach` is how far it spreads, `drop` how far it sits below the surface -- the light is above,
-    // and what hangs off something hangs downward -- and `layers` how many steps there are. **What
-    // reads as height is the spread rather than the darkness**: over a dim, a merely darker shadow
-    // has nowhere left to be darker than, and it is the size of the thing that says the surface is
-    // off the page. A dialog is further off it than a flyout, and wants both numbers larger.
+    // `reach` is how far it spreads and `drop` how far it sits below the surface, so that the light
+    // reads as being above. **What reads as height is the spread rather than the darkness**: over a
+    // dim, a merely darker shadow has nowhere left to be darker *than*.
+    //
+    // `strength` is how much darkness has piled up where the shadow meets the surface. Fluent's own
+    // numbers are the reference: its ambient shadow is a blur of 8 with no offset at 20 per cent,
+    // and on Windows the sharp half of the pair -- `blur 64, y 32` at the high end -- is replaced by
+    // the 1-DIP stroke every elevation in Windows 11 has. So a dialog over a dim wants a *tighter*
+    // shadow than it looks like it should, plus a contour somebody can see; a flyout wants a narrow
+    // one and no stroke, because the page it hangs off is already the contrast.
     //
     // `opacity` fades the whole thing with whatever the caller is already animating. A surface that
     // fades while its shadow stays is the one thing that gives a fade away.
     void Shadow(const D2D1_RECT_F &r, float radius, float opacity = 1.0f, float reach = 14.0f,
-                float drop = 4.0f, int layers = 12, float perLayer = 0.009f) const {
+                float drop = 4.0f, int layers = 12, float strength = 0.11f) const {
         for (int i = layers; i >= 1; i--) {
             const float e = reach * (float)i / (float)layers;
+            // Quadratic, not one alpha for every layer. A flat stack has an outermost layer as dark
+            // as its innermost, so a long shadow *ends* on a step rather than fading into the
+            // surface -- the one edge that gives a fake blur away, and the reason the weights square
+            // as they go out. They sum to about a third of the layers, which is where the divisor
+            // comes from: what lands on the surface is `strength`, whatever `layers` is.
+            const float w = (float)(layers - i + 1) / (float)layers;
             FillRound({ r.left - e, r.top - e + drop, r.right + e, r.bottom + e + drop },
-                      radius + e, Rgb(0x000000, perLayer * opacity));
+                      radius + e, Rgb(0x000000, strength * opacity * w * w * 3.0f / (float)layers));
         }
     }
     // A panel whose four corners are chosen one by one, and whose border runs along any
@@ -578,6 +597,14 @@ struct Widget {
     // A disabled control animates nothing: its states are all off, so the cross-fades
     // run down to zero and stay there.
     float Want(bool on) const { return on && enabled ? 1.0f : 0.0f; }
+
+    // Called by the window the moment the control joins it -- see Window::Add.
+    //
+    // For a control that brings controls of its own: a dialog and its buttons, a pane and its rows.
+    // They have to be added *after* it and above it in `z` -- the hit test reaches the last added of
+    // the raised ones while the painter orders by `z`, and this is the order that makes the two
+    // agree -- and this is the one moment a control can do that without the page being told to.
+    virtual void OnAdded() {}
 
     // The cursor, in this widget's own coordinates: window DIPs with the page's paint
     // offset taken back off, so a control that reads the mouse while it is being
@@ -1072,6 +1099,11 @@ struct Window {
     template <typename T> T *Add(T *w) {
         w->owner = this;
         widgets.emplace_back(w);
+        // A control that brings controls of its own makes them now, which is why this is called from
+        // inside Add rather than after it: they have to sit after it in the list and above it in
+        // `z`. Adding here is safe -- what grows is the vector, and what Add hands back is the heap
+        // block, not an element of it.
+        w->OnAdded();
         return w;
     }
     // --- what a running callback is still standing on -----------------------------
@@ -1246,7 +1278,12 @@ inline void Window::ApplyThemeToFrame() {
 }
 
 inline void Window::ReloadTheme() {
-    pal = MakePalette(SystemUsesDarkTheme());
+    // `DarkTheme()`, not `SystemUsesDarkTheme()`: a program that has said Light or Dark keeps it
+    // through a system theme change, which is the whole point of there being a mode. This is the one
+    // caller of it, and it is called from WM_SETTINGCHANGE when Windows says the colours changed --
+    // so a page whose only statement about its theme was to set `pal` was a page that lost it the
+    // moment somebody opened the personalisation settings.
+    pal = MakePalette(DarkTheme());
     ApplyThemeToFrame();
     Invalidate();
 }
@@ -1935,7 +1972,9 @@ inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
                                    reinterpret_cast<IUnknown **>(&dw))))
         return false;
     if (!fonts.Create(dw)) return false;
-    pal = MakePalette(SystemUsesDarkTheme());
+    // The program's own answer if it has one, and the machine's otherwise -- see ThemeMode. Read
+    // here rather than assumed, so that a window told before it was made comes up in it.
+    pal = MakePalette(DarkTheme());
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc   = Proc;

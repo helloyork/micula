@@ -6,6 +6,31 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`Dialog`.** A question with buttons on it: a title, a body, a footer of buttons on a surface of
+  its own under a separator line, a border and a shadow, over the layer below it. The buttons are the
+  dialog's own -- a page adds the dialog and nothing else, which is what the new `Widget::OnAdded`
+  hook is for -- and `onResult` arrives with the number the page gave the button that was pressed,
+  after the dialog has started leaving, so that laying the page out there cannot take the panel off
+  the screen mid-fade. Esc reports `cancelResult`, `lightDismiss` stays off, and Enter presses the
+  accent button unless `enterTakesPrimary` is turned off. The `nav` example has one on the Debug
+  page.
+- **`Painter::Shadow` got a shape and a unit.** Its last argument is the strength that lands on the
+  surface rather than a per-layer alpha, and the weights now fall off quadratically, so a long shadow
+  fades into what it is cast on instead of ending on a step. `StrokeRound`'s corner comes in with its
+  stroke, which is the same arithmetic `Panel` already did: outer radius minus the margin is the
+  inner radius, and anything else leaves the corner not quite round where the stroke meets it.
+  `Palette::dialogStroke` is new -- a dialog's 1-DIP contour, heavier than a flyout's, because on
+  Windows that stroke is what replaces the sharp half of a shadow.
+- **`micula::Theme(ThemeMode)`** -- `Auto`, `Light` or `Dark`, the same three states the animation
+  switch has. `Window::ReloadTheme` resolves through it now, so a program that has said Dark is not
+  put back on the machine's answer when Windows announces that the colours changed; setting `pal` by
+  hand, which is what the examples did, was exactly that. `DarkTheme()` is the resolved answer and is
+  what `Create` builds the first palette from.
+- The `nav` example's Settings page -- the pane's second footer row, which until now drew the "about"
+  filler -- offers a theme to pick, through the switch above.
+
 ## [0.3.0] - 2026-09-28
 
 ### Added

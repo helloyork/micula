@@ -84,6 +84,45 @@ inline bool SystemUsesDarkTheme() {
     return light == 0;
 }
 
+// Which theme a window paints in: the machine's answer, or this program's own. Three states for the
+// same reason the animation switch has three, and the reason is not symmetry.
+//
+// `Window::ReloadTheme` is called when Windows broadcasts `ImmersiveColorSet` -- which is exactly the
+// moment somebody changes a colour setting -- and it rebuilds the palette. Without a mode there is
+// nothing to tell "follow what the machine says" apart from "I have said dark, leave me alone", so
+// a page whose only statement about its theme was `pal = MakePalette(true)` went light the first time
+// a person opened the personalisation settings. The examples did exactly that until this existed.
+enum class ThemeMode { Auto, Light, Dark };
+
+namespace detail {
+inline ThemeMode &ThemeSlot() {
+    static ThemeMode mode = ThemeMode::Auto;
+    return mode;
+}
+}  // namespace detail
+
+// What the window should paint in, resolved. Cheap enough to ask wherever it is wanted --
+// `ReloadTheme` is the only caller -- so unlike `Animations()` there is no cached answer to keep in
+// step with anything, and asking it always tells the truth about the machine right now.
+inline bool DarkTheme() {
+    switch (detail::ThemeSlot()) {
+    case ThemeMode::Light: return false;
+    case ThemeMode::Dark:  return true;
+    default:               return SystemUsesDarkTheme();
+    }
+}
+
+// Say it. `Auto` follows the machine; the other two do not follow anything, including the machine.
+//
+// Set it before `Create` and the first palette the window builds is already this one -- which is
+// what a command line argument wants. Set it while a window is up and call `ReloadTheme()` to put it
+// into effect, which is what a settings page wants.
+inline void Theme(ThemeMode mode) { detail::ThemeSlot() = mode; }
+inline void ThemeAuto() { Theme(ThemeMode::Auto); }
+
+// Which of the three it is in.
+inline ThemeMode ThemeSetting() { return detail::ThemeSlot(); }
+
 // The accent shade Windows itself would use on a surface of this theme.
 //
 // AccentPalette is 32 bytes: eight **RGBA** entries, [0] lightest through [7] darkest.
@@ -160,6 +199,16 @@ struct Palette {
     // options; that is what it looked like until somebody said so.
     D2D1_COLOR_F flyoutBg;
     D2D1_COLOR_F flyoutStroke;
+    // A dialog's own contour, and heavier than a flyout's on purpose.
+    //
+    // Every elevation in Windows has a 1-DIP stroke -- see "Layering and elevation", where a dialog
+    // is 128 and every rung of the table says stroke width 1 -- and Fluent's shadow system says why:
+    // on Windows the *key* shadow, the sharp one that defines an object's edges, is replaced by a
+    // stroke, and only the soft ambient part is left to the blur. So the contour is doing real work,
+    // and the flyout's SurfaceStrokeColorFlyout at 5.78% is a line of 234 along a 249 panel: a
+    // contour nobody can find. Sized here at Fluent's own secondary stroke, which is what a raised
+    // surface's edge is allowed to be.
+    D2D1_COLOR_F dialogStroke;
     D2D1_COLOR_F controlBg;       // button / input rest state
     D2D1_COLOR_F controlBgHover;
     D2D1_COLOR_F controlBgPressed;
@@ -513,6 +562,7 @@ inline Palette MakePalette(bool dark) {
         p.cardStroke          = Rgb(0x000000, 0.10f);          // CardStrokeColorDefault
         p.flyoutBg            = Rgb(0x2C2C2C);                 // SolidBackgroundFillColorTertiary
         p.flyoutStroke        = Rgb(0x000000, 0.20f);          // SurfaceStrokeColorFlyout
+        p.dialogStroke        = Rgb(0x000000, 0.35f);          // ...Secondary, for a surface on a dim
         p.controlBg           = Rgb(0xFFFFFF, 0.0605f);        // ControlFillColorDefault
         p.controlBgHover      = Rgb(0xFFFFFF, 0.0837f);        // ...Secondary
         p.controlBgPressed    = Rgb(0xFFFFFF, 0.0326f);        // ...Tertiary
@@ -538,6 +588,7 @@ inline Palette MakePalette(bool dark) {
         p.cardStroke          = Rgb(0x000000, 0.0578f);
         p.flyoutBg            = Rgb(0xF9F9F9);                 // SolidBackgroundFillColorTertiary
         p.flyoutStroke        = Rgb(0x000000, 0.0578f);
+        p.dialogStroke        = Rgb(0x000000, 0.16f);          // ControlStrokeColorSecondary
         p.controlBg           = Rgb(0xFFFFFF, 0.70f);
         p.controlBgHover      = Rgb(0xF9F9F9, 0.50f);
         p.controlBgPressed    = Rgb(0xF9F9F9, 0.30f);
