@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Added
 
 - **`Dialog`.** A question with buttons on it: a title, a body, a footer of buttons on a surface of
