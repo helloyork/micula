@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-28
+
 ### Added
 
 - **Layers.** `Layer` is a control that floats over the page -- a dialog, a flyout, a menu, a tip --
