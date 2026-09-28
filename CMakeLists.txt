@@ -5,6 +5,11 @@ cmake_minimum_required(VERSION 3.20)
 # still gets the numbers, which a generated header would not give them. See include/micula/version.h.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/micula/version.h" _micula_version_lines
      REGEX "^#define MICULA_VERSION_(MAJOR|MINOR|PATCH) ")
+# Reading the version is the one thing here that is not re-done by a build: the numbers are baked
+# into micula-config-version.cmake at *configure* time, which is what find_package answers with, so
+# a bump followed by only a build installs a package that still says the previous version. This is
+# what makes editing version.h re-run CMake, which is the only other thing that would.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS include/micula/version.h)
 set(_micula_version_parts "")
 foreach(_part MAJOR MINOR PATCH)
     # No ^ anchor: file(STRINGS) hands back a list, which reaches string() as one string joined
