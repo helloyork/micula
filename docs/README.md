@@ -82,7 +82,11 @@ of `ClipRect()`, whatever is animating in it.
 
 ### Requirements
 
-- COM initialized on the UI thread, apartment-threaded, before `Window::Create`.
-- Per-monitor DPI awareness, from the manifest or `EnablePerMonitorDpi()`.
-- a page's own timers stay its own: the window hands its timers out of a pool, and an id the pool did not take reaches `OnAppMessage`.
 - Call everything from the thread that created the window.
+- a page's own timers stay its own: the window hands its timers out of a pool, and an id the pool did not take reaches `OnAppMessage`.
+- And nothing else. The COM apartment a window needs -- WIC for the caption icon and
+  `Window::Image`, and UI Automation -- is opened by `Window::Create` on the thread that makes the
+  window, and per-monitor DPI awareness is set there too, but only for a process that has not said
+  anything about it yet: a manifest, or `EnablePerMonitorDpi()` by the program, wins. A program
+  that uses COM itself still initialises it -- the apartment is then the program's, and the library
+  leaves it alone.

@@ -6,6 +6,15 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Changed
+
+- **A window sets up what it needs.** `Window::Create` opens the COM apartment (WIC for the caption
+  icon and `Window::Image`, and UI Automation) on the thread that makes the window, and sets
+  per-monitor v2 where the process has not said anything about DPI -- which is every launch with no
+  manifest. What a program used to have to do in `wWinMain` it now only has to do if it wants to: a
+  program that initialises COM itself keeps its own apartment, and `EnablePerMonitorDpi()` still
+  overrides a manifest. The three examples lost both calls.
+
 ## [0.6.1] - 2026-09-28
 
 ### Fixed

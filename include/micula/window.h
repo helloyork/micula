@@ -154,6 +154,43 @@ inline int SystemMetric(int index, UINT dpi) {
     return GetSystemMetrics(index);
 }
 
+// Whether anything has said what this process's DPI awareness is yet: a manifest, a call by the
+// program, or a previous window. Only an unaware process leaves it to Create to say, which is what
+// happens on a launch with no manifest at all; anything else is an answer somebody meant, and a
+// library that overrode a System-aware manifest would be the third party nobody asked for. A
+// machine that cannot answer says yes, which leaves it exactly where it is -- and it is also a
+// machine where per-monitor v2 does not exist to be set.
+//
+// Two ways of asking, because there is no one call for this. The process's own answer is shcore's
+// GetProcessDpiAwareness, which arrived with Windows 8.1 and is loaded rather than linked here for
+// the same reason EnablePerMonitorV2 loads it. The thread's answer is the user32 pair, and a
+// thread's awareness is its process's until something overrides it -- which is true here by
+// construction, because this runs before the window it is called from exists.
+//
+// (There is no GetProcessDpiAwarenessContext. This asked user32 for that name first, and asking is
+// how it was found out: the process question and the thread question are different calls.)
+inline bool AwarenessSettled() {
+    // PROCESS_DPI_AWARENESS, spelled out because shellscalingapi.h is not otherwise wanted here:
+    // 0 unaware, 1 system-aware, 2 per-monitor.
+    using ProcessFn = HRESULT(WINAPI *)(HANDLE, int *);
+    if (HMODULE sh = LoadLibraryW(L"shcore.dll"))
+        if (auto get = (ProcessFn)GetProcAddress(sh, "GetProcessDpiAwareness")) {
+            int aware = 0;
+            if (SUCCEEDED(get(GetCurrentProcess(), &aware))) return aware != 0;
+        }
+    using CtxFn = DPI_AWARENESS_CONTEXT(WINAPI *)(void);
+    using FromFn = DPI_AWARENESS(WINAPI *)(DPI_AWARENESS_CONTEXT);
+    static const CtxFn context =
+        User32() ? (CtxFn)GetProcAddress(User32(), "GetThreadDpiAwarenessContext") : nullptr;
+    static const FromFn from = User32()
+        ? (FromFn)GetProcAddress(User32(), "GetAwarenessFromDpiAwarenessContext") : nullptr;
+    if (context && from) {
+        const DPI_AWARENESS_CONTEXT c = context();
+        if (c) return from(c) != DPI_AWARENESS_UNAWARE;
+    }
+    return true;
+}
+
 // Per-monitor v2 where it exists, and the best available awareness where it does not.
 // Returns what it managed, for nobody in particular: the caller cannot do anything
 // with the answer, and the manifest is what takes effect on a normal launch anyway.
@@ -172,6 +209,44 @@ inline void EnablePerMonitorV2() {
 }
 
 }  // namespace dpiapi
+
+// The COM apartment, for the thread that makes a window.
+//
+// WIC needs it -- the caption icon and Window::Image go through it -- UI Automation needs it, and
+// the OleInitialize that drag and drop will need requires this same apartment-threaded kind. It is
+// what a program used to have to do by hand in wWinMain, and what it now only has to do if it
+// wants to: a thread that is already in an apartment gets S_FALSE, which is the program's own
+// initialisation, and this then owns nothing and uninitialises nothing.
+//
+// **Why here and not in App.** The first window is made before the App exists -- `Window w;
+// w.Create(...); App app; app.Add(w);` is the shape every example has, and Window::Run is the same
+// order in three lines -- so anything App did in its constructor would be a step too late.
+//
+// **Why not a global object.** Static initialisation order is not this library's to decide, a
+// `static` inside an inline function is one per module in a header-only library, and an apartment
+// belongs to a thread: a process-wide object owning a thread-affine resource is the wrong shape,
+// which is the same reason App is not a singleton.
+namespace detail {
+
+struct ComApartment {
+    ComApartment() {
+        // S_OK is this thread's apartment being made now, and only that one is this object's to
+        // take down again. S_FALSE is "already in one", which belongs to whoever put it there.
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        owned = (hr == S_OK);
+    }
+    ~ComApartment() { if (owned) CoUninitialize(); }
+    bool owned;
+};
+
+inline bool EnsureCom() {
+    // One per thread, made on first use and destroyed as the thread ends -- which is exactly how
+    // long an apartment lasts.
+    thread_local ComApartment apartment;
+    return apartment.owned;
+}
+
+}  // namespace detail
 
 // DWM attributes that are not in every SDK header. Spelled out so this builds against
 // whatever the machine has, and every call is checked -- an older Windows returns
@@ -2058,6 +2133,13 @@ inline void Window::PlaceImeAtCaret() {
 }
 
 inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
+    // COM, and per-monitor v2 if nobody has said otherwise, before anything below needs either:
+    // WIC and UI Automation are COM and the caption icon goes through WIC, and this window is about
+    // to be sized in the DPI of the monitor it lands on. See detail::ComApartment for why this is
+    // here rather than in App, and dpiapi::AwarenessSettled for what "if nobody has said otherwise"
+    // means: a program with its own manifest keeps what its manifest says.
+    detail::EnsureCom();
+    if (!dpiapi::AwarenessSettled()) dpiapi::EnablePerMonitorV2();
     if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                    reinterpret_cast<IUnknown **>(&dw))))
         return false;

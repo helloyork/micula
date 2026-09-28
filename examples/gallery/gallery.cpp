@@ -335,9 +335,8 @@ bool Gallery::OnAppMessage(UINT m, WPARAM wp, LPARAM) {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
-    EnablePerMonitorDpi();
-    // WIC is COM, and the window goes through it for the caption icon and Window::Image.
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+    // Neither EnablePerMonitorDpi nor CoInitializeEx: Window::Create does both, and only when
+    // nobody else has said anything. See the top of window.h.
     int code = 1;
     {
         Gallery g;
@@ -345,6 +344,5 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
         // and turns a colour icon into its silhouette -- see Window::EnsureIconBitmap.
         if (g.Create(560, 640, true, nullptr)) code = g.Run();
     }
-    CoUninitialize();
     return code;
 }

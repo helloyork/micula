@@ -21,8 +21,8 @@ struct Page : micula::Window {
 };
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
-    micula::EnablePerMonitorDpi();
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // No EnablePerMonitorDpi and no CoInitializeEx: Create does both, and only when nobody else
+    // has said anything. See Requirements in the README.
     Page page;
     return page.Create(360, 120, false, nullptr) ? page.Run() : 1;
 }
@@ -405,7 +405,7 @@ repaint -- so everything a control is holding survives a scroll, and is lost onl
 
 | Name | Description |
 |---|---|
-| `void EnablePerMonitorDpi()` | Sets per-monitor DPI awareness v2, or the best the system has. Call before creating a window. |
+| `void EnablePerMonitorDpi()` | Sets per-monitor DPI awareness v2, or the best the system has. `Window::Create` does this itself for a process that has not said anything about DPI yet -- which is every launch with no manifest -- so this is for a program with its own opinion about it. Call before creating a window. |
 | `std::wstring ClipboardText(HWND owner)` | The clipboard's Unicode text, or empty. |
 | `void SetClipboardText(HWND owner, const std::wstring &s)` | Replaces the clipboard's contents with `s`. |
 | `void StartAnimation(Window *w)` | Wakes the message loop so it checks for animation. Only needed when a control starts animating outside a message. |

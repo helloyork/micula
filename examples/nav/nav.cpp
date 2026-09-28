@@ -1015,9 +1015,8 @@ void NavDemo::PaintPage(const Painter &p) {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *cmd, int) {
     ReadState(cmd);
-    EnablePerMonitorDpi();
-    // WIC is COM, and the window goes through it for the caption icon and Window::Image.
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+    // Neither EnablePerMonitorDpi nor CoInitializeEx: Window::Create does both, and only when
+    // nobody else has said anything. See the top of window.h.
     int code = 1;
     if (probe) {
         // The same window and the same controls as the second window the Debug page opens, but as
@@ -1029,6 +1028,5 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *cmd, int) {
         d.backdrop = (DWORD)windowBackdrop;
         if (d.Create(1040, 700, true, nullptr)) code = d.Run();
     }
-    CoUninitialize();
     return code;
 }

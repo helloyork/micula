@@ -13,12 +13,12 @@
 //             UIAutomationCore is not in the list because it is not linked: the four
 //             functions used out of it are looked up at run time, so a program that
 //             never sees a screen reader has no dependency on it at all.
-//   - COM     initialised on the UI thread (CoInitializeEx, apartment-threaded) before
-//             Window::Create. The caption icon and Window::Image go through WIC, which
-//             is COM; without it both are silently absent.
-//   - DPI     per-monitor v2, ideally from the program's manifest. EnablePerMonitorDpi()
-//             sets it from code as well, for launches that bring their own activation
-//             context.
+//   - nothing else. Window::Create opens the COM apartment a window needs (WIC for the
+//             caption icon and Window::Image, and UI Automation) on the thread that makes
+//             it, and sets per-monitor v2 -- but only for a process that has not said
+//             anything about DPI yet, so a manifest, or EnablePerMonitorDpi() by the
+//             program, wins. A program that uses COM itself still initialises it: the
+//             apartment is then the program's and the library leaves it alone.
 
 #pragma once
 

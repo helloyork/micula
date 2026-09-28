@@ -325,13 +325,12 @@ void Settings::PaintPage(const Painter &p) {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
-    EnablePerMonitorDpi();
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+    // Neither EnablePerMonitorDpi nor CoInitializeEx: Window::Create does both, and only when
+    // nobody else has said anything. See the top of window.h.
     int code = 1;
     {
         Settings s;
         if (s.Create(700, 630, true, nullptr)) code = s.Run();
     }
-    CoUninitialize();
     return code;
 }
