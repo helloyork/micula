@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-28
+
 ### Added
 
 - **`ProgressRing`.** The indeterminate ring, to WinUI's own numbers rather than to an impression of
