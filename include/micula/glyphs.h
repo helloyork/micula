@@ -16,6 +16,9 @@
 //
 // Every code point below is in Segoe MDL2 Assets at the same value as well, which is what
 // makes the fallback in the theme's font setup safe: Windows 10's font draws the same icon.
+// Fluent Icons is the superset, so the ones that break this are the icons it added -- which
+// no list tells you apart, so a new entry is checked by drawing it in Segoe MDL2 Assets and
+// looking at the glyph.
 namespace micula {
 namespace glyph {
 
@@ -82,6 +85,7 @@ constexpr const wchar_t *kPeople   = L"\uE716";  // People
 
 // Devices, and what the user is trusted with.
 constexpr const wchar_t *kCamera     = L"\uE722";  // Camera
+constexpr const wchar_t *kCellPhone  = L"\uE8EA";  // CellPhone: the device on the far end
 constexpr const wchar_t *kColor      = L"\uE790";  // Color
 constexpr const wchar_t *kBrightness = L"\uE706";  // Brightness
 constexpr const wchar_t *kLock       = L"\uE72E";  // Lock

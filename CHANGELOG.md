@@ -6,6 +6,14 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`glyph::kCellPhone`.** The icon list gained the cell phone (`E8EA`) -- the device on the far
+  end of a remote session, which is a thing a page tends to need. It is the phone Fluent Icons
+  shares with Segoe MDL2 Assets; the phone-with-a-screen icons next to it are Windows 11's own and
+  would draw the substitution box on the fallback, which is the rule `glyphs.h` states and now also
+  says how to check.
+
 ### Changed
 
 - **A window sets up what it needs.** `Window::Create` opens the COM apartment (WIC for the caption
