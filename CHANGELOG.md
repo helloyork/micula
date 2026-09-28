@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-29
+
 ### Changed
 
 - **A commit is only reported when there is something to commit.** `TextBox::onCommit` fired from
