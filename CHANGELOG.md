@@ -6,6 +6,11 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Changed
+
+- **`glyph::kCancel`.** `ChromeClose` is the caption button's and is drawn heavier than the icons a
+  page puts beside it; `Cancel` (`E711`) is the thin one, next to something like Refresh.
+
 ## [0.7.0] - 2026-09-28
 
 ### Added

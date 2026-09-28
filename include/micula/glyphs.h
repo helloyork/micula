@@ -57,6 +57,10 @@ constexpr const wchar_t *kFilter     = L"\uE71C";  // Filter
 constexpr const wchar_t *kSort       = L"\uE8CB";  // Sort
 constexpr const wchar_t *kMore       = L"\uE712";  // More
 constexpr const wchar_t *kClose      = L"\uE8BB";  // ChromeClose
+// The other X. ChromeClose is the caption button's, and it is drawn heavier than the icons a page
+// puts beside it; this is the thin one, which is what a page's own button wants next to something
+// like Refresh. Both are in Segoe MDL2 Assets at the same code point.
+constexpr const wchar_t *kCancel     = L"\uE711";  // Cancel
 constexpr const wchar_t *kPin        = L"\uE718";  // Pin
 constexpr const wchar_t *kLink       = L"\uE71B";  // Link
 constexpr const wchar_t *kShare      = L"\uE72D";  // Share
