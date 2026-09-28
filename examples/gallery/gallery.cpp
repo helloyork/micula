@@ -267,6 +267,17 @@ void Gallery::Layout() {
                                           : L"Indeterminate - press Start to run it",
                          200));
     }
+    {
+        // The one control on this page that runs on its own account from the moment it is laid out:
+        // a ring that had to be started would be a ring nobody saw, and there is nothing here to
+        // start it with. The size is WinUI's own default for the control, and is also exactly what a
+        // card's control slot is tall -- a ring is square, so one number does for both sides.
+        constexpr float kRingSize = 32.0f;
+        ProgressRing *ring = Add(new ProgressRing());
+        ring->indeterminate = true;
+        ring->accessibleName = L"Connecting";
+        place(ring, card(L"Connecting", L"ProgressRing - the WinUI indeterminate ring", kRingSize));
+    }
 
     const float extent = y - kRowGap + kPad;
     const float viewport = h - kHeaderH;

@@ -35,6 +35,7 @@
 #include "dialog.h"
 #include "drop_down.h"
 #include "progress_bar.h"
+#include "progress_ring.h"
 #include "scroll_bar.h"
 #include "segmented.h"
 #include "side_nav.h"

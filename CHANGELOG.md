@@ -6,6 +6,19 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`ProgressRing`.** The indeterminate ring, to WinUI's own numbers rather than to an impression of
+  them: the numbers come from the Lottie visual the control actually draws (`ProgressRingIndeterminate`
+  -- an 80 unit box, a radius of 35, a stroke of 7.5, round ends, 60 fps, 120 frames, two seconds a
+  cycle). A cycle is a steady 450 degrees a second and an arc that grows from a dot to half the circle
+  over the first second -- its head running away from a fixed tail -- and shrinks back to a dot over
+  the second, its tail catching up with a head that has stopped. It follows `ProgressBar` in every
+  other respect: self-driving, and its phase read from the clock rather than counted across frames, so
+  that a page laying itself out does not start the animation over. The determinate state draws a track
+  and fills it from the top clockwise; `RingStyle::Subtle` is the grey ring, for a panel waiting on
+  something rather than a control reporting it. The gallery draws the indeterminate one.
+
 ### Changed
 
 - **An icon-only button centres its glyph, and has no name until it is given one.** A `Button` with a

@@ -18,6 +18,7 @@ Callbacks may call `Layout()`, except `Slider::onChange` during a drag (see
 | [DropDown](#dropdown) | 32 | `selected` | `onChange(int)` |
 | [TextBox](#textbox) | 32 | `text` | `onChange(text)`, `onCommit(text)` |
 | [ProgressBar](#progressbar) | any | `value` | |
+| [ProgressRing](#progressring) | any, square | `value` | |
 | [ScrollBar](#scrollbar) | 12 wide | `value` | `onScroll(to, glide)` |
 
 Heights are DIPs. The control height is `metric::kControlH`.
@@ -450,6 +451,38 @@ right while the other arrives at the left. The loop is read from `MonotonicSecon
 than counted per frame, so a control the page has rebuilt -- a resize, another setting
 changing the shape of the page, a scroll on a page that lays itself out in response to one --
 does not restart the sweep.
+
+## ProgressRing
+
+```cpp
+ProgressRing();
+```
+
+| Member | Description |
+|---|---|
+| `float value` | Progress from 0 to 1, when it is not indeterminate. |
+| `bool indeterminate` | The waiting ring, instead of `value`. Keeps the frame loop running while visible. |
+| `RingStyle style` | `Accent` (the default) or `Subtle`, which is grey -- for a ring that is a detail of somebody else's panel rather than a control of its own. |
+
+Square, and as large as the smaller side of `rect` allows. The stroke and the ring's radius
+are the source's own ratios of an 80 DIP box -- 7.5 and 35 -- so it is the same ring at any size.
+
+Indeterminate is WinUI's animation, taken from the visual the control actually draws rather
+than from a reading of how it looks. A cycle is two seconds, and it is two things at once: the
+whole shape turns a steady 450 degrees a second -- two and a half turns, with no easing at all,
+because the curve the source turns on is `cubic-bezier(0.167, 0.167, 0.833, 0.833)`, whose
+control points all lie on the diagonal and which is therefore the identity -- and an arc with
+round ends grows from a dot to half the circle over the first second, its head running away from
+a fixed tail, then shrinks back to a dot over the second, its tail catching up with a head that
+has stopped. The source does that with two arcs and an opacity cross-fade between them, so that
+a trimmed path's end never has to move; what an eye sees is one arc with one moving end.
+
+Like `ProgressBar`, the phase is read from `MonotonicSeconds()` rather than counted per frame,
+so a control the page has rebuilt does not restart the animation.
+
+The determinate ring draws a track and fills it from the top clockwise. The track is drawn
+whatever `value` is, nought included: an empty track is what a ring at the start of its value
+looks like, and the alternative is a control that has gone missing.
 
 ## ScrollBar
 

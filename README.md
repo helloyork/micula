@@ -19,7 +19,7 @@ machine with nothing installed.
 ## Controls
 
 Button, CheckBox, ToggleSwitch, Segmented, Slider, ScrollBar, DropDown, SideNav,
-TextBox, ProgressBar.
+TextBox, ProgressBar, ProgressRing.
 
 Colors, sizes and animation timings come from WinUI's control templates and the Fluent
 design tokens. The accent color and the light or dark theme are read from the system.
