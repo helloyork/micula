@@ -40,7 +40,13 @@ struct Button : Widget {
 
     // What it is to a screen reader: the label, and a button. Invoke lands on OnActivate, which is
     // OnClick -- see the UIA section of window.h.
-    const wchar_t *AccessibleName() const override { return label.c_str(); }
+    //
+    // Null rather than an empty string when there is no label. That is what Widget::AccessibleName
+    // asks for, and an icon-only button is exactly that case: it has no name of its own, and a page
+    // gives it one by setting `accessibleName` -- Widget::AccessibleLabel already prefers that to
+    // this. A second `accessibleName` field here would have shadowed the base one, and a name set
+    // through a Widget* (or read through AccessibleLabel) would have gone missing.
+    const wchar_t *AccessibleName() const override { return label.empty() ? nullptr : label.c_str(); }
     int AccessibleType() const override { return UIA_ButtonControlTypeId; }
     bool AccessibleActionable() const override { return true; }
 
@@ -101,9 +107,19 @@ struct Button : Widget {
 
         D2D1_RECT_F text = box;
         if (!glyph.empty()) {
-            const D2D1_RECT_F g = { box.left + 12, box.top, box.left + 32, box.bottom };
-            p.Text(glyph, g, p.font->icon, fg);
-            text.left += 32;
+            if (label.empty()) {
+                // An icon with nothing beside it is centred, the way a label with no icon is and
+                // for the same reason: what has to land in the middle is the shape, not the box it
+                // is drawn in. Measured rather than counted, because the two are not the same
+                // width -- the whole point of an icon-only button is that it is as wide as it looks.
+                const float gw = p.MeasureWidth(glyph, p.font->icon);
+                const float gl = box.left + (Width(box) - gw) * 0.5f;
+                p.Text(glyph, { gl, box.top, gl + gw, box.bottom }, p.font->icon, fg);
+            } else {
+                const D2D1_RECT_F g = { box.left + 12, box.top, box.left + 32, box.bottom };
+                p.Text(glyph, g, p.font->icon, fg);
+                text.left += 32;
+            }
         }
         // Centred by measuring, not by a centring text format: the glyph above eats
         // into the box asymmetrically, and a format-centred label would sit off to

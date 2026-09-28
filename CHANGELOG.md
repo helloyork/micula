@@ -8,6 +8,12 @@ library can be: a minor version may break.
 
 ### Changed
 
+- **An icon-only button centres its glyph, and has no name until it is given one.** A `Button` with a
+  glyph and no label had its icon placed where a label's left edge would have been, in a box the width
+  of a label; it is now measured and centred, so an icon-only button is as wide as it looks. Its
+  accessible name was the label even when there was no label -- an empty name rather than no name, and
+  not what `Widget::AccessibleName` asks for. It answers null now, and `Widget::accessibleName` is how
+  such a button gets a name, which `AccessibleLabel()` was already set up to prefer.
 - **`Painter::TextWrappedCentred`.** A paragraph centred line by line and as a block, clipped to the
   rectangle. `TextWrapped` cannot say it -- the alignment of the lines belongs to the text format, and
   the format is shared -- so an empty panel's one line of grey had nowhere to come from.

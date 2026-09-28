@@ -32,7 +32,7 @@ Button(std::wstring label, ButtonStyle style, std::function<void()> onClick);
 |---|---|
 | `std::wstring label` | Text. |
 | `ButtonStyle style` | `Accent` (the page's main action), `Standard`, `Subtle` (no box until hovered), `Link` (accent-colored text, hand cursor). |
-| `std::wstring glyph` | Optional icon, a Segoe Fluent Icons code point such as `glyph::kFolder`, drawn at the left. |
+| `std::wstring glyph` | Optional icon, a Segoe Fluent Icons code point such as `glyph::kFolder`, drawn at the left -- or centred on the button when there is no label, so that an icon-only button is as wide as it looks. |
 | `bool leftAlign` | Left-align the label instead of centering it. For navigation lists. |
 | `std::function<void()> onClick` | Called on click, Space or Enter while enabled. |
 | `float PreferredWidth(const Painter &p) const` | Label width plus padding, at least 100 DIPs. `p` only needs `font` set. |
