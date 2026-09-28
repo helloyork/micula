@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-28
+
 ### Added
 
 - **`App`**: one message loop, as many windows as it is given, on one thread -- and `Window::Run()`
