@@ -31,6 +31,10 @@ struct Slider : Widget {
     // gesture's own flag rather than `pressed`, which the window clears as soon as the
     // pointer leaves the rectangle -- a slider's drag outlives that by design.
     bool dragging = false;
+    // Whether this gesture has moved the value at all. `onCommit` is the end of a gesture and not a
+    // statement that the value changed, and those are two different things: a press on the knob that
+    // leaves it exactly where it was ends a gesture and changed nothing.
+    bool moved = false;
     // Where the knob is drawn, as a fraction, which trails a value that snaps from one step
     // to the next. A step is the one thing about a stepped slider that is visible, and
     // answering it by jumping the knob says the knob and the value are the same thing. They
@@ -88,23 +92,33 @@ struct Slider : Widget {
         // file a hundred times across one gesture.
         if (snapped == value) return;
         value = snapped;
+        moved = true;
         if (onChange) onChange(value);
     }
     // The press is already a value: clicking anywhere on the track puts the knob there,
     // which is what every slider does and what makes the track worth aiming at. It also
     // means a click over before the next frame is still a click.
-    void OnPress(float x, float /*y*/) override { dragging = true; SetFromX(x); }
+    void OnPress(float x, float /*y*/) override { dragging = true; moved = false; SetFromX(x); }
     void OnDrag(float x, float /*y*/) override { SetFromX(x); }
     // Nothing: the press placed the knob and the drag moved it. A slider has no separate
     // click, and Space reaches here from the keyboard -- OnKey is where that belongs.
     void OnClick() override {}
-    void OnRelease() override { dragging = false; if (onCommit) onCommit(value); }
+    void OnRelease() override {
+        dragging = false;
+        // Only when the gesture moved something: see `moved`. A page that saves from a commit would
+        // otherwise write the file for the act of touching the control.
+        if (moved && onCommit) onCommit(value);
+    }
     bool OnKey(WPARAM vk) override {
+        const float was = value;
         if (vk == VK_LEFT || vk == VK_DOWN)  { value = (std::max)(lo, value - step); }
         else if (vk == VK_RIGHT || vk == VK_UP) { value = (std::min)(hi, value + step); }
         else if (vk == VK_HOME) value = lo;
         else if (vk == VK_END)  value = hi;
         else return false;
+        // The key is consumed either way -- it was not the page's to use -- but a key pressed with
+        // the value already against its end has not changed anything, and has nothing to report.
+        if (value == was) return true;
         if (onChange) onChange(value);
         // A keypress is a whole gesture on its own -- there is no release to wait for.
         if (onCommit) onCommit(value);

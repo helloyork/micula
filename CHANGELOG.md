@@ -6,6 +6,17 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Changed
+
+- **A commit is only reported when there is something to commit.** `TextBox::onCommit` fired from
+  `OnBlur` whether or not the text had changed, and `Slider::onCommit` fired from `OnRelease` for a
+  press on the knob that left the value exactly where it was. A page that writes a file, or marks
+  itself dirty, on the strength of a commit therefore did it for the act of clicking into a field or
+  touching a slider -- and a "saved" that appears because somebody clicked somewhere is worse than no
+  "saved" at all. Both now follow the rule `onChange` has always kept: a notification about a change
+  is not sent when nothing changed. `Widget::OnFocus` is new, and is how the field knows what it
+  held when it was focused; a slider remembers whether the gesture moved the value at all.
+
 ## [0.8.0] - 2026-09-28
 
 ### Added

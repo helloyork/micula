@@ -48,6 +48,12 @@ struct TextBox : Widget {
     // Fired when the field is finished with -- Enter, or focus leaving it -- and not
     // on every keystroke. See Widget::OnBlur for why a text field needs both.
     std::function<void(const std::wstring &)> onCommit;
+    // What the field held when it was focused. Enter and a blur both mean "here is what it is now",
+    // and what it is now is what it was: nothing has happened. Without this baseline a page that
+    // writes a file, or marks itself dirty, on a commit does so for the act of clicking into a
+    // field -- and a "saved" indicator that appears because somebody clicked somewhere is worse
+    // than no indicator. It is the rule `onChange` has always kept; see Slider::SetFromX.
+    std::wstring atFocus;
 
     // The layout is a cache of what the text, the format and the theme already say, so
     // it is mutable: the queries below are const and are called from places that have no
@@ -59,7 +65,17 @@ struct TextBox : Widget {
 
     bool Focusable() const override { return true; }
     bool TextCursor() const override { return true; }
-    void OnBlur() override { if (onCommit) onCommit(text); }
+    void OnFocus() override { atFocus = text; }
+    void OnBlur() override { Commit(); }
+
+    // Fires onCommit when there is something to commit, and not otherwise. The baseline is taken
+    // again after the callback, because a page is allowed to put the value back into the field -- a
+    // port of 0080 is 80 -- and what it put back is the value the field now stands for.
+    void Commit() {
+        if (text == atFocus) return;
+        if (onCommit) onCommit(text);
+        atFocus = text;
+    }
 
     // A text field to a screen reader: the text in it, so somebody who cannot see the screen can
     // read back what was typed. Deliberately no name from the placeholder: a placeholder is a hint
@@ -278,7 +294,7 @@ struct TextBox : Widget {
         case VK_RETURN:
             // Consumed rather than left to the window, which would otherwise read it
             // as the default button while the person was still in the field.
-            if (onCommit) onCommit(text);
+            Commit();
             return true;
         case VK_SPACE:
             // The space itself arrives as WM_CHAR. The key is consumed so the window does

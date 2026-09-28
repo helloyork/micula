@@ -65,6 +65,7 @@ All virtual. Points are in DIPs.
 | `bool OnKey(WPARAM vk)` | `false` | Key down while focused. Return true to consume it. |
 | `bool OnChar(wchar_t ch)` | `false` | Typed character while focused. |
 | `void OnBlur()` | nothing | Focus left the control. |
+| `void OnFocus()` | nothing | Focus arrived. The half a control needs to tell a change from a visit -- see `TextBox`, which commits a value only when there is one. |
 | `void Dismiss()` | nothing | A click elsewhere, or the window was deactivated. Close anything transient. |
 | `bool TracksPointer() const` | `false` | Return true to repaint on every pointer move over the control, not only when `hover` changes. For a hover highlight inside the control. |
 | `bool PressedVisual() const` | `pressed` | Return true while the press shadow should show. `pressed` is cleared as soon as the pointer leaves the control -- which is what makes a button cancellable by dragging off it -- so a drag that outlives its own rectangle, such as a slider past the end of its track, overrides this. |

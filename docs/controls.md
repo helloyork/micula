@@ -174,7 +174,7 @@ Slider(float value, float lo, float hi, float step, std::function<void(float)> o
 |---|---|
 | `float value`, `lo`, `hi`, `step` | Value and range. A dragged value is rounded to a multiple of `step`. |
 | `std::function<void(float)> onChange` | Called every time the value changes: during a drag, each time the pointer reaches another step, and on each key. |
-| `std::function<void(float)> onCommit` | Called once when a drag ends, and after each key. Save settings here, not in `onChange`. Not a constructor argument. |
+| `std::function<void(float)> onCommit` | Called once when a drag ends, and after each key -- and only when that gesture changed the value: a press on the knob that leaves it exactly where it was has nothing to save. Save settings here, not in `onChange`. Not a constructor argument. |
 
 Keys: Left and Down subtract `step`, Right and Up add it, Home and End go to `lo` and
 `hi`.
@@ -416,7 +416,7 @@ TextBox();
 | `std::wstring placeholder` | Shown in the disabled text color while the field is empty. |
 | `bool pathField` | For file system paths. Paste also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
 | `std::function<void(const std::wstring &)> onChange` | Called after every edit. |
-| `std::function<void(const std::wstring &)> onCommit` | Called on Enter and when the field loses focus. Save here. |
+| `std::function<void(const std::wstring &)> onCommit` | Called on Enter and when the field loses focus, and only when the text has changed since the field was focused: a field clicked into and clicked out of again has nothing to commit. Save here. |
 
 ```cpp
 auto *t = Add(new micula::TextBox());

@@ -730,6 +730,10 @@ struct Widget {
     // a choice. This is the text field's half of the split Slider already makes
     // between `onChange` and `onCommit`, and it exists for the same reason.
     virtual void OnBlur() {}
+    // Focus has just arrived. The other half of OnBlur, and the reason it is here at all: a control
+    // that reports something when it is left has to know what it found when it arrived, or it cannot
+    // tell a change from a visit. See TextBox, which commits a value only when there is one.
+    virtual void OnFocus() {}
     // Where the IME should put its composition window, in DIPs. Only meaningful for a
     // widget that takes text; ignored otherwise.
     virtual bool CaretPoint(D2D1_POINT_2F * /*out*/) const { return false; }
@@ -2115,7 +2119,7 @@ inline void Window::SetFocusTo(Widget *w) {
     if (focused == w) return;
     if (focused) { focused->focus = false; focused->OnBlur(); }
     focused = w;
-    if (focused) focused->focus = true;
+    if (focused) { focused->focus = true; focused->OnFocus(); }
     caretOn = true;
     Invalidate();
     UiaFocusChanged();

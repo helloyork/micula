@@ -165,7 +165,7 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `void ClearWidgets()` | Removes every control that is not `persistent`. |
 | `std::vector<std::unique_ptr<Widget>> widgets` | The controls. |
 | `Widget *focused` | The control with keyboard focus, or null. |
-| `void SetFocusTo(Widget *w)` | Moves focus to `w` (or clears it with null). The previous control gets `OnBlur()`. |
+| `void SetFocusTo(Widget *w)` | Moves focus to `w` (or clears it with null). The previous control gets `OnBlur()` and the new one `OnFocus()`. |
 | `void MoveFocus(int delta)` | Moves focus forward (1) or back (-1) through the focusable controls, as Tab does. |
 | `Widget *capture` | The control the mouse button went down on, until it is released. |
 | `bool showFocusRing` | Set when Tab moves focus, cleared by a click. Controls draw a focus ring only while it is set. |
