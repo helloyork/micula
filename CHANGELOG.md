@@ -6,6 +6,17 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-28
+
+### Fixed
+
+- **The version in an installed package was whatever CMake last configured with.**
+  `micula-config-version.cmake` is written at configure time and nothing made `version.h` a
+  dependency of that, so bumping the version and only running a build wrote a package file that
+  still answered with the previous number: `find_package(micula 0.6 CONFIG)` against a freshly
+  built 0.6.0 said 0.5.0, and a request for the new minor was refused by a package of the new minor.
+  Editing `version.h` re-runs CMake now, which is the only other thing that would have.
+
 ## [0.6.0] - 2026-09-28
 
 ### Added
