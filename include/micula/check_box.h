@@ -34,6 +34,13 @@ struct CheckBox : Widget {
         checked = !checked;
         if (onChange) onChange(checked);
     }
+
+    // What it is to a screen reader: a labelled check box, and the state it is showing. `checked`
+    // rather than the animated fill, so a client is told what was decided and not what is still
+    // crossing -- see the UIA section of window.h.
+    const wchar_t *AccessibleName() const override { return label.c_str(); }
+    int AccessibleType() const override { return UIA_CheckBoxControlTypeId; }
+    int AccessibleToggle() const override { return checked ? 1 : 0; }
     bool Animating() const override {
         return Widget::Animating() || checkT.Wants(checked ? 1.0f : 0.0f);
     }

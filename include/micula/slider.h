@@ -55,6 +55,16 @@ struct Slider : Widget {
     bool PressedVisual() const override { return pressed || dragging; }
     float Frac() const { return (value - lo) / (hi - lo); }
 
+    // A slider to a screen reader: a slider, and what it is set to. The percentage is formed here
+    // rather than by the client, because this is the only side that knows what the number means --
+    // the same 0.4 is 40% on one control and a fourth of a scale on the next.
+    int AccessibleType() const override { return UIA_SliderControlTypeId; }
+    bool AccessibleValue(std::wstring &out) const override {
+        if (hi <= lo) return false;
+        out = std::to_wstring((int)(Frac() * 100.0f + 0.5f)) + L"%";
+        return true;
+    }
+
     bool Animating() const override { return Widget::Animating() || drawn.Wants(Frac()); }
     void Tick(float dt) override {
         Widget::Tick(dt);

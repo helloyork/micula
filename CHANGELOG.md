@@ -6,6 +6,22 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **UI Automation.** A control drawn by hand is invisible to a screen reader unless the window says
+  otherwise, and now it does: the window answers `WM_GETOBJECT` with a provider, the page's visible
+  controls become elements of it in paint order, and a control says four things about itself --
+  `AccessibleName()`, `AccessibleType()`, `AccessibleToggle()` and `AccessibleValue()`, plus `tips`,
+  which is also what a client reads as the help text -- and `accessibleName`, for a page that knows
+  a name the control does not. Invoke and Toggle are driven through
+  `OnActivate`, so a control that works from the keyboard works from a screen reader; a focus
+  change is announced; a client can ask which control is at a point on the screen. Nothing runs
+  unless a client is listening, and `UIAutomationCore` is looked up at run time rather than linked,
+  so a program built on this takes on no new load-time dependency and one that never meets a screen
+  reader never loads it. Button, CheckBox, ToggleSwitch, DropDown, Slider, ProgressBar, TextBox and
+  Segmented answer; the scroll bar and the navigation pane do not yet, per-item elements are not
+  there, and values are read-only.
+
 ## [0.5.0] - 2026-09-28
 
 ### Added

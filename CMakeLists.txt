@@ -44,10 +44,13 @@ target_compile_definitions(micula INTERFACE UNICODE _UNICODE)
 # whose default is lower, is one -- and this window is Windows 10+ by construction. Said
 # out loud rather than inherited, so the same source builds under more than one toolchain.
 target_compile_definitions(micula INTERFACE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
-# MSVC gets these from window.h's #pragma comment lines as well; other toolchains
-# need them spelled out.
+# MSVC gets these from window.h's #pragma comment lines as well; other toolchains need them
+# spelled out. UIAutomationCore is deliberately not here: the four functions used out of it are
+# looked up at run time (see the UIA section of window.h), because MinGW-w64 ships no import
+# library for it, and a load-time dependency on an export is what frameclock::Resolve exists to
+# avoid in the first place.
 target_link_libraries(micula INTERFACE
-    d2d1 d3d11 dxgi dcomp dwrite dwmapi imm32 windowscodecs user32 gdi32 ole32 advapi32)
+    d2d1 d3d11 dxgi dcomp dwrite dwmapi imm32 windowscodecs user32 gdi32 ole32 oleaut32 advapi32)
 
 option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 if(MICULA_BUILD_EXAMPLES)

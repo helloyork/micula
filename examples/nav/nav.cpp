@@ -201,8 +201,8 @@ struct DemoLayer : Layer {
 // frame loop actually did.
 //
 // It exists to answer one question -- is an animation on this window running at the right speed? --
-// with numbers, because over a remote session it cannot be answered by eye, and because a screenshot
-// of a page of text can be read by somebody who cannot see the animation at all:
+// with numbers, because a screenshot of a page of text is a measurement rather than a judgement,
+// and because it can be read by somebody who cannot see the animation at all:
 //
 //   frames   how many frames the last stretch of animation got
 //   first    the dt of the first frame of that stretch. This is the one to look at: it is either

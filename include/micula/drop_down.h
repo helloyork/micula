@@ -38,6 +38,16 @@ struct DropDown : Widget {
     // Fast In". A flyout arriving settles; a flyout leaving gets out of the way.
     motion::Track openT;
 
+    // What it is to a screen reader: a combo box, named by the choice it is showing, which is the
+    // only text on it. Invoke is `OnActivate`, so a client can open and close the list the way
+    // Space does -- per-item elements are the next step, so today it reports the selection and not
+    // the rows. See the UIA section of window.h.
+    const wchar_t *AccessibleName() const override {
+        return selected >= 0 && selected < (int)options.size() ? options[selected].c_str() : L"";
+    }
+    int AccessibleType() const override { return UIA_ComboBoxControlTypeId; }
+    bool AccessibleActionable() const override { return true; }
+
     DropDown(std::vector<std::wstring> opts, int sel, std::function<void(int)> f)
         : options(std::move(opts)), selected(sel), onChange(std::move(f)) {}
     // A list thrown away while open -- the page laid out again under it -- must not leave

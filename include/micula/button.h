@@ -38,6 +38,12 @@ struct Button : Widget {
     bool HandCursor() const override { return style == ButtonStyle::Link; }
     void OnClick() override { if (enabled && onClick) onClick(); }
 
+    // What it is to a screen reader: the label, and a button. Invoke lands on OnActivate, which is
+    // OnClick -- see the UIA section of window.h.
+    const wchar_t *AccessibleName() const override { return label.c_str(); }
+    int AccessibleType() const override { return UIA_ButtonControlTypeId; }
+    bool AccessibleActionable() const override { return true; }
+
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
         D2D1_COLOR_F fg = enabled ? c.textPrimary : c.textDisabled;

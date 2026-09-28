@@ -54,6 +54,17 @@ struct ProgressBar : Widget {
     // still at the left-hand end wherever one was used.
     bool Animating() const override { return Widget::Animating() || indeterminate; }
 
+    // A progress bar to a screen reader: a progress bar, and its percentage unless it is the
+    // indeterminate one. A bar that is not reporting progress has no number to report, and 0% is a
+    // value that was never there -- so there is a value pattern and no value, which is a thing a
+    // client handles and a made-up number is not.
+    int AccessibleType() const override { return UIA_ProgressBarControlTypeId; }
+    bool AccessibleValue(std::wstring &out) const override {
+        if (indeterminate) return false;
+        out = std::to_wstring((int)(std::clamp(value, 0.0f, 1.0f) * 100.0f + 0.5f)) + L"%";
+        return true;
+    }
+
     // Where in the cycle *now* is, in seconds.
     //
     // Read from the clock rather than counted across frames, and that is the whole of what

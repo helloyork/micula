@@ -103,6 +103,16 @@ struct Segmented : Widget {
     bool Animating() const override {
         return Widget::Animating() || pillPos.Wants((float)selected) || pillLag != pillPos.value;
     }
+
+    // A segmented control to a screen reader: the cell that is chosen, and that is all it can say as
+    // one element. WinUI's RadioButtons report one radio button per item, and per-item elements are
+    // the step this has not taken -- see the "one list, one level" note in the UIA section of
+    // window.h.
+    const wchar_t *AccessibleName() const override {
+        return selected >= 0 && selected < (int)options.size() ? options[selected].c_str() : L"";
+    }
+    int AccessibleType() const override { return UIA_GroupControlTypeId; }
+
     void Tick(float dt) override {
         Widget::Tick(dt);
         // Aimed every frame rather than at the press: a page that assigns `selected` itself is

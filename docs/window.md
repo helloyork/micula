@@ -100,6 +100,44 @@ its caret timer start there, and `WM_DESTROY` hands back its device and its font
 `Run()` does that only for the windows still standing when the loop ends, which is the other way out
 -- a window a page opens and closes all day would otherwise take a D3D device with it every time.
 
+## Accessibility
+
+micula's controls are drawn by hand, so none of what Windows' own controls get for free comes with
+them: a control is a rectangle a screen reader cannot see into unless the window says so. It says so
+through UI Automation, and there is nothing to switch on -- a program that never runs beside a
+screen reader does no UIA work at all, and one that does gets a tree of the page's controls.
+
+What a control has to say is four questions and one string:
+
+|---|---|
+| `std::wstring tips` | The tooltip text, and the same string is what a client reads as the help text. One string, because what a control says in a tooltip and what it says to somebody who cannot see it are the same thought. |
+| `std::wstring accessibleName` | What the page calls the control, for the times the page knows a name the control does not -- the words beside a switch are page text and are not part of it, and a page cannot override a virtual on a control it did not write. Set, and it wins over `AccessibleName()` below. |
+| `virtual const wchar_t *AccessibleName() const` | What the control is called. Null for a control whose whole content is a glyph, which is an honest answer and better than a name made up from the class. |
+| `virtual int AccessibleType() const` | The UIA control type -- `UIA_ButtonControlTypeId` and the rest. `UIA_CustomControlTypeId` by default. |
+| `virtual int AccessibleToggle() const` | -1 when the control is not a switch; otherwise 0 off, 1 on, 2 indeterminate. |
+| `virtual bool AccessibleValue(std::wstring &out) const` | False when there is no value worth reading. True fills `out` with what a client should say -- `"40%"` rather than 0.4, because the formatting is the control's business, not the client's. |
+| `virtual bool AccessibleActionable() const` | Whether `OnActivate` -- Space -- does something a client may ask for. Invoke and Toggle both land on it, so a control wired up for the keyboard is wired up for a screen reader by the same code. |
+
+- **What a control does not have to say.** Its rectangle (in screen pixels, with the page's scroll
+taken off), whether it is enabled, whether it takes the keyboard, whether it has the keyboard, and
+that it is there at all, all come from the widget. So does the tree: the window is the root and
+every visible widget is one of its children, in paint order. micula has no parent/child widget tree
+to mirror -- a flat list and `z` -- and paint order is the order a client should visit them in.
+- **Focus is announced.** Every move of the keyboard focus raises
+`UIA_AutomationFocusChangedEventId`, which is the event a screen reader follows the Tab key by.
+- **Reading, not writing.** A client can read a slider but not move it: `SetValue` is not
+implemented, because writing a control's value from outside the page means running page code on a
+client's thread of control. The keyboard and the pointer are the two ways in.
+- **`UIAutomationCore` is not linked.** Its four functions are looked up at run time, so a program
+built on micula takes on no new load-time dependency, and a machine without them is a machine whose
+screen readers see the window as they did before -- the same reasoning as
+`DCompositionWaitForCompositorClock`, which is resolved for a different reason: that one is Windows
+11 only.
+- **Not there yet.** Per-item elements -- the rows of an open drop-down, the cells of a segmented
+control, the rows of the navigation pane -- so a control reports its selected value rather than its
+children; the scroll bar; `ExpandCollapse` for a drop-down; and `IRangeValueProvider`, which is the
+pattern UIA prefers for a slider and which a value-as-text stands in for today.
+
 ## Page callbacks
 
 All virtual. `ClassName()` and `Title()` must be overridden.

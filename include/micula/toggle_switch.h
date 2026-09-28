@@ -43,6 +43,13 @@ struct ToggleSwitch : Widget {
     // a shape changing between two frames.
     motion::Track carry;
 
+    // What it is to a screen reader: a labelled switch. WinUI reports a ToggleSwitch as a button
+    // with the Toggle pattern rather than as a check box, and so does this. See the UIA section
+    // of window.h.
+    const wchar_t *AccessibleName() const override { return label.c_str(); }
+    int AccessibleType() const override { return UIA_ButtonControlTypeId; }
+    int AccessibleToggle() const override { return on ? 1 : 0; }
+
     ToggleSwitch(std::wstring text, bool value, std::function<void(bool)> f)
         : label(std::move(text)), on(value), onChange(std::move(f)),
           knob(value ? 1.0f : 0.0f), fill(value ? 1.0f : 0.0f) {}

@@ -201,9 +201,16 @@ void Gallery::Layout() {
         cb->detail = L"CheckBox - a choice collected now and applied later";
         place(cb, { r.left + 16, cy - 22, r.right - 16, cy + 22 });
     }
-    place(Add(new ToggleSwitch(L"", background, [this](bool on) { background = on; })),
-          card(L"Run in the background",
-               L"ToggleSwitch - takes effect the moment it changes", 40));
+    {
+        ToggleSwitch *sw = Add(new ToggleSwitch(L"", background,
+                                               [this](bool on) { background = on; }));
+        // The switch draws no label of its own: the words are the card's, which is page text a
+        // screen reader has no way to tie back to the control. This is a page saying which words
+        // belong to which control. See the Accessibility section of docs/window.md.
+        sw->accessibleName = L"Run in the background";
+        place(sw, card(L"Run in the background",
+                       L"ToggleSwitch - takes effect the moment it changes", 40));
+    }
     place(Add(new Segmented({ L"Auto", L"High", L"Low" }, quality,
                             [this](int i) { quality = i; })),
           card(L"Quality", L"Segmented - a few words, side by side", 180));
@@ -220,17 +227,19 @@ void Gallery::Layout() {
         volumeCard = cards.size() - 1;
         // No Invalidate here: a slider reports its drag from inside its own paint, and
         // the window is already repainting for as long as the drag lasts.
-        place(Add(new Slider(volume, 0.0f, 1.0f, 0.01f, [this](float v) {
-                  volume = v;
-                  if (volumeCard < cards.size()) cards[volumeCard].detail = Percent(v);
-                  if (level) level->value = v;
-              })),
-              slot);
+        Slider *sl = Add(new Slider(volume, 0.0f, 1.0f, 0.01f, [this](float v) {
+            volume = v;
+            if (volumeCard < cards.size()) cards[volumeCard].detail = Percent(v);
+            if (level) level->value = v;
+        }));
+        sl->accessibleName = L"Volume";
+        place(sl, slot);
     }
     {
         TextBox *t = Add(new TextBox());
         t->SetText(name);
         t->onChange = [this](const std::wstring &s) { name = s; };
+        t->accessibleName = L"Display name";
         place(t, card(L"Display name", L"TextBox - caret, selection, clipboard, IME", 220));
     }
     {
@@ -239,6 +248,7 @@ void Gallery::Layout() {
         t->pathField = true;
         t->placeholder = L"C:\\Path\\to\\folder";
         t->onChange = [this](const std::wstring &s) { folder = s; };
+        t->accessibleName = L"Folder";
         place(t, card(L"Folder", L"pathField - pasted quotes are dropped", 220));
     }
 
@@ -246,11 +256,13 @@ void Gallery::Layout() {
     {
         level = Add(new ProgressBar());
         level->value = volume;
+        level->accessibleName = L"Level";
         place(level, card(L"Level", L"ProgressBar - follows the volume slider", 200));
     }
     {
         ProgressBar *spin = Add(new ProgressBar());
         spin->indeterminate = busy;
+        spin->accessibleName = L"Working";
         place(spin, card(L"Working", busy ? L"Indeterminate - press Stop to end it"
                                           : L"Indeterminate - press Start to run it",
                          200));

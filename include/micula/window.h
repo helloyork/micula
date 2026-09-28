@@ -72,6 +72,10 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <imm.h>
+#include <oleauto.h>                        // SysAllocString, SafeArray, the VARIANTs UIA is answered in
+#include <uiautomationclient.h>             // the UIA_* property, pattern and control-type ids
+#include <uiautomationcore.h>
+#include <uiautomationcoreapi.h>
 #include <wincodec.h>
 #include <windowsx.h>
 
@@ -89,6 +93,10 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "imm32.lib")
+// UIAutomationCore is not here on purpose: its four functions are looked up at run time, which is
+// what keeps this file from adding a load-time dependency to every program that includes it. See
+// the uiaapi namespace below.
+#pragma comment(lib, "oleaut32.lib")      // SysAllocString, for the strings UIA is handed
 #pragma comment(lib, "windowscodecs.lib")
 // And the four a Visual Studio project links by default and a bare `cl` does not.
 #pragma comment(lib, "user32.lib")
@@ -469,6 +477,49 @@ struct Widget {
     // whether a widget is raised at all, since a click belongs to whatever is on top.
     int  z = 0;
     Window *owner = nullptr;
+
+    // ---- what a screen reader is told ---------------------------------------------------------
+    //
+    // Four questions, and none of them is looked at unless a client is listening: the window
+    // answers WM_GETOBJECT with a provider only while UiaClientsAreListening() says somebody is,
+    // and every question after that is one that was asked. See the UIA section near the end of
+    // this header for the whole of it.
+    //
+    // Four rather than a hook per pattern, and the *actions* behind the patterns are the ones a
+    // control already has: Invoke and Toggle both land on `OnActivate`, which is Space, so a
+    // control wired up for the keyboard is wired up for a screen reader by the same code.
+    //
+    // `tips` is the tooltip text as well, and one string is the whole point: what a control says
+    // in a tooltip and what it says to somebody who cannot see it are the same thought.
+    std::wstring tips;
+    // What the page calls this control, for the times the page knows a name the control does not.
+    // The words beside a switch are page text and not part of the control, so without this a screen
+    // reader has nothing to read out for a perfectly ordinary form -- and a page cannot override a
+    // virtual on a control it did not write. Set, and it wins over AccessibleName below.
+    std::wstring accessibleName;
+    // What the control is called. Null means it has no name -- the honest answer for a control
+    // whose whole content is a glyph, and better than a name made up out of the class.
+    virtual const wchar_t *AccessibleName() const { return nullptr; }
+    // Both answers together, which is the one the provider asks for.
+    const wchar_t *AccessibleLabel() const {
+        return accessibleName.empty() ? AccessibleName() : accessibleName.c_str();
+    }
+    // The UIA control type. Custom rather than Pane: a widget that has not said what it is has
+    // not said it is a container either, and a client guessing from Custom guesses less wrong.
+    virtual int AccessibleType() const { return UIA_CustomControlTypeId; }
+    // -1 when this is not a switch; otherwise 0 off, 1 on, 2 indeterminate.
+    virtual int AccessibleToggle() const { return -1; }
+    // False when the control has no value worth reading. True fills `out` with what a screen
+    // reader should say -- "40%", the text of a field -- so the formatting stays the control's
+    // business, and a slider reads as a percentage rather than as 0.4.
+    virtual bool AccessibleValue(std::wstring & /*out*/) const { return false; }
+    // Whether `OnActivate` does something a client may ask for on the control's behalf. False by
+    // default, focusable or not: a text field is focusable and activating it does nothing, and a
+    // client offering Invoke on one would be offering nothing.
+    virtual bool AccessibleActionable() const { return false; }
+    // The number Add gave this widget. What an element holds instead of a pointer, which is what
+    // makes an element that has outlived its widget harmless. See the UIA section.
+    int uid = 0;
 
     virtual ~Widget() {}
     virtual void Paint(const Painter &p) = 0;
@@ -1046,6 +1097,20 @@ struct Window {
     // ever one window in it.
     void BeginPump();
     void EndPump();
+
+    // ---- UI Automation ------------------------------------------------------------------------
+    // The element a client is handed for this window, and the widget behind an element's uid --
+    // null once the page has been laid out again, which is the answer that keeps an element that
+    // has outlived its widget harmless. See the UIA section near the end of this header.
+    IRawElementProviderSimple *UiaRoot();
+    Widget *UiaFind(int uid) const;
+    // Told to a client that is listening that the keyboard focus moved. Called from SetFocusTo.
+    void UiaFocusChanged();
+    // The provider reads the widget list, the focus, the hovered control and the page's own
+    // transform, and calls a control's action: it is the window's own business said from outside,
+    // and it is not worth twenty accessors.
+    friend struct UiaElement;
+    int uidNext = 0;
     // While the frame loop is animating it draws every frame itself and clears the update
     // region after each one, so invalidating as well buys nothing -- and it costs a frame:
     // the region it sets is handed back by the next PeekMessage as a WM_PAINT, which paints
@@ -1118,6 +1183,10 @@ struct Window {
 
     template <typename T> T *Add(T *w) {
         w->owner = this;
+        // The number an element identifies this widget by. Not an address: the page is laid out
+        // again all the time, and the widget at an address is a different control afterwards,
+        // which to a screen reader is a lie. See the UIA section.
+        w->uid = ++uidNext;
         widgets.emplace_back(w);
         // A control that brings controls of its own makes them now, which is why this is called from
         // inside Add rather than after it: they have to sit after it in the list and above it in
@@ -1942,6 +2011,7 @@ inline void Window::SetFocusTo(Widget *w) {
     if (focused) focused->focus = true;
     caretOn = true;
     Invalidate();
+    UiaFocusChanged();
 }
 
 inline void Window::MoveFocus(int delta) {
@@ -2071,9 +2141,9 @@ inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
 // does not pace anything here either -- it was measured at 0.1 ms, because a flip-model
 // composition swap chain with two buffers queues the frame and returns.
 //
-// The timeout is a backstop, not a cadence: if DWM ever stops ticking (it does not on
-// Windows 11, but a remote session or a display going away can stall it), the loop
-// keeps turning slowly rather than hanging with an animation half-finished.
+// The timeout is a backstop, not a cadence: if DWM ever stops ticking -- which it does
+// not, here or on any machine this has been measured on -- the loop keeps turning slowly
+// rather than hanging with an animation half-finished.
 //
 // **Windows 10 has no compositor clock.** The function is build 22000 and later, and a
 // static call binds it by ordinal (#1104) through the SDK's dcomp.lib; Windows 10's
@@ -2406,6 +2476,460 @@ inline int App::Run() {
     for (Window *w : windows) w->EndPump();
     if (pace) CloseHandle(pace);
     return exitCode;
+}
+
+// ============================================================================================
+// UI Automation
+//
+// Windows' accessibility API, and the reason a hand-drawn control is not automatically an
+// invisible one. Nothing here runs for a program whose user is not running a screen reader: the
+// window answers WM_GETOBJECT with a provider only while UiaClientsAreListening() says somebody
+// is, and every call after that is a call that was asked for.
+//
+// **One element, whatever it is an element for.** `UiaElement` implements the three fragment
+// interfaces and the patterns a control can answer, and dispatches all of them to the `Widget` --
+// or to the `Window`, when the element is the root. There is no class per control, and that is
+// not a shortcut: what a control *is* comes from four questions (`AccessibleName`,
+// `AccessibleType`, `AccessibleToggle`, `AccessibleValue`) and what it *does* comes from
+// `OnActivate`, which is Space. A control wired up for the keyboard is wired up for a screen
+// reader by the same code.
+//
+// **A widget pointer is not an element.** Layout() rebuilds the page for all sorts of reasons, so
+// by the time a client asks its next question the widget an element was made for is usually gone.
+// An element therefore holds the window and a `uid` -- the number Window::Add gave that widget --
+// and resolves it on every call. A widget that has been thrown away answers "no such widget",
+// which is the truth, where a stale pointer would answer with whatever the page built in its
+// place, which is a lie and a crash waiting to be one.
+//
+// **One list, one level.** micula has no parent/child widget tree: it has a flat list in paint
+// order, with `z` for what is over what, and a Layer spread across the middle of it. So every
+// widget is a child of the window in paint order, which is the order a client should visit them
+// in anyway. Per-item elements -- the rows of an open drop-down, the cells of a segmented control
+// -- are the obvious next step and are not here yet: a control reports its selected value rather
+// than its children.
+//
+// **Read-only, and deliberately.** SetValue is not implemented, so a client can read a slider but
+// not move it. Writing a control's value from outside the page means waking up whatever the page
+// does in response -- page code, run on a stranger's thread of control. The keyboard and the
+// pointer are the two ways in for now.
+// ============================================================================================
+
+// The four functions this needs out of UIAutomationCore.dll, looked up rather than linked -- and
+// here that is not only a matter of taste, which is why it is done rather than argued about:
+// MinGW-w64 ships no import library for UIAutomationCore at all, so a static call does not link
+// on that toolchain, and the SDK's own library binds these by ordinal in an import table, which is
+// a load-time promise about the exports of the DLL on the machine that runs the program. A
+// library that can stop a process before wWinMain over an API it uses to describe itself to a
+// screen reader has the wrong priorities -- the same reasoning as frameclock::Resolve, and here
+// the cost of being wrong is that the window has no UIA at all and answers WM_GETOBJECT the way
+// DefWindowProc would.
+//
+// By name first and by ordinal second. The DLL has both (62/80/94/102 as this was written), and
+// the names are what the documentation is written in; the ordinal is there because an import
+// library that went by ordinal rather than by name is exactly how this was first noticed.
+namespace uiaapi {
+inline FARPROC Lookup(const char *name, WORD ordinal) {
+    static HMODULE module = LoadLibraryW(L"UIAutomationCore.dll");
+    if (!module) return nullptr;
+    FARPROC fn = GetProcAddress(module, name);
+    return fn ? fn : GetProcAddress(module, (LPCSTR)(ULONG_PTR)ordinal);
+}
+
+struct Api {
+    HRESULT(WINAPI *ReturnRawElementProvider)(HWND, WPARAM, LPARAM, IRawElementProviderSimple *);
+    HRESULT(WINAPI *HostProviderFromHwnd)(HWND, IRawElementProviderSimple **);
+    HRESULT(WINAPI *RaiseAutomationEvent)(IRawElementProviderSimple *, EVENTID);
+    HRESULT(WINAPI *ClientsAreListening)();
+
+    Api()
+        : ReturnRawElementProvider((decltype(ReturnRawElementProvider))
+              Lookup("UiaReturnRawElementProvider", 0x66)),
+          HostProviderFromHwnd((decltype(HostProviderFromHwnd))
+              Lookup("UiaHostProviderFromHwnd", 0x50)),
+          RaiseAutomationEvent((decltype(RaiseAutomationEvent))
+              Lookup("UiaRaiseAutomationEvent", 0x5E)),
+          ClientsAreListening((decltype(ClientsAreListening))
+              Lookup("UiaClientsAreListening", 0x3E)) {}
+
+    // All four or none: a provider tree that can be built but not handed over is not worth the
+    // three that did resolve.
+    bool Ready() const {
+        return ReturnRawElementProvider && HostProviderFromHwnd &&
+               RaiseAutomationEvent && ClientsAreListening;
+    }
+};
+
+inline const Api &Get() {
+    static const Api api;
+    return api;
+}
+}  // namespace uiaapi
+
+struct UiaElement : IRawElementProviderSimple,
+                    IRawElementProviderFragment,
+                    IRawElementProviderFragmentRoot,
+                    IInvokeProvider,
+                    IToggleProvider,
+                    IValueProvider {
+    // `uid` 0 is the window itself, which is the root of the tree.
+    UiaElement(Window *w, int uid) : win(w), widget(uid) {}
+
+    // ---- IUnknown -------------------------------------------------------------------------
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IRawElementProviderSimple))
+            *out = static_cast<IRawElementProviderSimple *>(this);
+        else if (iid == __uuidof(IRawElementProviderFragment))
+            *out = static_cast<IRawElementProviderFragment *>(this);
+        else if (iid == __uuidof(IRawElementProviderFragmentRoot))
+            *out = static_cast<IRawElementProviderFragmentRoot *>(this);
+        else if (iid == __uuidof(IInvokeProvider))
+            *out = static_cast<IInvokeProvider *>(this);
+        else if (iid == __uuidof(IToggleProvider))
+            *out = static_cast<IToggleProvider *>(this);
+        else if (iid == __uuidof(IValueProvider))
+            *out = static_cast<IValueProvider *>(this);
+        else
+            return E_NOINTERFACE;
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG left = InterlockedDecrement(&refs);
+        if (left == 0) delete this;
+        return (ULONG)left;
+    }
+
+    // ---- IRawElementProviderSimple ----------------------------------------------------------
+    // ServerSideProvider, and *not* UseComThreading. That flag is a promise that the provider may
+    // be called from any thread, and this one may not: it walks the widget list and calls a
+    // control's action, and a control belongs to the thread that made its window. Without the
+    // flag, UIA marshals every call to that thread, which is where the widgets are.
+    HRESULT STDMETHODCALLTYPE get_ProviderOptions(ProviderOptions *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = ProviderOptions_ServerSideProvider;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID id, IUnknown **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        Widget *w = Target();
+        if (!w) return S_OK;
+        if (id == UIA_InvokePatternId && w->AccessibleActionable())
+            *out = static_cast<IInvokeProvider *>(this);
+        else if (id == UIA_TogglePatternId && w->AccessibleToggle() >= 0)
+            *out = static_cast<IToggleProvider *>(this);
+        else if (id == UIA_ValuePatternId && HasValue())
+            *out = static_cast<IValueProvider *>(this);
+        if (*out) AddRef();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID id, VARIANT *out) override {
+        if (!out) return E_INVALIDARG;
+        VariantInit(out);
+        UiaRect box = {};
+        get_BoundingRectangle(&box);
+        Widget *w = Target();
+        if (!w) {
+            // The window itself: enough to place the tree inside a screen, and no more than that.
+            switch (id) {
+            case UIA_ControlTypePropertyId:   return SmallInt(out, UIA_WindowControlTypeId);
+            case UIA_NamePropertyId:          return Text(out, win->Title());
+            case UIA_IsEnabledPropertyId:     return Flag(out, true);
+            case UIA_FrameworkIdPropertyId:   return Text(out, L"Micula");
+            case UIA_BoundingRectanglePropertyId: return BoxOf(out, box);
+            case UIA_NativeWindowHandlePropertyId:
+                return SmallInt(out, (int)(INT_PTR)win->hwnd);
+            }
+            return S_OK;
+        }
+        switch (id) {
+        case UIA_ControlTypePropertyId:              return SmallInt(out, w->AccessibleType());
+        case UIA_NamePropertyId:                     return Text(out, w->AccessibleLabel());
+        case UIA_HelpTextPropertyId:                 return Text(out, w->tips.c_str());
+        case UIA_IsEnabledPropertyId:                return Flag(out, w->enabled);
+        case UIA_IsOffscreenPropertyId:              return Flag(out, !w->visible);
+        case UIA_IsKeyboardFocusablePropertyId:      return Flag(out, w->Focusable());
+        case UIA_HasKeyboardFocusPropertyId:         return Flag(out, win->focused == w);
+        case UIA_IsControlElementPropertyId:
+        case UIA_IsContentElementPropertyId:         return Flag(out, true);
+        case UIA_FrameworkIdPropertyId:              return Text(out, L"Micula");
+        case UIA_BoundingRectanglePropertyId:        return BoxOf(out, box);
+        case UIA_IsInvokePatternAvailablePropertyId: return Flag(out, w->AccessibleActionable());
+        case UIA_IsTogglePatternAvailablePropertyId: return Flag(out, w->AccessibleToggle() >= 0);
+        case UIA_IsValuePatternAvailablePropertyId:  return Flag(out, HasValue());
+        case UIA_ValueValuePropertyId: {
+            std::wstring v;
+            return w->AccessibleValue(v) ? Text(out, v.c_str()) : S_OK;
+        }
+        }
+        return S_OK;   // VT_EMPTY: a property this control has no answer for
+    }
+
+    HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(IRawElementProviderSimple **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        // Only the root has a host: the HWND's own provider, which is what this process's window
+        // class would otherwise have answered with. It is how a client gets from this tree to the
+        // native window's own properties.
+        if (widget) return S_OK;
+        const uiaapi::Api &uia = uiaapi::Get();
+        if (!uia.Ready()) return S_OK;
+        return uia.HostProviderFromHwnd(win->hwnd, out);
+    }
+
+    // ---- IRawElementProviderFragment --------------------------------------------------------
+    HRESULT STDMETHODCALLTYPE Navigate(NavigateDirection dir,
+                                       IRawElementProviderFragment **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        const int count = ChildCount();
+        if (!widget) {
+            if (dir == NavigateDirection_FirstChild && count > 0) *out = ChildAt(0);
+            else if (dir == NavigateDirection_LastChild && count > 0) *out = ChildAt(count - 1);
+            // No parent: the HWND is the root's host, not its parent.
+            return S_OK;
+        }
+        if (dir == NavigateDirection_Parent) { *out = new UiaElement(win, 0); return S_OK; }
+        const int at = ChildIndexOf(widget);
+        if (at < 0) return S_OK;
+        if (dir == NavigateDirection_NextSibling && at + 1 < count) *out = ChildAt(at + 1);
+        else if (dir == NavigateDirection_PreviousSibling && at > 0) *out = ChildAt(at - 1);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetRuntimeId(SAFEARRAY **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        // Two numbers and no pointer. A runtime id has to be unique within the window, which the
+        // uid Add handed out already is, and a pointer would change identity every time the page
+        // was laid out again -- which is the one thing UIA uses the id to notice.
+        SAFEARRAY *a = SafeArrayCreateVector(VT_I4, 0, 2);
+        if (!a) return E_OUTOFMEMORY;
+        LONG i = 0;
+        // 3, which the documentation calls UIA_AppendRuntimeId. It has a name in the UIA
+        // programmer's guide and not in a header, so it is a comment here instead of a constant.
+        int v = 3;
+        SafeArrayPutElement(a, &i, &v);
+        i = 1;
+        v = widget;
+        SafeArrayPutElement(a, &i, &v);
+        *out = a;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = {};
+        const double s = win->scale();
+        POINT origin = { 0, 0 };
+        ClientToScreen(win->hwnd, &origin);
+        if (!widget) {
+            *out = { (double)origin.x, (double)origin.y,
+                     (double)win->ClientW() * s, (double)win->ClientH() * s };
+            return S_OK;
+        }
+        Widget *w = Target();
+        if (!w) return S_OK;
+        // A control in the scrolling half of the page is painted at an offset, and its `rect` is
+        // where it lives in the page rather than where it is on the screen.
+        D2D1_RECT_F r = w->rect;
+        if (w->scrolls) {
+            float dy = 0.0f, op = 1.0f;
+            win->ContentTransform(&dy, &op);
+            r.top -= dy;
+            r.bottom -= dy;
+        }
+        *out = { origin.x + (double)r.left * s, origin.y + (double)r.top * s,
+                 (double)Width(r) * s, (double)Height(r) * s };
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetEmbeddedFragmentRoots(SAFEARRAY **out) override {
+        if (out) *out = nullptr;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetFocus() override {
+        Widget *w = Target();
+        if (!w || !w->Focusable()) return S_OK;
+        win->showFocusRing = true;
+        win->SetFocusTo(w);              // the one place the focus event is raised from
+        win->Invalidate();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_FragmentRoot(IRawElementProviderFragmentRoot **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = static_cast<IRawElementProviderFragmentRoot *>(new UiaElement(win, 0));
+        return S_OK;
+    }
+
+    // ---- IRawElementProviderFragmentRoot ----------------------------------------------------
+    HRESULT STDMETHODCALLTYPE ElementProviderFromPoint(double x, double y,
+                                                       IRawElementProviderFragment **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        // What makes "hover and identify" work, and it asks the window's own hit test rather than
+        // forming a second opinion about where a control is: the point is in screen pixels and the
+        // page is in DIPs, and the rest is the question a click asks.
+        const double s = win->scale();
+        POINT origin = { 0, 0 };
+        ClientToScreen(win->hwnd, &origin);
+        Widget *w = win->HitTest((float)((x - origin.x) / s), (float)((y - origin.y) / s));
+        if (w) *out = new UiaElement(win, w->uid);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetFocus(IRawElementProviderFragment **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        if (win->focused) *out = new UiaElement(win, win->focused->uid);
+        return S_OK;
+    }
+
+    // ---- what a client can ask a control to do ----------------------------------------------
+    // Both are the keyboard's own action: `OnActivate` is Space, which presses a button and
+    // switches a switch. A disabled control still answers and says it cannot, which is what a
+    // client draws a greyed item from -- silence would look like a control without the pattern.
+    HRESULT STDMETHODCALLTYPE Invoke() override {
+        Widget *w = Target();
+        if (!w || !w->AccessibleActionable()) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        w->OnActivate();
+        win->Invalidate();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Toggle() override {
+        Widget *w = Target();
+        if (!w || w->AccessibleToggle() < 0) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        w->OnActivate();
+        win->Invalidate();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_ToggleState(ToggleState *out) override {
+        if (!out) return E_INVALIDARG;
+        Widget *w = Target();
+        const int state = w ? w->AccessibleToggle() : -1;
+        if (state < 0) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = state == 1 ? ToggleState_On
+             : state == 2 ? ToggleState_Indeterminate
+                          : ToggleState_Off;
+        return S_OK;
+    }
+
+    // ---- IValueProvider, the reading half of it ---------------------------------------------
+    HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR /*value*/) override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE get_Value(BSTR *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        Widget *w = Target();
+        std::wstring v;
+        if (!w || !w->AccessibleValue(v)) return S_OK;
+        *out = SysAllocString(v.c_str());
+        return *out ? S_OK : E_OUTOFMEMORY;
+    }
+    HRESULT STDMETHODCALLTYPE get_IsReadOnly(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = TRUE;
+        return S_OK;
+    }
+
+private:
+    // The widget this element is for, resolved now: null for the root, and null for a widget the
+    // page has since laid out again -- which every caller has to expect and answer for.
+    Widget *Target() const { return widget ? win->UiaFind(widget) : nullptr; }
+    bool HasValue() const {
+        Widget *w = Target();
+        std::wstring v;
+        return w && w->AccessibleValue(v);
+    }
+    // Visible widgets only, in paint order: what is not drawn is not there as far as a client is
+    // concerned.
+    int ChildCount() const {
+        int n = 0;
+        for (const auto &w : win->widgets)
+            if (w->visible) n++;
+        return n;
+    }
+    UiaElement *ChildAt(int index) const {
+        for (const auto &w : win->widgets)
+            if (w->visible && index-- == 0) return new UiaElement(win, w->uid);
+        return nullptr;
+    }
+    int ChildIndexOf(int uid) const {
+        int n = 0;
+        for (const auto &w : win->widgets) {
+            if (!w->visible) continue;
+            if (w->uid == uid) return n;
+            n++;
+        }
+        return -1;
+    }
+
+    // A property, four ways, into a VARIANT the caller has already initialised. One that is not
+    // answered stays VT_EMPTY, which is UIA's own way of saying "no value here".
+    static HRESULT Text(VARIANT *out, const wchar_t *s) {
+        if (!s || !*s) return S_OK;
+        out->vt = VT_BSTR;
+        out->bstrVal = SysAllocString(s);
+        return out->bstrVal ? S_OK : E_OUTOFMEMORY;
+    }
+    static HRESULT SmallInt(VARIANT *out, int v) {
+        out->vt = VT_I4;
+        out->lVal = v;
+        return S_OK;
+    }
+    static HRESULT Flag(VARIANT *out, bool v) {
+        out->vt = VT_BOOL;
+        out->boolVal = v ? VARIANT_TRUE : VARIANT_FALSE;
+        return S_OK;
+    }
+    static HRESULT BoxOf(VARIANT *out, const UiaRect &r) {
+        SAFEARRAY *a = SafeArrayCreateVector(VT_R8, 0, 4);
+        if (!a) return E_OUTOFMEMORY;
+        const double v[4] = { r.left, r.top, r.width, r.height };
+        for (LONG i = 0; i < 4; i++)
+            if (FAILED(SafeArrayPutElement(a, &i, (void *)&v[i]))) {
+                SafeArrayDestroy(a);
+                return E_UNEXPECTED;
+            }
+        out->vt = VT_ARRAY | VT_R8;
+        out->parray = a;
+        return S_OK;
+    }
+
+    Window *win;
+    int widget;          // 0 for the window itself; otherwise a Widget::uid
+    LONG refs = 1;
+};
+
+inline IRawElementProviderSimple *Window::UiaRoot() { return new UiaElement(this, 0); }
+
+// The widget behind an element's uid, or null. A linear scan of a list that is a page's worth of
+// controls, on a call that only happens when somebody is running a screen reader.
+inline Widget *Window::UiaFind(int uid) const {
+    if (!uid) return nullptr;
+    for (const auto &w : widgets)
+        if (w->uid == uid) return w.get();
+    return nullptr;
+}
+
+// Told to a client that is listening that the keyboard focus moved: the one event a screen reader
+// cannot work without, because it is how it follows the Tab key.
+inline void Window::UiaFocusChanged() {
+    const uiaapi::Api &uia = uiaapi::Get();
+    if (!uia.Ready() || !uia.ClientsAreListening()) return;
+    UiaElement *e = new UiaElement(this, focused ? focused->uid : 0);
+    uia.RaiseAutomationEvent(e, UIA_AutomationFocusChangedEventId);
+    e->Release();
 }
 
 // Both are defined at the end of this header beside Post, and both are wanted here: the
@@ -2862,10 +3386,20 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             return 0;
         }
         return 0;
+    case WM_GETOBJECT: {
+        // UI Automation, and only while a client is actually listening: a screen reader is absent
+        // in almost every run of a program built on this, and a provider tree built to answer
+        // nobody is work on the UI thread for nothing. Anything else falls through to
+        // DefWindowProc, which is where the MSAA half of the world's answer has always come from.
+        const uiaapi::Api &uia = uiaapi::Get();
+        if ((LONG)lp == UiaRootObjectId && uia.Ready() && uia.ClientsAreListening())
+            return uia.ReturnRawElementProvider(h, wp, lp, self->UiaRoot());
+        break;
+    }
     case WM_TIMER:
         // A timer this window is running: see Timer, where the window's own and every control's
-        // come from, and which knows whose id this is. By index, with the size asked again each
-        // turn, because a callback can stop the timer it is running on.
+        // come from, and which knows whose id this is. By index, with the size asked again
+        // each turn, because a callback can stop the timer it is running on.
         for (size_t i = 0; i < self->timers.size(); i++)
             if (self->timers[i]->Handle(wp)) return 0;
         // Anything else is a timer a page set for itself, which falls through to OnAppMessage,

@@ -8,8 +8,11 @@
 // What the program has to provide, and nothing else:
 //
 //   - link    d2d1 d3d11 dxgi dcomp dwrite dwmapi imm32 windowscodecs user32 gdi32
-//             ole32 advapi32. window.h names every one with #pragma comment, so MSVC
-//             needs none of them on its command line; other toolchains do.
+//             ole32 oleaut32 advapi32. window.h names every one with #pragma comment,
+//             so MSVC needs none of them on its command line; other toolchains do.
+//             UIAutomationCore is not in the list because it is not linked: the four
+//             functions used out of it are looked up at run time, so a program that
+//             never sees a screen reader has no dependency on it at all.
 //   - COM     initialised on the UI thread (CoInitializeEx, apartment-threaded) before
 //             Window::Create. The caption icon and Window::Image go through WIC, which
 //             is COM; without it both are silently absent.

@@ -61,6 +61,18 @@ struct TextBox : Widget {
     bool TextCursor() const override { return true; }
     void OnBlur() override { if (onCommit) onCommit(text); }
 
+    // A text field to a screen reader: the text in it, so somebody who cannot see the screen can
+    // read back what was typed. Deliberately no name from the placeholder: a placeholder is a hint
+    // about the format and not a label -- a client reading "C:\Path\to\folder" out as the name of
+    // the field is worse than reading nothing -- so the page names the field with `accessibleName`,
+    // which is what the words beside it are for. See the Accessibility section of docs/window.md.
+    int AccessibleType() const override { return UIA_EditControlTypeId; }
+    bool AccessibleValue(std::wstring &out) const override {
+        if (text.empty()) return false;
+        out = text;
+        return true;
+    }
+
     // Fluent's text field padding: 11 DIPs each side.
     float InnerLeft() const  { return rect.left + 11.0f; }
     float InnerWidth() const { return Width(rect) - 22.0f; }
