@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-28
+
 ### Added
 
 - **UI Automation.** A control drawn by hand is invisible to a screen reader unless the window says
