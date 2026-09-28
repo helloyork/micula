@@ -8,6 +8,9 @@ library can be: a minor version may break.
 
 ### Changed
 
+- **`Painter::TextWrappedCentred`.** A paragraph centred line by line and as a block, clipped to the
+  rectangle. `TextWrapped` cannot say it -- the alignment of the lines belongs to the text format, and
+  the format is shared -- so an empty panel's one line of grey had nowhere to come from.
 - **`glyph::kCancel`.** `ChromeClose` is the caption button's and is drawn heavier than the icons a
   page puts beside it; `Cancel` (`E711`) is the thin one, next to something like Refresh.
 

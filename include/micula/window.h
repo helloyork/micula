@@ -495,6 +495,38 @@ struct Painter {
         return m.height;
     }
 
+    // The same paragraph, centred: line by line in the box, and as a block in it. What an empty
+    // panel has to say is one line of grey in the middle of a lot of nothing, and the wrapped
+    // one above cannot say it -- the alignment of the lines belongs to the text format, which is
+    // shared, so centring here means a layout of its own.
+    //
+    // Clipped, because a paragraph that does not fit is a layout fault and drawing it outside the
+    // panel it belongs to hides the fault on somebody else's control.
+    float TextWrappedCentred(const std::wstring &s, const D2D1_RECT_F &r, IDWriteTextFormat *fmt,
+                             const D2D1_COLOR_F &c) const {
+        if (s.empty()) return 0.0f;
+        const float w = r.right - r.left;
+        if (w <= 0.0f || r.bottom <= r.top) return 0.0f;
+        IDWriteTextLayout *layout = nullptr;
+        if (FAILED(font->dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt, w, 100000.0f,
+                                              &layout)) || !layout)
+            return 0.0f;
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        DWRITE_TEXT_METRICS m = {};
+        layout->GetMetrics(&m);
+        // Centred as a block by hand: a layout is drawn from its origin downwards and takes no
+        // notice of the height it was measured against, and the height it reports is the one its
+        // own lines came to.
+        const float top = r.top + ((r.bottom - r.top) - m.height) * 0.5f;
+        rt->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_ALIASED);
+        rt->DrawTextLayout(D2D1::Point2F(r.left, top), layout, Brush(c), D2D1_DRAW_TEXT_OPTIONS_NONE);
+        rt->PopAxisAlignedClip();
+        layout->Release();
+        return m.height;
+    }
+
     // How wide a single line wants to be. Buttons size themselves from this rather
     // than from a guess, which is what keeps a Chinese label and an English one both
     // fitting without a magic constant per string.
