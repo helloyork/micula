@@ -435,6 +435,7 @@ inline bool  Inside(const D2D1_RECT_F &r, float x, float y) {
 // ---------------------------------------------------------------- Widget
 
 struct Window;
+struct App;
 // A control that floats over the page -- a dialog, a flyout, a menu. Forward-declared for
 // Widget::AsLayer() below and defined further down this same header, after Widget: the window
 // routes Esc, Enter and the Tab ring through the top one, so the two belong together.
@@ -985,7 +986,7 @@ struct Window {
                r.bottom + 4.0f > clip.top && r.top - 4.0f < clip.bottom;
     }
 
-    virtual ~Window() {}
+    virtual ~Window();
 
     // --- to implement -----------------------------------------------------------
     virtual const wchar_t *ClassName() const = 0;
@@ -1025,7 +1026,26 @@ struct Window {
 
     // --- lifetime ---------------------------------------------------------------
     bool Create(int dipW, int dipH, bool canResize, HICON icon);
+    // Run this window, and only this window. The shorthand for a program with one window, which is
+    // what most programs have and what every example here has a use for -- see App for the rest.
     int  Run();
+
+    // The app this window is registered with, or null. Set by App::Add, cleared by App::Remove and
+    // by the App's own destructor -- which is what makes the order the two of them die in not
+    // matter: the App is usually a local in wWinMain and the windows are usually locals after it,
+    // so it is the App that goes first.
+    App *app = nullptr;
+
+    // The window has been destroyed, and this is the last thing it does about it. For a page that
+    // made a window of its own and has to drop it: deleting a window inside its own message is not
+    // something to do, so the usual answer is to `Post` to the window that made it.
+    virtual void OnClosed() {}
+
+    // Called by App as a window joins the loop and as it leaves it. These were the first and the
+    // last things this window's own loop did, which was the same thing only because there was
+    // ever one window in it.
+    void BeginPump();
+    void EndPump();
     // While the frame loop is animating it draws every frame itself and clears the update
     // region after each one, so invalidating as well buys nothing -- and it costs a frame:
     // the region it sets is handed back by the next PeekMessage as a WM_PAINT, which paints
@@ -2108,7 +2128,141 @@ inline double MonotonicSeconds() {
     return freq.QuadPart ? (double)now.QuadPart / (double)freq.QuadPart : 0.0;
 }
 
-inline int Window::Run() {
+// ---------------------------------------------------------------- App
+
+// The application: a message loop, and the windows it pumps.
+//
+// An ordinary object, local to wWinMain, rather than the singleton a framework usually has -- and
+// the reason is not tidiness. `inline` functions with a `static` in them are one per *module*, so a
+// header-only library whose program is split across DLLs would have one "the application" for each
+// of them and no way to say which. A local object has one per thread that wants one, which is what
+// Qt's event loop is too: the loop belongs to the thread, and a thread pumps its own windows.
+//
+// ```cpp
+// int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
+//     App app;
+//     MainWindow main;
+//     if (!main.Create(1040, 700, true, nullptr)) return 1;
+//     app.Add(main);
+//     return app.Run();
+// }
+// ```
+//
+// A window has to have been created on this thread. It does *not* have to outlive the App -- a
+// window that dies takes itself out of the list, and the App's destructor clears the back-pointer of
+// anything still in it -- and it does not have to be added before the loop starts, which is what a
+// windowed popup will want.
+//
+// `Run` returns when the last window in the list is gone, or when something posts WM_QUIT.
+struct App {
+    App() = default;
+    App(const App &) = delete;
+    App &operator=(const App &) = delete;
+    ~App();
+
+    // The windows this loop pumps, in the order they were added.
+    std::vector<Window *> windows;
+
+    // Add a window. It joins the loop at the next message that is asked for.
+    void Add(Window &w);
+    // Take one out. The loop stops when the last one goes, which is what closing the last window of
+    // an application looks like from here.
+    void Remove(Window &w);
+    // Run until there is nothing left to run.
+    int  Run();
+    // End the loop where it stands, with that exit code, whatever is still open.
+    void Quit(int code = 0);
+    bool Running() const { return running; }
+
+private:
+    // Window is the other half of this: the loop is written in terms of what a window knows about
+    // its own frame -- the clocks, the `animOn` flag, the dispatch guard -- and none of that is
+    // worth a public API.
+    friend struct Window;
+
+    bool running = false;
+
+    // Any window that wants frames, with each window's own `animOn` kept in step: it is what
+    // Invalidate() asks before deciding whether to set an update region. See Window::Invalidate.
+    bool Moving();
+    // One message, inside the guard of the window it is for -- found from the handle rather than
+    // from the list, because a message can arrive for a window that is in no app at all.
+    void PumpMessage(MSG *msg);
+};
+
+inline App::~App() {
+    // The App is usually a local in wWinMain and the windows are usually locals after it, so it is
+    // the App that goes first. Nothing else would notice that a pointer it kept had died.
+    for (Window *w : windows) w->app = nullptr;
+}
+
+inline void App::Add(Window &w) {
+    if (w.app == this) return;
+    w.app = this;
+    windows.push_back(&w);
+    // A window that joins a loop that is already running needs everything App::Run sets up for the
+    // ones that were there when it started, and it is not the clock that is the subtle half: the
+    // frequency is asked for there and nowhere else, so a window added later divides every frame by
+    // zero -- an infinite dt that the clamp turns into a tenth of a second, on *every* frame, which
+    // is most of an 83 ms transition gone before the first repaint. The caret's timer is the other
+    // half, and it is the one that would have been noticed eventually.
+    if (running) w.BeginPump();
+}
+
+inline void App::Remove(Window &w) {
+    for (size_t i = 0; i < windows.size(); i++) {
+        if (windows[i] != &w) continue;
+        windows.erase(windows.begin() + i);
+        break;
+    }
+    w.app = nullptr;
+    if (running && windows.empty()) PostQuitMessage(0);
+}
+
+inline void App::Quit(int code) {
+    running = false;
+    PostQuitMessage(code);
+}
+
+inline bool App::Moving() {
+    bool any = false;
+    for (Window *w : windows) {
+        const bool on = w->Visible() && (w->Animating() || w->AnimationWanted());
+        // A window that is *starting* to move picks its clock up here, which is where the one-window
+        // loop did it for its window and only its window. Without it, that window's first frame
+        // carries however long it spent sitting still while another window kept the loop awake -- and
+        // Frame() clamps that to a tenth of a second, which is most of an animation: the pane the
+        // person just opened is nearly there before the second frame. The re-base in Run covers the
+        // first animation of the whole loop, which is exactly why every one after it was wrong.
+        if (on && !w->animOn) QueryPerformanceCounter(&w->qpcLast);
+        // A window that is not moving still has to keep its own flag honest: false means its
+        // Invalidate() sets an update region and its WM_PAINT does the drawing, which is how a
+        // window that is not animating is meant to be repainted.
+        w->animOn = on;
+        if (on) any = true;
+    }
+    return any;
+}
+
+inline void App::PumpMessage(MSG *msg) {
+    Window *target = reinterpret_cast<Window *>(GetWindowLongPtrW(msg->hwnd, GWLP_USERDATA));
+    if (!target) { DispatchMessageW(msg); return; }
+    // The guard is the *target's*, and that is the whole point of looking it up: a page on the
+    // second window that lays itself out in a callback would otherwise free the widgets its own
+    // callback is standing on, which is the crash Window::retired exists to prevent.
+    Window::Dispatch frame(target);
+    DispatchMessageW(msg);
+}
+
+inline Window::~Window() {
+    // A window that dies while it is still in an app takes itself out of it: the app holds bare
+    // pointers, and this may be the last thing that happens to either of them.
+    if (app) app->Remove(*this);
+}
+
+// What used to be the first and the last thing the one window's loop did, now per window because
+// there can be more than one.
+inline void Window::BeginPump() {
     // GetCaretBlinkTime's own default period. The window owns this timer the way a control owns
     // its own; see Timer.
     caretTimer.Start(this, 530, [this] {
@@ -2121,6 +2275,36 @@ inline int Window::Run() {
     });
     QueryPerformanceFrequency(&qpcFreq);
     QueryPerformanceCounter(&qpcLast);
+}
+
+// Nothing is left to fire at, and the window is about to go back to its page: the caret's and the
+// frame loop's timers are stopped here rather than in their destructors, which run with no hwnd
+// left. The device goes with them, so that a window that comes back through Run() builds it again
+// rather than keeping a swap chain nobody can see.
+inline void Window::EndPump() {
+    caretTimer.Stop();
+    frameTimer.Stop();
+    fonts.Release();
+    ReleaseDevice();
+    if (dw) { dw->Release(); dw = nullptr; }
+}
+
+inline int Window::Run() {
+    // The one-window application this shorthand is: see App for the rest. `solo` rather than `app`
+    // because the window has a member of that name, which is where it goes when this returns.
+    App solo;
+    solo.Add(*this);
+    return solo.Run();
+}
+
+// The loop, which is the loop it always was with three things changed. The frame decision is made
+// for every window rather than for one, so a window that did not start the loop animates anyway. A
+// message is dispatched inside *its own* window's guard. And the loop ends when the last window in
+// the list is gone rather than when WM_DESTROY arrives from any of them.
+inline int App::Run() {
+    if (windows.empty()) return 0;
+    running = true;
+    for (Window *w : windows) w->BeginPump();
     const frameclock::Fn clock = frameclock::Resolve();
     // Only created where it is needed. Null on a pre-1803 build too, where the wait
     // falls back to Sleep for the same remainder.
@@ -2130,10 +2314,17 @@ inline int Window::Run() {
                                                  TIMER_ALL_ACCESS);
     LARGE_INTEGER paceMark = {};
     LONGLONG period = 0;
+    bool started = false;
+    bool alive = true;
     MSG msg = {};
     int exitCode = 0;
     while (alive) {
-        // A window nobody can see runs no frames. Something animating in it -- an indeterminate
+        // A page's frame, one after another, and each window's own clock for it: the frequency is the
+    // process's and is asked for once, here, rather than per window.
+    LARGE_INTEGER freq = {};
+    QueryPerformanceFrequency(&freq);
+    const LONGLONG qpcFreq = freq.QuadPart;
+    // A window nobody can see runs no frames. Something animating in it -- an indeterminate
         // progress bar is the one that never stops -- would otherwise paint the whole frame at the
         // display's rate into a surface nobody is looking at, and a minimised window is where that
         // is pure waste: there is not even a "later" for it, the frames are simply thrown away.
@@ -2141,46 +2332,58 @@ inline int Window::Run() {
         // Nothing is lost when it does run again: animOn is cleared here and the clock is picked up
         // when it comes back on, so an animation resumes where it was rather than jumping forward
         // by however long the window spent out of sight. See Visible.
-        const bool moving = Visible() && (Animating() || AnimationWanted());
+        const bool moving = Moving();
         if (!moving) {
-            animOn = false;
             if (GetMessageW(&msg, nullptr, 0, 0) <= 0) { exitCode = (int)msg.wParam; break; }
             TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-            // The clock is only picked up again here: a window that sat idle for a
-            // minute must not hand the first frame a minute's worth of dt.
-            QueryPerformanceCounter(&qpcLast);
+            PumpMessage(&msg);
+            // The clocks are only picked up again here: a window that sat idle for a minute must not
+            // hand the first frame a minute's worth of dt. Every window, because any of them can be
+            // the next one to start moving.
+            for (Window *w : windows) QueryPerformanceCounter(&w->qpcLast);
+            // And the stretch is over, which is the rest of what `started` means: it is what asks
+            // the monitor for its rate, and a rate asked for once per process is the rate of
+            // whichever monitor the first animation happened to be on.
+            started = false;
             continue;
         }
-        if (!animOn) {
-            animOn = true;
-            QueryPerformanceCounter(&qpcLast);
-            paceMark = qpcLast;
-            // Asked once per stretch of animation rather than per frame: a window
-            // dragged to a monitor with a different rate mid-animation is paced at the
-            // old rate for the rest of a transition that lasts a fraction of a second.
-            if (!clock) period = frameclock::RefreshPeriod(hwnd);
+        if (!started) {
+            started = true;
+            QueryPerformanceCounter(&paceMark);
+            // Asked once per stretch of animation rather than per frame: a window dragged to a
+            // monitor with a different rate mid-animation is paced at the old rate for the rest of a
+            // transition that lasts a fraction of a second. The slowest rate of the windows that are
+            // moving is the one taken, because the wait below is one wait for all of them -- a window
+            // on a faster display simply gets a couple of frames it did not need.
+            if (!clock) {
+                period = 0;
+                for (Window *w : windows) {
+                    if (!w->animOn) continue;
+                    const LONGLONG rate = frameclock::RefreshPeriod(w->hwnd);
+                    period = period == 0 ? rate : (std::min)(period, rate);
+                }
+            }
         }
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) { exitCode = (int)msg.wParam; alive = false; break; }
             TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            PumpMessage(&msg);
         }
         if (!alive) break;
-        // Inside a Dispatch, because a page's tick is allowed to lay itself out again --
-        // a card that grows a frame at a time does -- and that frees the widgets a
-        // running callback may be standing on. See Window::retired.
-        { Dispatch frame(this); Frame(); }
-        Paint();
-        // Painted outside WM_PAINT, so the update region has to be cleared by hand or
-        // the next PeekMessage hands back a WM_PAINT for a window that was just drawn.
-        ValidateRect(hwnd, nullptr);
+        for (Window *w : windows) {
+            if (!w->animOn) continue;
+            { Window::Dispatch frame(w); w->Frame(); }
+            w->Paint();
+            // Painted outside WM_PAINT, so the update region has to be cleared by hand or the next
+            // PeekMessage hands back a WM_PAINT for a window that was just drawn.
+            ValidateRect(w->hwnd, nullptr);
+        }
         if (clock) {
             clock(0, nullptr, 32);
         } else {
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
-            const LONGLONG spent = (now.QuadPart - paceMark.QuadPart) * 10000000LL / qpcFreq.QuadPart;
+            const LONGLONG spent = (now.QuadPart - paceMark.QuadPart) * 10000000LL / qpcFreq;
             const LONGLONG left = period - spent;
             if (left > 0) {
                 LARGE_INTEGER due;
@@ -2193,19 +2396,15 @@ inline int Window::Run() {
             QueryPerformanceCounter(&paceMark);
         }
     }
-    // Usually the loop ends because WM_DESTROY cleared `alive`, before the WM_QUIT it
-    // posted has been read -- and then `msg` is whatever was being dispatched, an Alt+F4
-    // keystroke for one. The exit code is the quit message's, so take it from the queue.
+    // Usually the loop ends because the last window went, before the WM_QUIT that was posted for it
+    // has been read -- and then `msg` is whatever was being dispatched, an Alt+F4 keystroke for one.
+    // The exit code is the quit message's, so take it from the queue.
     MSG quit;
     if (PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) exitCode = (int)quit.wParam;
-    // Nothing is left to fire at, and the window is about to go: the caret's and the frame loop's
-    // timers are stopped here rather than in their destructors, which run with no hwnd left.
-    caretTimer.Stop();
-    frameTimer.Stop();
+    // Whatever is left is going back to a page that is about to be its owner again, so it tidies up
+    // after itself -- see EndPump. The waitable timer is the loop's own and goes here.
+    for (Window *w : windows) w->EndPump();
     if (pace) CloseHandle(pace);
-    fonts.Release();
-    ReleaseDevice();
-    if (dw) { dw->Release(); dw = nullptr; }
     return exitCode;
 }
 
@@ -2679,7 +2878,18 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // here. See DrainInvokes.
         DrainInvokes(h);
         self->alive = false;
-        PostQuitMessage(0);
+        // The device, the fonts and the Write factory are this window's own and go with it. The
+        // tail of Run() does this for the windows that are still there when the loop ends, and that
+        // is the *other* way out: a window closed while the app carries on is destroyed here and
+        // nowhere else. Without this line every window a page opens and closes takes a D3D device,
+        // a swap chain, a composition target and a font set with it, which is a window a page is
+        // meant to be able to open and close all day.
+        self->EndPump();
+        self->OnClosed();
+        // The app posts WM_QUIT itself, when the window that has just gone was the last one in
+        // it. A window that is in no app is the whole program, as it was before there was one.
+        if (self->app) self->app->Remove(*self);
+        else           PostQuitMessage(0);
         return 0;
     }
     if (self->OnAppMessage(m, wp, lp)) return 0;

@@ -6,6 +6,30 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`App`**: one message loop, as many windows as it is given, on one thread -- and `Window::Run()`
+  is the shorthand for the one-window case, running the same loop. A window that did not start the
+  loop is ticked and painted like any other; before this, a second window never animated at all, and
+  a page on it that laid itself out in a callback would have freed the widgets under its own feet,
+  because the dispatch guard was the running window's. `App::Add`, `Remove`, `Run`, `Quit`,
+  `Running`, and on the window `app`, `OnClosed()`, `BeginPump`/`EndPump`. A window added to a loop
+  that is already running is brought up to it there and then -- its frame clock and its caret timer
+  are started, where before neither was ever started, which made every frame of every animation on
+  that window a hundred milliseconds long whatever the real interval was, so an 83 ms transition was
+  over before the second frame of it -- and a window destroyed while the loop goes on gives back its
+  device and its fonts at that point rather than at the end of `Run()`, which only ever reached the
+  windows still standing.
+
+### Fixed
+
+- The frame loop's fallback pacing -- the path taken where the compositor's own clock is not
+  available -- read the monitor's rate once per *program* rather than once per stretch of animation,
+  which is what its comment claimed and what the mark it measures the wait from assumed: from the
+  second animation of the run onwards, the loop paced itself against a mark taken minutes earlier and
+  drew frames as fast as the machine could, a window animating at several times its display's rate.
+  The state is cleared where the loop goes idle, beside the clocks.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added

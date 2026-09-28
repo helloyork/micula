@@ -95,6 +95,9 @@ std::wstring Dip(float v) {
     return b;
 }
 
+// 1 puts the animation probe in the main window instead of the navigation demo: see ProbeWindow.
+int probe = 0;
+
 // The system backdrop the window asks DWM for. Mica is the library's default; the others are
 // here so that the difference can be looked at side by side, which is what `backdrop=` is for.
 const wchar_t *BackdropName() {
@@ -140,6 +143,7 @@ void ReadState(const wchar_t *cmd) {
     // Create: `Create` builds the palette *from* this, so a window that has been told before it has
     // been made comes up in the right theme on its first frame.
     Theme((ThemeMode)(std::min)((std::max)(number(L"theme=", (int)ThemeSetting()), 0), 2));
+    probe = number(L"probe=", probe) != 0 ? 1 : 0;
 }
 
 // The same switch as an argument: -1 follows Windows, 0 off, 1 on. The debug page's list is
@@ -193,6 +197,87 @@ struct DemoLayer : Layer {
     D2D1_RECT_F Body() const override { return panel; }
 };
 
+// A deliberately empty window: one Segmented, one DropDown, one Button, and a readout of what the
+// frame loop actually did.
+//
+// It exists to answer one question -- is an animation on this window running at the right speed? --
+// with numbers, because over a remote session it cannot be answered by eye, and because a screenshot
+// of a page of text can be read by somebody who cannot see the animation at all:
+//
+//   frames   how many frames the last stretch of animation got
+//   first    the dt of the first frame of that stretch. This is the one to look at: it is either
+//            the gap the window spent idle -- a stale clock the loop failed to pick up -- or next to
+//            nothing, and which of the two it is settles it. See App::Moving.
+//   max      the largest dt in the stretch, so the clamp at 0.1 s is visible as 100.0
+//   fps      frames over the stretch's own elapsed time
+//
+// The same window is what the Debug page's "App" card opens as a *second* window, and what `probe=1`
+// makes the *first* one: the two readouts side by side are the whole experiment.
+struct ProbeWindow : Window {
+    int choice = 0;
+    int frames = 0;
+    float elapsed = 0.0f, firstDt = 0.0f, maxDt = 0.0f;
+    double lastTick = 0.0;
+    // The window that made this one, and what to run once it is gone: a window cannot delete itself
+    // from inside its own message, so the page that made it hears about it here and does that.
+    Window *parent = nullptr;
+    std::function<void()> onClosed;
+
+    const wchar_t *ClassName() const override { return L"MiculaProbe"; }
+    const wchar_t *Title() const override { return L"Animation probe"; }
+    void MinSize(int *w, int *h) const override { *w = 360; *h = 280; }
+
+    void OnTick(float dt) override {
+        // A gap since the last frame means the window was idle and this is the first frame of a new
+        // stretch. The window's own clock rather than the dt it was handed: dt is clamped to 0.1 s,
+        // which is exactly the value being looked for.
+        const double now = MonotonicSeconds();
+        if (now - lastTick > 0.2) {
+            frames = 0;
+            elapsed = 0.0f;
+            firstDt = dt;
+            maxDt = 0.0f;
+        }
+        lastTick = now;
+        frames++;
+        elapsed += dt;
+        maxDt = (std::max)(maxDt, dt);
+    }
+
+    void OnClosed() override {
+        if (!parent || !onClosed) return;
+        auto fn = std::move(onClosed);
+        onClosed = nullptr;
+        Window *p = parent;
+        parent = nullptr;
+        Post(p, [fn] { fn(); });
+    }
+
+    void Layout() override {
+        ClearWidgets();
+        Segmented *seg = Add(new Segmented({ L"One", L"Two", L"Three" }, choice, [this](int i) {
+            choice = i;
+            Invalidate();
+        }));
+        seg->rect = { 24, kCaptionH + 96, 244, kCaptionH + 96 + metric::kControlH };
+        DropDown *list = Add(new DropDown({ L"Alpha", L"Beta", L"Gamma" }, 0, [](int) {}));
+        list->rect = { 24, kCaptionH + 148, 244, kCaptionH + 148 + metric::kControlH };
+        Button *hover = Add(new Button(L"Hover me", ButtonStyle::Standard, [] {}));
+        hover->rect = { 24, kCaptionH + 200, 144, kCaptionH + 200 + metric::kControlH };
+    }
+
+    void PaintPage(const Painter &p) override {
+        const D2D1_RECT_F row = { 24, kCaptionH + 16, ClientW() - 24, kCaptionH + 40 };
+        wchar_t line[192];
+        swprintf(line, 192, L"frames %d   first %.1f ms   max %.1f ms   %.0f fps", frames,
+                 firstDt * 1000.0f, maxDt * 1000.0f, elapsed > 0.0f ? frames / elapsed : 0.0f);
+        p.Text(line, row, p.font->body, p.pal->textPrimary);
+        swprintf(line, 192, L"segmented %d", choice);
+        p.Text(line, { 24, kCaptionH + 44, ClientW() - 24, kCaptionH + 68 }, p.font->caption,
+               p.pal->textSecondary);
+    }
+};
+
 struct NavDemo : Window {
     // What PaintPage draws, worked out by Layout.
     struct Card {
@@ -232,6 +317,11 @@ struct NavDemo : Window {
     // which is worth telling apart from an answer of 0.
     bool dialogOpen = false;
     int dialogAnswer = -1, dialogCard = -1;
+    // A second window, opened from the Debug page: the animation probe, which is blank on purpose
+    // and carries the frame numbers. A heap window has to be deleted by somebody, and it cannot be
+    // deleted inside its own message -- so it reports itself through `onClosed` and this, the window
+    // that made it, does the deleting once that message has returned.
+    std::unique_ptr<ProbeWindow> second;
 
     const wchar_t *ClassName() const override { return L"MiculaNavDemo"; }
     const wchar_t *Title() const override { return L"Micula - navigation pane"; }
@@ -447,6 +537,23 @@ struct NavDemo : Window {
             cards[dialogCard].detail = L"Answered Later";
         Invalidate();
     }
+
+    // The app layer's half of owning a window. `app` is set when the window joins the loop, so a
+    // page's own window is added with `app->Add` and there is one loop for both of them.
+    void Second() {
+        if (second || !app) return;
+        second = std::make_unique<ProbeWindow>();
+        second->parent = this;
+        second->onClosed = [this] { second.reset(); };
+        if (!second->Create(480, 320, true, nullptr)) { second.reset(); return; }
+        app->Add(*second);
+    }
+
+    void OnClosed() override {
+        // The first window takes the second one with it, which is what closing a main window is
+        // expected to do. The loop then ends on its own, because nothing is left in it.
+        if (second && second->hwnd) PostMessageW(second->hwnd, WM_CLOSE, 0, 0);
+    }
     // Which of the debug page's row counts is the one the pane was built with.
     int RowsChoice() const {
         for (int i = 0; i < (int)(sizeof(kRowChoices) / sizeof(kRowChoices[0])); i++)
@@ -618,6 +725,13 @@ void NavDemo::Layout() {
                            L"A title, a body, and a footer of buttons",
                            go->PreferredWidth(measure)));
             DrawDialogCard();
+        }
+        {
+            Button *go = Add(new Button(L"Open the probe", ButtonStyle::Standard,
+                                        [this] { Second(); }));
+            place(go, card(kIconRecent, L"App",
+                           L"A second window, blank, with the frame numbers on it",
+                           go->PreferredWidth(measure)));
         }
         card(L"", L"Started with", CommandLine(), 0);
         {
@@ -905,7 +1019,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *cmd, int) {
     // WIC is COM, and the window goes through it for the caption icon and Window::Image.
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
     int code = 1;
-    {
+    if (probe) {
+        // The same window and the same controls as the second window the Debug page opens, but as
+        // the main one: the two readouts side by side are what the probe is for.
+        ProbeWindow w;
+        if (w.Create(480, 320, true, nullptr)) code = w.Run();
+    } else {
         NavDemo d;
         d.backdrop = (DWORD)windowBackdrop;
         if (d.Create(1040, 700, true, nullptr)) code = d.Run();

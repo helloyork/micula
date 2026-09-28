@@ -53,6 +53,53 @@ and the approximations of one are wrong for a partly covered window and for a la
 so a window that is merely covered still paints. `Visible()` is the same test the frame loop
 uses, for a page that wants to ask it of itself.
 
+## The app
+
+`Window::Run()` runs that one window. A program with more than one -- which is what a windowed popup
+needs -- makes an `App` and gives it the windows:
+
+```cpp
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
+    App app;
+    MainWindow main;
+    if (!main.Create(1040, 700, true, nullptr)) return 1;
+    app.Add(main);
+    app.Add(tool);                 // as many as the program has
+    return app.Run();
+}
+```
+
+| Member | Description |
+|---|---|
+| `std::vector<Window *> windows` | What it pumps, in the order they were added. |
+| `void Add(Window &w)` | Adds a window to the loop. It may be added while the loop is running, which is what a window a page makes should do. |
+| `void Remove(Window &w)` | Takes one out. The loop ends when the last one is gone, and a window that is destroyed does this itself. |
+| `int Run()` | Runs until there is nothing left to run. Returns the exit code of the `WM_QUIT` that ended it. |
+| `void Quit(int code = 0)` | Ends the loop where it stands. |
+| `bool Running() const` | Whether `Run` is on the stack. |
+
+On `Window`, three things go with it:
+
+| Member | Description |
+|---|---|
+| `App *app` | The app this window is in, or null. Set by `App::Add`. |
+| `virtual void OnClosed()` | The window has been destroyed, and this is the last thing it does about it. |
+| `int Run()` | `App app; app.Add(*this); return app.Run();` -- the same loop, for a program with one window. |
+
+- **One loop, one thread, as many windows as you like.** Every window in the app is ticked and
+painted by the same loop, on the thread that made them, so a window that did not start the loop
+still animates -- and nothing in the library has to be synchronised for it.
+- **The App does not have to outlive the windows**, and it is usually a local in `wWinMain`, which
+means it is destroyed *first*. A window still in it clears its own pointer, and the App's destructor
+clears whatever is left, so the order the two die in does not matter.
+- **Owning a window a page made.** A window cannot be deleted inside its own message, so `OnClosed`
+is where a page hears about it, and the usual shape is a `Post` to the window that made it -- see the
+Debug page of `examples/nav`, which does exactly that with its "Open the probe" card.
+- **A window made while the loop is running** is brought up to it as it joins: its frame clock and
+its caret timer start there, and `WM_DESTROY` hands back its device and its fonts. The tail of
+`Run()` does that only for the windows still standing when the loop ends, which is the other way out
+-- a window a page opens and closes all day would otherwise take a D3D device with it every time.
+
 ## Page callbacks
 
 All virtual. `ClassName()` and `Title()` must be overridden.
