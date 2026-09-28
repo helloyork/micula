@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-28
+
 ### Added
 
 - **`glyph::kCellPhone`.** The icon list gained the cell phone (`E8EA`) -- the device on the far
