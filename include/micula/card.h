@@ -138,7 +138,9 @@ inline void CardLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     const float mid = (box.top + box.bottom) / 2.0f;
 
     // Two passes, as everywhere else: what the children that are not filling want, then the room the
-    // filling ones share. A field in a card is one of those, and it is the reason the loop is here.
+    // filling ones share. A field in a card is one of those, and it is the reason the loop is here --
+    // and the reason the share is capped at the spec's slot: a control is as wide as the column, not
+    // as wide as the card, which is what puts every control on a page in one column down the right.
     float used = 0.0f;
     float filling = 0.0f;
     int count = 0;
@@ -149,7 +151,11 @@ inline void CardLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
         if (want.w.how == Sizing::Fill) filling += 1.0f;
         else used += want.w.size;
     }
-    const float share = filling > 0.0f ? (std::max)(0.0f, right - left - used) / filling : 0.0f;
+    float share = 0.0f;
+    if (filling > 0.0f) {
+        share = (std::max)(0.0f, right - left - used) / filling;
+        if (share > spec.cardSlotW) share = spec.cardSlotW;
+    }
 
     float x = right - used - share * filling;
     for (const auto &child : host_->children) {

@@ -104,6 +104,11 @@ struct Spec {
     float cardH = 64.0f;        // one settings card
     float cardPad = 16.0f;      // inside a card, left and right
     float cardGap = 16.0f;      // between a card's text and its control
+    // How wide a control that asked to fill is inside a card. A field or a slider stretched to the
+    // card's edge is the one thing that breaks the column every control in Windows Settings sits in;
+    // a control that knows its own width -- a switch, a segmented -- keeps it and is right-aligned
+    // into the same column.
+    float cardSlotW = 240.0f;
 };
 
 // A layout: measure the host's children, then place them. It is asked for a measurement when the

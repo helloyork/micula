@@ -58,6 +58,12 @@ target_link_libraries(micula INTERFACE
     d2d1 d3d11 dxgi dcomp dwrite dwmapi imm32 windowscodecs user32 gdi32 ole32 oleaut32 advapi32)
 
 option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
+# Draw what the layouts worked out, over the pages in the examples: the rectangle each widget was
+# arranged into, the rectangle a widget is gliding toward while it is not there yet, the box its own
+# layout places children in, and the page's clip. Off by default -- it is a thing to look at while a
+# layout is being written rather than a thing to ship -- and a build that has it can still turn it
+# off at run time with `micula::debug::layout = false`, without a rebuild.
+option(MICULA_DEBUG_LAYOUT "Build the examples with the layout debug overlay" OFF)
 if(MICULA_BUILD_EXAMPLES)
     # gallery is the only example ported to the tree so far. It is a *console* program rather than a
     # WIN32 one because of its `--dump`: the rectangles a layout came out as are printed instead of
@@ -70,6 +76,9 @@ if(MICULA_BUILD_EXAMPLES)
     # master:examples/nav/nav.cpp` is where they are if this tree outgrows them.
     add_executable(micula-gallery examples/gallery/gallery.cpp)
     target_link_libraries(micula-gallery PRIVATE micula::micula)
+    if(MICULA_DEBUG_LAYOUT)
+        target_compile_definitions(micula-gallery PRIVATE MICULA_DEBUG_LAYOUT=1)
+    endif()
     # The entry point is wmain, which MSVC's linker finds on its own from the subsystem (and from
     # the startup code, for a console program) and MinGW's does not: without -municode it looks for
     # WinMain and the link fails on the one symbol the program never mentions.

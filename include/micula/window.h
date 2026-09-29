@@ -938,7 +938,13 @@ struct Window {
         // whole animation in one step after the window was behind a modal dialog.
         if (dt < 0.0f) dt = 0.0f;
         if (dt > 0.1f) dt = 0.1f;
-        // Hover first: the page may have been rebuilt since the last frame.
+        // Arrange first, because everything after this reads rectangles: this is where a change made
+        // by the message just handled becomes geometry, and the tick below is what glides the tree
+        // toward it. Nothing else arranges -- a child added, a layout replaced and a widget hidden
+        // all set the one flag, and it is cleared here.
+        if (layoutDirty) ArrangeTree();
+        // Then hover, from where the cursor is rather than from the last mouse message: a
+        // rearrangement can have moved something under a pointer that has not moved at all.
         RefreshHover();
         Tick(dt);
         OnTick(dt);
@@ -1358,6 +1364,11 @@ inline void Window::ReleaseDevice() {
 
 inline void Window::Paint() {
     if (!CreateDevice() || !target) return;
+    // A paint the frame loop did not run -- the first one, and every one Windows asks for while it is
+    // running a size or move loop of its own -- arranges for itself, because the loop is what
+    // normally does it and there is no loop here. Idempotent: a paint that follows a frame finds the
+    // flag already clear.
+    if (layoutDirty) ArrangeTree();
     Painter p;
     p.rt = dc; p.br = brush; p.font = &fonts; p.pal = &pal;
 
