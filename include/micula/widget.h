@@ -181,6 +181,9 @@ struct Widget {
     // How much room this widget really has: the page's box in its own space, and a container's clip
     // once containers clip. For a control deciding whether something it would show fits.
     D2D1_RECT_F VisibleArea() const;
+    // Whether to draw the ring around `rect`. The window's decision and not the control's -- Windows
+    // only shows one once the keyboard has been used -- and a control in no window shows none.
+    bool ShowFocusRing() const;
     // The layer this widget is, when it is one. Asked by the window, which routes Esc, Enter and the
     // Tab ring through the top layer before the page sees them.
     virtual Layer *AsLayer() { return nullptr; }
@@ -299,6 +302,30 @@ inline bool Layout::Glide(float dt) {
         moving = moving || m;
     }
     return moving;
+}
+
+// One node and everything under it, placed: a widget's box is what its parent's layout made it, and
+// its own layout then arranges its children inside that box. The window runs exactly this walk,
+// from the root, once per frame if anything asked for it -- and a program that wants the rectangles
+// without a window to draw them in runs it too, which is what a `--dump` mode is.
+//
+// Nothing here needs a window: a layout's numbers come from the room, and its children answer from
+// their own content.
+inline void ArrangeSubtree(Widget *w, const Fonts &fonts) {
+    // A widget that has never been placed is placed without moving; the ones that have been keep the
+    // rectangle they are drawn in until the glide catches up with the new one.
+    if (!w->placed) { w->drawn = w->rect; w->placed = true; }
+    if (w->layout) {
+        Room room;
+        room.fonts = &fonts;
+        room.spec = &w->layout->spec;
+        room.width = Width(w->rect);
+        room.height = Height(w->rect);
+        w->layout->Arrange(room, { 0.0f, 0.0f, room.width, room.height });
+        w->layout->Glide(0.0f);
+    }
+    for (const auto &child : w->children)
+        if (child->visible) ArrangeSubtree(child.get(), fonts);
 }
 
 }  // namespace micula

@@ -1,7 +1,9 @@
 # Layout
 
-**Status: design.** This file describes the retained object tree, which is being built on the branch
-`layout-experimental` and is not in `master`. Everything below is a decision unless it is under
+**Status: being built.** This file describes the retained object tree, which is on the branch
+`layout-experimental` and is not in `master`. The core is written and `examples/gallery` is a page
+written against it; the scrolling container and the last four controls are not, and the migration list
+at the end is where that stands. Everything below is a decision unless it is under
 [Open questions](#open-questions) at the end, which is working notes for the branch.
 
 ## Why the page is no longer rebuilt
@@ -50,6 +52,13 @@ clips -- the window's own, a scrolling container's offset, a card's padding, a p
 somewhere -- and hit testing unwinds the same stack. Scrolling is already a transform today, one
 level up; this is the same idea with the level count freed. It is also what makes motion cheap: a
 subtree that moves is a transform, and nothing has to be told.
+
+The other half of that convention, and the one that keeps every control in this library working: **a
+widget draws at its own `rect`, in the space it was arranged in.** The painter goes down to a
+widget's top left before calling it, so its paint code goes on reading `rect.left` exactly as it did
+when a page placed it by hand -- and a widget that is gliding is drawn where it is while its children
+are drawn from where it is, so a subtree on its way somewhere is one translation and nothing inside it
+knows.
 
 A widget may opt out with `space = Space::Page`: its rectangle is then in the window's own space, no
 ancestor transform touches it, and what the transforms were doing becomes its own job -- clip itself
@@ -148,7 +157,9 @@ page->Add(new Heading(L"Choices"));
 page->Add(new CheckBox(L"Show a notification when done", notify, onChange));
 
 auto *card = page->Add(new Card(L"Quality", L"Segmented - a few words, side by side"));
-card->Add(new Segmented({ L"Auto", L"High", L"Low" }, quality, onChange));
+card->icon = glyph::kView;
+card->Set(new Segmented({ L"Auto", L"High", L"Low" }, quality, onChange));
+card->value = [&] { return kQuality[quality]; };   // what the control reads back as
 ```
 
 A `Heading`, a `Label` and a `Card` are widgets, so what a page used to draw in `PaintPage()` -- its
@@ -269,15 +280,17 @@ The frame becomes:
 
 On the branch, in this order. Each phase is something a person can look at and disagree with:
 
-0. **This file.** The design, agreed before code. *(you are here)*
-1. **The core.** `Widget` as a node, the transform stack in the painter, hit test and focus over the
-   tree, `Layout` with `Measure`/`Arrange`/`Invalidate`/`Tick`, `StackLayout`, `Spec`, and the
-   widgets a page needs to say anything at all: `Label`, `Heading`. Prove it on a new small example
-   rather than by porting one of the three, so the port is not confused with the core.
-2. **Scrolling and the card.** Overflow in a container, the scroll bar it owns, the glide; `Card` and
-   `CardLayout`. Port `examples/settings`, which is the smallest page that uses both.
+0. **This file.** The design, agreed before code. *done*
+1. **The core.** `Widget` as a node, hit test and focus over the tree, `Layout` with
+   `Measure`/`Arrange`/`Invalidate`/`Tick`, `StackLayout` and `RowLayout`, `Spec`, the debug overlay,
+   `Card` with its own layout, and the widgets a page needs to say anything at all: `Label`,
+   `Heading`. *done* -- all of it compiles clean and `examples/gallery` is a page written against it,
+   with a `--dump` that prints the rectangles it came out as.
+2. **Scrolling and the rest of the controls.** Overflow in a container, the scroll bar it owns, the
+   glide; then `DropDown`, `ScrollBar`, `SideNav` and `Dialog` ported, and `examples/settings` and
+   `examples/nav` with them. *(you are here)*
 3. **Pages and the grid.** `SideNav` as a root widget holding pages and switching by visibility;
-   `Page` with its own layout; `GridLayout`; port `examples/gallery` and `examples/nav`.
+   `Page` with its own layout; `GridLayout`.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the
    animation set beyond the glide; the docs rewritten (`window.md`, `controls.md`, `widget.md`,
    `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.

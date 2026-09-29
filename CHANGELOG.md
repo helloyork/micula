@@ -29,6 +29,47 @@ library can be: a minor version may break.
   control exists) or Windows stretches the whole thing to the real DPI and the text goes soft -- which
   is what the first version did at 150%, and what looked like a GDI scaling bug.
 
+- **A page is a tree now, and the tree is the release.** `window.h` no longer has a flat list of
+  widgets that `Layout()` clears and builds again. A `Widget` (`widget.h`) owns the widgets under it,
+  its parent's layout decides where it is, and `visible` decides whether it is anywhere at all -- so a
+  page that used to be torn down to change what is on screen changes it instead. Nothing has to be
+  written to survive a rebuild because there is no rebuild: a half-typed field, the focused button and
+  a slider mid-drag stay exactly where they were. `docs/layout.md` is the design; `examples/gallery`
+  is the page written against it.
+- **The layout protocol** (`layout.h`): `Sizing`/`Axis`/`Want` for what a control says about one axis
+  of itself -- content, fill, or fixed -- `Room` for what it is measured against, `Spec` for the
+  numbers a settings page is made of, and `Layout` for the thing that answers with an arrangement.
+  Three of them ship: `StackLayout` (a column), `RowLayout` (a row), `CustomLayout` (a function).
+- **`Card`** (`card.h`). The platform's settings row as a widget rather than as four rectangles every
+  page works out for itself: an optional icon, a line of text, an optional line under it, an optional
+  value read back from the control, and the control itself on the right -- with its own layout giving
+  the control the room the text did not take.
+- **`Label` and `Heading`** (`text.h`). A page's words are widgets too, which is what puts them in the
+  tree that the arrangement and the screen reader both read. A heading carries the band above itself.
+- **The layout debug overlay.** Compile with `-DMICULA_DEBUG_LAYOUT=1` and the window draws what the
+  layouts worked out, over the page: where each widget is, where it is on its way to, the box its own
+  layout places children in, and the page's clip. Off in every build that does not ask for it, and
+  switchable at run time in one that does.
+- **`ArrangeSubtree`** (`widget.h`), the walk the window arranges with, as a free function -- so a
+  program can place a tree and read the rectangles without a window. `micula-gallery --dump` prints
+  them, which is how a layout fault is found and checked without taking a screenshot.
+
+### Changed
+
+- **Every control answers `Measure(const Room &) const` instead of being handed a rectangle**, and
+  draws inside the one it was given. A button is as wide as its label, a field is as wide as the room
+  it is in, a ring is as big as it says it is.
+- **`Widget::ShowFocusRing()`**, so a control asking whether to draw its focus ring no longer reaches
+  through `owner` into the window -- and a control in no window answers no.
+
+### Removed
+
+- `Window::Layout()`, `Window::PaintPage()`, `AddWidget`, `ClearWidgets`, and the flat list of widgets
+  behind them. What a page used to draw in `PaintPage` is widgets now, and what its `Layout()` used to
+  compute is what a layout does.
+- `Widget::owner`, `persistent`, `z`, `scrolls`, `leavingWith`, and the two rectangle lists a control
+  used to find its own hit test and its own clip in. The tree answers all four questions.
+
 ## [0.8.1] - 2026-09-29
 
 ### Changed

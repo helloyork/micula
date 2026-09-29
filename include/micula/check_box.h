@@ -28,6 +28,14 @@ struct CheckBox : Widget {
         : label(std::move(text)), checked(on), onChange(std::move(f)),
           checkT(on ? 1.0f : 0.0f) {}
 
+    // The box, the gap after it, and whichever of the two lines is wider.
+    micula::Want Measure(const Room &room) const override {
+        const Fonts *f = room.fonts;
+        const float text = (std::max)(f->Measure(f->body, label), f->Measure(f->caption, detail));
+        return micula::Want(Axis::Content(20.0f + 12.0f + text),
+                            Axis::Fixed(room.spec->controlH));
+    }
+
     bool Focusable() const override { return true; }
     void OnClick() override {
         if (!enabled) return;
@@ -68,7 +76,7 @@ struct CheckBox : Widget {
         if (k > 0.0f)
             p.Text(glyph::kCheck, { box.left + 2, box.top, box.right, box.bottom },
                    p.font->icon, Fade(enabled ? c.accentText : c.textDisabled, k));
-        if (focus && owner && owner->showFocusRing) {
+        if (ShowFocusRing()) {
             const D2D1_RECT_F o = { rect.left - 2, rect.top - 1, rect.right + 2, rect.bottom + 1 };
             p.StrokeRound(o, 5.0f, c.textPrimary, 2.0f);
         }

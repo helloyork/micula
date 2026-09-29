@@ -59,19 +59,31 @@ target_link_libraries(micula INTERFACE
 
 option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 if(MICULA_BUILD_EXAMPLES)
-    foreach(example gallery settings nav)
-        add_executable(micula-${example} WIN32 examples/${example}/${example}.cpp)
-        target_link_libraries(micula-${example} PRIVATE micula::micula)
-        # The entry point is wWinMain, which MSVC's linker finds on its own from the
-        # subsystem and MinGW's does not: without -municode the startup code looks for
-        # WinMain and the link fails on the one symbol the program never mentions.
-        if(MINGW)
-            target_link_options(micula-${example} PRIVATE -municode)
-        endif()
-        if(MSVC)
-            target_compile_options(micula-${example} PRIVATE /W4 /permissive-)
-        endif()
-    endforeach()
+    # gallery is the only example ported to the tree so far. It is a *console* program rather than a
+    # WIN32 one because of its `--dump`: the rectangles a layout came out as are printed instead of
+    # drawn, and that needs somewhere to print. It drops the console it was given when it was
+    # launched from Explorer and keeps the one it was launched from a terminal with.
+    #
+    # examples/settings and examples/nav are still written against the flat widget list this branch
+    # replaced -- each builds its controls by hand and places them itself -- so they are not in the
+    # build. They are kept as the reference for the controls still to be ported, and `git show
+    # master:examples/nav/nav.cpp` is where they are if this tree outgrows them.
+    add_executable(micula-gallery examples/gallery/gallery.cpp)
+    target_link_libraries(micula-gallery PRIVATE micula::micula)
+    # The entry point is wmain, which MSVC's linker finds on its own from the subsystem (and from
+    # the startup code, for a console program) and MinGW's does not: without -municode it looks for
+    # WinMain and the link fails on the one symbol the program never mentions.
+    if(MINGW)
+        target_link_options(micula-gallery PRIVATE -municode)
+    endif()
+    if(MSVC)
+        # /utf-8 because the example's own strings are Chinese and MSVC reads a source file in the
+        # system code page otherwise: on a machine set to 936 that turns every literal in it into
+        # mojibake, and the compiler then reports the string as an unterminated one. On the example
+        # rather than on the library, whose headers stay ASCII for exactly this reason -- see the
+        # note over glyphs.h.
+        target_compile_options(micula-gallery PRIVATE /W4 /permissive- /utf-8)
+    endif()
 endif()
 
 include(CMakePackageConfigHelpers)

@@ -54,6 +54,15 @@ struct ToggleSwitch : Widget {
         : label(std::move(text)), on(value), onChange(std::move(f)),
           knob(value ? 1.0f : 0.0f), fill(value ? 1.0f : 0.0f) {}
 
+    // A bare switch is the track and nothing else -- which is the case a card wants, since the card
+    // owns the words. With a label of its own it is a row: the words, a gap, the track.
+    micula::Want Measure(const Room &room) const override {
+        if (label.empty()) return micula::Want(Axis::Fixed(kW), Axis::Fixed(room.spec->controlH));
+        const Fonts *f = room.fonts;
+        const float text = (std::max)(f->Measure(f->body, label), f->Measure(f->caption, detail));
+        return micula::Want(Axis::Content(text + 16.0f + kW), Axis::Fixed(room.spec->controlH));
+    }
+
     bool Focusable() const override { return true; }
     void OnClick() override {
         if (!enabled) return;
@@ -90,7 +99,7 @@ struct ToggleSwitch : Widget {
         if (on == value) return;
         on = value;
         if (!tell) return;
-        if (owner) StartAnimation(owner);
+        StartAnimation(window());
         if (onChange) onChange(on);
     }
     // The knob at `k` (0..1), and the state that follows from where it has got to.
@@ -98,7 +107,7 @@ struct ToggleSwitch : Widget {
         knob.Set(std::clamp(k, 0.0f, 1.0f));
         if (k >= kFlipOn) Set(true, true);
         else if (k <= kFlipOff) Set(false, true);
-        if (owner) owner->Invalidate();
+        Invalidate();
     }
     void OnPress(float x, float y) override {
         moved = false;
@@ -125,7 +134,7 @@ struct ToggleSwitch : Widget {
         dragging = false;
         // The knob is left where the hand let go of it: Tick takes it to the end the state
         // came out on, which is the animation that says the switch has settled.
-        if (owner) owner->Invalidate();
+        Invalidate();
     }
     bool Animating() const override {
         return Widget::Animating() || knob.Wants(on ? 1.0f : 0.0f) ||
@@ -181,7 +190,7 @@ struct ToggleSwitch : Widget {
         p.rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, y + h / 2), rx, ry),
                           p.Brush(knobColor));
 
-        if (focus && owner && owner->showFocusRing) {
+        if (ShowFocusRing()) {
             const D2D1_RECT_F o = { track.left - 3, track.top - 3, track.right + 3, track.bottom + 3 };
             p.StrokeRound(o, h / 2 + 3, c.textPrimary, 2.0f);
         }

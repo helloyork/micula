@@ -693,6 +693,11 @@ struct Fonts {
     // ten is measured and not kept: there is nowhere to keep it, and a page that makes its own is
     // better off paying per call than this header growing a general-purpose layout cache.
     float Measure(IDWriteTextFormat *fmt, const std::wstring &s) const;
+    // How tall `s` would come out wrapped into `width`. `Measure` above answers a one-line layout,
+    // which is the wrong question for a paragraph and the one a widget sizing itself before it has
+    // been arranged has to ask instead. Not cached: a wrapping label is measured against a width
+    // that changes with the window, so the answer is not a property of the string.
+    float WrappedHeight(IDWriteTextFormat *fmt, const std::wstring &s, float width) const;
 
     bool Create(IDWriteFactory *factory);
     void Release();
@@ -793,6 +798,21 @@ inline float Fonts::Measure(IDWriteTextFormat *fmt, const std::wstring &s) const
     if (widths[slot].size() > 256) widths[slot].clear();
     widths[slot].emplace(s, m.width);
     return m.width;
+}
+
+inline float Fonts::WrappedHeight(IDWriteTextFormat *fmt, const std::wstring &s,
+                                  float width) const {
+    if (!dw || !fmt || s.empty() || width <= 0.0f) return 0.0f;
+    IDWriteTextLayout *layout = nullptr;
+    if (FAILED(dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt, width, 100000.0f,
+                                    &layout)) || !layout)
+        return 0.0f;
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    DWRITE_TEXT_METRICS m = {};
+    layout->GetMetrics(&m);
+    layout->Release();
+    return m.height;
 }
 
 // Settings > Accessibility > Visual effects > "Always show scrollbars", which WinUI reads

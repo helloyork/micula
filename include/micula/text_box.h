@@ -68,6 +68,12 @@ struct TextBox : Widget {
     void OnFocus() override { atFocus = text; }
     void OnBlur() override { Commit(); }
 
+    // A field is as wide as the room it is given -- it is the thing a page stretches -- and one
+    // control tall.
+    micula::Want Measure(const Room &room) const override {
+        return micula::Want(Axis::Fill(), Axis::Fixed(room.spec->controlH));
+    }
+
     // Fires onCommit when there is something to commit, and not otherwise. The baseline is taken
     // again after the callback, because a page is allowed to put the value back into the field -- a
     // port of 0080 is 80 -- and what it put back is the value the field now stands for.
@@ -102,9 +108,10 @@ struct TextBox : Widget {
         if (layout) { layout->Release(); layout = nullptr; }
     }
     void Ensure() const {
-        if (layout || !owner || !owner->dw || !owner->fonts.body) return;
-        owner->dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), owner->fonts.body,
-                                    100000.0f, 100.0f, &layout);
+        Window *w = window();
+        if (layout || !w || !w->dw || !w->fonts.body) return;
+        w->dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
+                                100000.0f, 100.0f, &layout);
         // The shared body format is vertically centred, because every other call site
         // hands DirectWrite a rectangle the size of its control and wants the text in
         // the middle of it. A *layout* is different: it centres within its own
@@ -185,8 +192,9 @@ struct TextBox : Widget {
         size_t under = 0;
         const size_t at = IndexAt(x - InnerLeft() + scroll, &under);
         const DWORD now = (DWORD)GetMessageTime();
+        Window *w = window();
         const float slop = (float)GetSystemMetrics(SM_CXDOUBLECLK) / 2.0f /
-                           (owner ? owner->scale() : 1.0f);
+                           (w ? w->scale() : 1.0f);
         const bool twice = lastPressTime != 0 && now - lastPressTime <= GetDoubleClickTime() &&
                            std::fabs(x - lastPressX) <= slop;
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -266,18 +274,19 @@ struct TextBox : Widget {
         const bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
         if (ctrl) {
+            HWND hwnd = window() ? window()->hwnd : nullptr;
             switch (vk) {
             case 'A': anchor = 0; caret = text.size(); return true;
-            case 'C': if (HasSelection()) micula::SetClipboardText(owner->hwnd, Selected());
+            case 'C': if (HasSelection()) micula::SetClipboardText(hwnd, Selected());
                       return true;
             case 'X': if (HasSelection()) {
-                          micula::SetClipboardText(owner->hwnd, Selected());
+                          micula::SetClipboardText(hwnd, Selected());
                           DeleteSelection();
                           Changed();
                       }
                       return true;
             case 'V': {
-                const std::wstring in = Pasted(micula::ClipboardText(owner->hwnd));
+                const std::wstring in = Pasted(micula::ClipboardText(hwnd));
                 if (in.empty()) return true;
                 DeleteSelection();
                 text.insert(caret, in);
@@ -396,9 +405,12 @@ struct TextBox : Widget {
                                  D2D1_DRAW_TEXT_OPTIONS_NONE);
         }
 
-        if (active && owner && owner->caretOn && enabled) {
-            const float x = inner.left + XOf(caret) - scroll;
-            p.Line(x, rect.top + 6, x, rect.bottom - 6, c.textPrimary, 1.0f);
+        if (active && enabled) {
+            Window *w = window();
+            if (w && w->caretOn) {
+                const float x = inner.left + XOf(caret) - scroll;
+                p.Line(x, rect.top + 6, x, rect.bottom - 6, c.textPrimary, 1.0f);
+            }
         }
         p.rt->PopAxisAlignedClip();
     }

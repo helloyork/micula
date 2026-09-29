@@ -1,9 +1,10 @@
 // Micula / micula.h
 //
 // The one header to include. Micula is header-only: theme.h holds the palette, the
-// motion curves and the fonts; window.h the composed window, the painter and the Widget
-// base; widgets.h the controls. Each includes the one before it, so this is widgets.h
-// under a name that will not change if the files are ever split differently.
+// motion curves and the fonts; layout.h and widget.h the tree and what arranges it; window.h the
+// composed window and the painter; the three layout headers what a page actually uses; and
+// widgets.h the controls. Each includes the one before it, so this is widgets.h under a name that
+// will not change if the files are ever split differently.
 //
 // What the program has to provide, and nothing else:
 //
@@ -23,3 +24,7 @@
 #pragma once
 
 #include "widgets.h"
+
+#include "custom_layout.h"
+#include "row_layout.h"
+#include "stack_layout.h"

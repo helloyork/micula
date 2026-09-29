@@ -38,6 +38,13 @@ struct Button : Widget {
     bool HandCursor() const override { return style == ButtonStyle::Link; }
     void OnClick() override { if (enabled && onClick) onClick(); }
 
+    // As wide as its label and Fluent's 12-DIP side padding, and never narrower than the 100-DIP
+    // minimum that keeps a row of buttons even; one control tall.
+    micula::Want Measure(const Room &room) const override {
+        return micula::Want(Axis::Content(PreferredWidth(room.fonts)),
+                            Axis::Fixed(room.spec->controlH));
+    }
+
     // What it is to a screen reader: the label, and a button. Invoke lands on OnActivate, which is
     // OnClick -- see the UIA section of window.h.
     //
@@ -94,7 +101,7 @@ struct Button : Widget {
             fg = !enabled ? c.textDisabled : Mix(c.accent, Shade(c.accent, -0.15f), pressT);
         }
 
-        if (focus && owner && owner->showFocusRing) {
+        if (ShowFocusRing()) {
             // Fluent's focus ring is two strokes: a thick one in the text colour and
             // a thin one in the background colour inside it, so it stays visible
             // whatever the button is filled with. One stroke in a single colour
@@ -135,9 +142,9 @@ struct Button : Widget {
 
     // The width this button wants: its label plus Fluent's 12-DIP side padding, and
     // never narrower than the 100-DIP minimum that keeps a row of buttons even.
-    float PreferredWidth(const Painter &p) const {
+    float PreferredWidth(const Fonts *f) const {
         return (std::max)(metric::kButtonMinW,
-                        p.MeasureWidth(label, p.font->body) + 24.0f + (glyph.empty() ? 0.0f : 32.0f));
+                          f->Measure(f->body, label) + 24.0f + (glyph.empty() ? 0.0f : 32.0f));
     }
 };
 

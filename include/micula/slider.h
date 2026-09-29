@@ -45,6 +45,12 @@ struct Slider : Widget {
     Slider(float v, float a, float b, float s, std::function<void(float)> f)
         : value(v), lo(a), hi(b), step(s), onChange(std::move(f)), drawn(Frac()) {}
 
+    // A slider is the one control that is nothing but a line of travel, so it takes the whole width
+    // it is offered and one control's height to sit in the middle of.
+    micula::Want Measure(const Room &room) const override {
+        return micula::Want(Axis::Fill(), Axis::Fixed(room.spec->controlH));
+    }
+
     bool Focusable() const override { return true; }
     // While it is being dragged: the knob follows the pointer, and the pointer moving is
     // the only thing that happens. The window repaints on that account rather than on the
@@ -153,7 +159,7 @@ struct Slider : Widget {
         const float r = 6.0f + hoverT - 3.0f * pressT;
         p.rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(at, cy), r, r),
                           p.Brush(enabled ? c.accent : c.textDisabled));
-        if (focus && owner && owner->showFocusRing)
+        if (ShowFocusRing())
             p.rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(at, cy), 12, 12),
                               p.Brush(c.textPrimary), 2.0f);
     }

@@ -23,6 +23,13 @@ struct ProgressRing : Widget {
     float value = 0.0f;      // 0..1
     bool  indeterminate = false;
     RingStyle style = RingStyle::Accent;
+    // The ring is square and it says so: a ring whose width and height differ is an ellipse, and
+    // nobody draws one of those on purpose. A page places it by saying how big it is.
+    float size = 32.0f;
+
+    micula::Want Measure(const Room &) const override {
+        return micula::Want(Axis::Fixed(size), Axis::Fixed(size));
+    }
 
     // WinUI's ProgressRing, to the numbers, and taken from the visual it actually draws rather than
     // from a reading of how it looks. The source is LottieGen's ProgressRingIndeterminate: an 80

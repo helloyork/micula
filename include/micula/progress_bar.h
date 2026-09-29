@@ -17,6 +17,13 @@ namespace micula {
 struct ProgressBar : Widget {
     float value = 0.0f;      // 0..1
     bool  indeterminate = false;
+    // The track is three DIP thick and this is the box it is centred in: a bar is a line rather than
+    // a control, and a stack of them is a list of readings rather than a column of rows.
+    static constexpr float kThickness = 6.0f;
+
+    micula::Want Measure(const Room &) const override {
+        return micula::Want(Axis::Fill(), Axis::Fixed(kThickness));
+    }
 
     // WinUI's indeterminate bar, to the numbers -- and it is not "a segment sweeps across".
     // It is **two** bars of different lengths crossing on a 2 s loop, the second staggered

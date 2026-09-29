@@ -1059,37 +1059,21 @@ struct Window {
     // widget's children moves the origin to that widget's top left, which is where their rectangles
     // are measured from: a subtree that moves is a translation, and nothing inside it has to know.
     //
-    // One arrangement, from the root down: a widget's box is what its parent's layout made it, and
-    // its own layout then arranges its children inside that box -- measured against the room it
-    // really has, which is why the room comes along with the box.
+    // One arrangement, from the root down, and the walk itself is `ArrangeSubtree`: the window's own
+    // part of it is the root's box -- the client area below the caption -- and the fonts every
+    // measurement comes out of.
     void ArrangeTree() {
         layoutDirty = false;
         if (!content) return;
         content->rect = { 0.0f, kCaptionH, ClientW(), ClientH() };
-        if (!content->placed) {
-            content->drawn = content->rect;
-            content->placed = true;
-        }
-        ArrangeInside(content.get());
-    }
-    void ArrangeInside(Widget *w) {
-        if (w->layout) {
-            Room room;
-            room.fonts = &fonts;
-            room.spec = &w->layout->spec;
-            room.width = Width(w->rect);
-            room.height = Height(w->rect);
-            w->layout->Arrange(room, { 0.0f, 0.0f, room.width, room.height });
-            // A child that has never been placed is placed without gliding; the ones that have been
-            // keep their rectangles until the glide moves them.
-            w->layout->Glide(0.0f);
-        }
-        for (const auto &child : w->children)
-            if (child->visible) ArrangeInside(child.get());
+        micula::ArrangeSubtree(content.get(), fonts);
     }
 
-    // Paint the tree. `ox, oy` is where the widget's own space sits in the client area: the
-    // accumulated translation of its ancestors.
+    // Paint the tree. `ox, oy` is where the space `w->rect` is measured in sits in the client area:
+    // the accumulated offsets of its ancestors. Paint is called under that translation, which is what
+    // lets a control go on drawing at `rect` -- and why a widget that is gliding takes its children
+    // with it, the origin they are handed being the position it is drawn at rather than the one it
+    // was arranged into.
     void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
         if (!w->visible) return;
         const D2D1_RECT_F where = w->placed ? w->drawn : w->rect;
@@ -1997,6 +1981,11 @@ inline D2D1_RECT_F Widget::VisibleArea() const {
     const D2D1_POINT_2F o = w->OriginOf(this);
     const D2D1_RECT_F page = w->content->rect;
     return { page.left - o.x, page.top - o.y, page.right - o.x, page.bottom - o.y };
+}
+
+inline bool Widget::ShowFocusRing() const {
+    Window *w = window();
+    return focus && w && w->showFocusRing;
 }
 
 inline void Window::SetFocusTo(Widget *w) {

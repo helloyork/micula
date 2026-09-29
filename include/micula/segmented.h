@@ -47,6 +47,17 @@ struct Segmented : Widget {
     bool TracksPointer() const override { return hover || dragging; }
     float CellW() const { return Width(rect) / (float)(std::max)(size_t(1), options.size()); }
 
+    // Every cell is the same width -- that is what makes the labels line up with the indicator --
+    // so the control is the widest word's cell, repeated.
+    micula::Want Measure(const Room &room) const override {
+        const Fonts *f = room.fonts;
+        float widest = 0.0f;
+        for (const auto &o : options) widest = (std::max)(widest, f->Measure(f->body, o));
+        const float cells = (float)(std::max)(size_t(1), options.size());
+        return micula::Want(Axis::Content((widest + 24.0f) * cells),
+                            Axis::Fixed(room.spec->controlH));
+    }
+
     // The cell under `x`, or -1 past either end. Asked of the cursor where it is needed
     // rather than cached in a field written by Paint: a cached one stays right only as long
     // as the control is repainted on every move, and anything reading it -- a click, an IME
@@ -170,7 +181,7 @@ struct Segmented : Widget {
             Label(p, options[i], text, cutLo, cutHi, c.accentText);
             Label(p, options[i], text, cutHi, cell.right, c.textPrimary);
         }
-        if (focus && owner && owner->showFocusRing) {
+        if (ShowFocusRing()) {
             const D2D1_RECT_F o = { rect.left - 2, rect.top - 2, rect.right + 2, rect.bottom + 2 };
             p.StrokeRound(o, metric::kRadiusControl + 2, c.textPrimary, 2.0f);
         }

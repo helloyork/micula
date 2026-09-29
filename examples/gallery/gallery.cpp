@@ -1,359 +1,187 @@
 // Micula gallery
 //
-// Every control in the library on one page, laid out the way a small tool's settings
-// window would be: a fixed header, then cards that scroll under it.
+// Every control the library has, on one page, laid out the way a small tool's settings window is: a
+// stack of cards, with a heading over each group.
 //
-// It is also the shortest complete answer to "how is a Micula page written", so the
-// comments are about the pattern rather than about the controls:
+// It is also the shortest complete answer to "how is a Micula page written", so the comments are
+// about the pattern rather than about the controls:
 //
-//   * State lives in the page, not in the controls. Layout() throws every control away
-//     and builds them again from the page's fields -- on resize, on a DPI change, when
-//     the shape of the page changes -- so a control's callback writes the field it shows.
-//   * Scrolling is not a shape change. The controls are laid out in the page's own
-//     coordinates and drawn through ContentTransform(), so a wheel notch moves a number
-//     and costs one transform per frame: no control is built, moved or thrown away, and
-//     nothing one of them is holding -- focus, a half-typed field, a sweep half done --
-//     is lost on the way.
-//   * Layout() may run inside a control's own callback (the Start button does); the
-//     window keeps the old controls alive until that message has returned.
-//   * Anything that is not a control -- headings, card backgrounds, row text -- is drawn
-//     in PaintPage from rectangles Layout() worked out.
+//   * The page is a **tree, built once**. State lives in the page, and a control's callback writes
+//     the field it shows; what changes about the page is what the layout does with the tree on the
+//     next frame. Nothing is torn down and built again, so a half-typed field, the button that was
+//     focused and a slider mid-drag all survive whatever else happened.
+//   * **Nothing says where anything goes.** The page says "this, then this, then this" and the
+//     platform supplies the spacing; a card says "these words, and this control on the right" and
+//     the card works out where each of them sits. There is no coordinate in this file.
+//   * Cards are the platform's control template rather than a picture the page draws: a row is an
+//     icon if it has one, a line of text, a line under it if it has one, a value, and a control.
+//   * Anything a page draws that is not a control -- a heading, a line of text -- is a widget too,
+//     which is what puts it in the tree that the arrangement and the screen reader both read.
+//
+// `--dump` prints the rectangles all of that came out as, without opening a window. It is how a
+// layout fault is found and checked, and it is what a screenshot is not.
 
 #include <micula/micula.h>
 
-#include <algorithm>
-#include <cmath>
+#include <cstdio>
 #include <cwchar>
+#include <fcntl.h>
+#include <io.h>
 #include <string>
-#include <vector>
 
 using namespace micula;
 
 namespace {
 
-constexpr float kPad     = 24.0f;    // page margin, left and right
-constexpr float kHeaderH = 104.0f;   // caption, title and subtitle; does not scroll
-constexpr float kRowH    = 64.0f;    // one settings card
-constexpr float kRowGap  = 4.0f;     // between the cards of a group, as Windows Settings has
+// The page: its state, and the tree built out of it.
+//
+// A separate object from the window rather than the window itself, because the two are different
+// things and only one of them needs a window to exist: `--dump` builds this one into a plain View.
+struct Page {
+    // --- the state: everything a control shows is one of these ----------------------
+    bool  capture = true;
+    bool  notify = false;
+    int   quality = 1;                  // the middle one of the three
+    float volume = 0.6f;
+    std::wstring device = L"Pixel 8";
+
+    // --- the tree -------------------------------------------------------------------
+    void Build(Widget *root) {
+        root->SetLayout(new StackLayout());
+
+        root->Add(new Heading(L"捕获"));
+
+        auto *capturer = root->Add(new Card(L"使用捕获器", L"scrcpy 的窗口会被截断。"));
+        capturer->icon = glyph::kEthernet;
+        capturer->Set(new ToggleSwitch(L"", capture, [this](bool v) { capture = v; }));
+        // Read when the card is painted rather than pushed into it, so the two never have to be kept
+        // in step -- and the switch's own animation is what asks for the frames that redraw it.
+        capturer->value = [this] { return capture ? L"开" : L"关"; };
+
+        auto *named = root->Add(new Card(L"设备名称", L"设备的显示名，用来区分多个连接。"));
+        named->icon = glyph::kCellPhone;
+        auto *field = named->Set(new TextBox());
+        field->text = device;
+        field->placeholder = L"Pixel";
+        field->onChange = [this](const std::wstring &s) { device = s; };
+
+        root->Add(new Heading(L"高级"));
+
+        auto *notified = root->Add(new Card(L"完成时通知", L"转录结束后弹出一条通知。"));
+        notified->icon = glyph::kInfo;
+        notified->Set(new CheckBox(L"", notify, [this](bool v) { notify = v; }));
+
+        // A card whose control takes the width the text did not: the slider asked to fill, and the
+        // card gives it what is left. None of that arithmetic is in the page.
+        auto *gain = root->Add(new Card(L"音量", L"从设备回放到这台电脑上的增益。"));
+        gain->icon = glyph::kVolume;
+        gain->Set(new Slider(this->volume, 0.0f, 1.0f, 0.05f, [this](float v) { this->volume = v; }));
+        gain->value = [this] {
+            return std::to_wstring((int)(this->volume * 100.0f + 0.5f)) + L"%";
+        };
+
+        auto *sharp = root->Add(new Card(L"画质"));
+        sharp->icon = glyph::kView;
+        sharp->Set(new Segmented({ L"流畅", L"标准", L"清晰" }, this->quality,
+                                  [this](int i) { this->quality = i; }));
+
+        // A row of its own for the two things a page *does* rather than sets: a card is a setting,
+        // and these are not.
+        auto *verbs = root->Add(new View());
+        verbs->SetLayout(new RowLayout());
+        verbs->Add(new Button(L"开始", ButtonStyle::Accent, [this] { notify = true; }));
+        // A control reaches the window through the tree it is in, which is what lets this callback
+        // close the window without the page holding a pointer to one.
+        Button *quit = verbs->Add(new Button(L"关闭", ButtonStyle::Standard, nullptr));
+        quit->onClick = [quit] {
+            if (Window *w = quit->window()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
+        };
+
+        root->Add(new Label(L"这一页没有一处坐标：控件报告它们想要什么，布局决定它们在哪里。",
+                            TextRole::Caption))->secondary = true;
+    }
+};
+
+// One widget a line: the number Add gave it, the rectangle it came out as, and what a screen reader
+// would call it. Indented by depth, because the tree is the thing being read -- a rectangle is only
+// wrong relative to the one it should be inside of.
+void Print(const Widget *w, int depth, float ox, float oy) {
+    const D2D1_RECT_F &r = w->rect;
+    std::wprintf(L"%*s#%-3d %7.1f %7.1f %7.1f %7.1f", depth * 2, L"", w->uid,
+                 ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
+    if (const wchar_t *name = w->AccessibleLabel()) std::wprintf(L"  %ls", name);
+    std::wprintf(L"\n");
+    for (const auto &child : w->children) {
+        if (!child->visible) continue;
+        Print(child.get(), depth + 1, ox + r.left, oy + r.top);
+    }
+}
+
+// The page, arranged into a window's worth of space and printed, with no window anywhere.
+//
+// The fonts are the only thing a window was really providing: every measurement a layout makes is a
+// DirectWrite one, and that needs a factory and ten formats rather than a device.
+int Dump(float w, float h) {
+    // Wide rather than in the console's code page: the labels are Chinese, and a stream left alone
+    // narrows every one of them through the CRT's default encoding on the way out.
+    _setmode(_fileno(stdout), _O_U16TEXT);
+
+    IDWriteFactory *dw = nullptr;
+    if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                   reinterpret_cast<IUnknown **>(&dw))) || !dw) {
+        std::fwprintf(stderr, L"DirectWrite is not available.\n");
+        return 1;
+    }
+    Fonts fonts;
+    if (!fonts.Create(dw)) {
+        std::fwprintf(stderr, L"the font formats could not be made.\n");
+        return 1;
+    }
+
+    Page page;
+    View root;
+    page.Build(&root);
+
+    // The box the window gives its content: the client area below the caption.
+    root.rect = { 0.0f, kCaptionH, w, h };
+    ArrangeSubtree(&root, fonts);
+    Print(&root, 0, 0.0f, 0.0f);
+
+    fonts.Release();
+    dw->Release();
+    return 0;
+}
 
 }  // namespace
 
+// The window, and the page inside it. Nothing here but the two things a window has always had to
+// say -- what it is called, and that it is a window -- and the tree its page built.
 struct Gallery : Window {
-    // --- the page's state: everything a control shows is one of these ---------------
-    bool  notify = true;          // CheckBox
-    bool  background = false;     // ToggleSwitch
-    int   quality = 0;            // Segmented
-    int   interval = 5;           // DropDown
-    float volume = 0.6f;          // Slider, and the determinate ProgressBar
-    bool  busy = false;           // the Start button, and the indeterminate ProgressBar
-    std::wstring name = L"Micula";
-    std::wstring folder;
-
-    // --- scrolling --------------------------------------------------------------------
-    // Where the page is scrolled to, and where it is drawn, which trails it. Page DIPs,
-    // both of them; see ContentTransform and OnTick.
-    float scroll = 0.0f;
-    float drawn = 0.0f;
-    float maxScroll = 0.0f;
-    // How long the drawing takes to catch up with the scroll, in seconds. A wheel notch
-    // or two is a short settle; a spun wheel arrives as several retargetings of the one
-    // follower.
-    static constexpr float kGlide = 0.07f;
-    // Made once and kept across layouts (Widget::persistent): a resize or a DPI change
-    // does rebuild the page, and a thumb being dragged through one must survive it.
-    ScrollBar *bar = nullptr;
-
-    // --- what PaintPage draws, worked out by Layout --------------------------------
-    struct Heading { float y; std::wstring text; };
-    struct Card { D2D1_RECT_F r; std::wstring title, detail; float textRight; };
-    std::vector<Heading> headings;
-    std::vector<Card> cards;
-    size_t volumeCard = 0;           // the card whose detail follows the slider
-    ProgressBar *level = nullptr;    // rebuilt by every layout, so found again by every one
+    Page *page;
+    explicit Gallery(Page *p) : page(p) {}
 
     const wchar_t *ClassName() const override { return L"MiculaGallery"; }
-    const wchar_t *Title() const override { return L"Micula Gallery"; }
-    void MinSize(int *w, int *h) const override { *w = 540; *h = 360; }
-    // The scrolling half of the page. Controls marked `scrolls` are clipped to it.
-    D2D1_RECT_F ClipRect() const override { return { 0, kHeaderH, ClientW(), ClientH() }; }
-    // How the scrolling half is moved. The controls' rectangles are in page coordinates
-    // and never change while the page is being scrolled; this is the only thing that does,
-    // so a notch costs one transform per frame instead of a whole layout.
-    void ContentTransform(float *dy, float *opacity) const override {
-        *dy = -drawn;            // scrolled down: the page is drawn that much higher
-        *opacity = 1.0f;
-    }
-    // The glide is the only thing this page animates on its own account.
-    bool AnimationWanted() const override { return drawn != scroll; }
-    void OnTick(float dt) override {
-        if (drawn == scroll) return;
-        // A follower rather than a curve with a duration, so that a wheel spun through six
-        // notches -- which retargets this six times inside a single frame -- sets off at a
-        // speed that depends on how far it has to go and eases into place.
-        motion::Follow(drawn, scroll, dt, kGlide, 0.5f);
-        SyncBar();
-    }
-
-    // The bar is laid out with the page and moves with it: its two numbers are the page's
-    // own two numbers.
-    void SyncBar() {
-        if (!bar) return;
-        bar->value = scroll;
-        bar->drawn = drawn;
-    }
-    // What the wheel, the bar and its arrows call. It sets a target and lets the frame
-    // loop draw the page toward it -- nothing is laid out. `glide` is false for the thumb,
-    // which has to stay under the pointer rather than settle toward it.
-    void ScrollTo(float to, bool glide = true) {
-        scroll = std::clamp(to, 0.0f, maxScroll);
-        if (!glide) drawn = scroll;
-        SyncBar();
-        if (bar) { bar->Wake(); bar->Poll(); }
-        if (drawn != scroll) StartAnimation(this);
-        Invalidate();
-    }
-    void OnDefaultAction() override { ToggleBusy(); }   // Enter, with nothing focused
-
-    void ToggleBusy() {
-        busy = !busy;
-        // Relabelling the button means rebuilding it -- from inside its own callback,
-        // which is allowed. See Window::retired.
-        Layout();
-        Invalidate();
-    }
-
-    static std::wstring Percent(float v) {
-        wchar_t b[16];
-        swprintf(b, 16, L"%d%%", (int)(v * 100.0f + 0.5f));
-        return b;
-    }
-
-    void Layout() override;
-    void PaintPage(const Painter &p) override;
-    bool OnAppMessage(UINT m, WPARAM wp, LPARAM lp) override;
+    const wchar_t *Title() const override { return L"Micula"; }
 };
 
-void Gallery::Layout() {
-    ClearWidgets();   // everything but `bar`, which is persistent
-    headings.clear();
-    cards.clear();
-    level = nullptr;
-
-    const float w = ClientW(), h = ClientH();
-    const float left = kPad, right = w - kPad;
-    Painter measure;   // measuring text needs the fonts and nothing else
-    measure.font = &fonts;
-
-    // `y` is in page coordinates, 0 at the top of the scrolling part, and so are the
-    // rectangles worked out from it: the page's scroll is not applied here at all, it is a
-    // transform the window puts on this half of the page when it paints.
-    float y = 8.0f;
-    auto at = [&](float py) { return kHeaderH + py; };
-    auto place = [](Widget *wd, const D2D1_RECT_F &r) {
-        wd->rect = r;
-        wd->scrolls = true;
-        return wd;
-    };
-    auto heading = [&](const wchar_t *text) {
-        if (!cards.empty()) y += 24.0f - kRowGap;
-        headings.push_back({ at(y), text });
-        y += 30.0f;
-    };
-    // One settings card: a title and a line of detail on the left, and a slot for the
-    // control on the right, which is what this returns.
-    auto card = [&](std::wstring title, std::wstring detail, float controlW) {
-        const D2D1_RECT_F r = { left, at(y), right, at(y) + kRowH };
-        const float slotL = r.right - 16 - controlW;
-        cards.push_back({ r, std::move(title), std::move(detail), slotL - 16 });
-        y += kRowH + kRowGap;
-        const float cy = (r.top + r.bottom) / 2;
-        return D2D1_RECT_F{ slotL, cy - metric::kControlH / 2, r.right - 16,
-                            cy + metric::kControlH / 2 };
-    };
-
-    heading(L"Buttons");
-    {
-        card(L"", L"", 0);
-        const D2D1_RECT_F r = cards.back().r;
-        const float cy = (r.top + r.bottom) / 2;
-        float x = r.left + 16;
-        auto row = [&](Button *b) {
-            const float bw = b->PreferredWidth(measure);
-            place(b, { x, cy - metric::kControlH / 2, x + bw, cy + metric::kControlH / 2 });
-            x += bw + 8;
-        };
-        row(Add(new Button(busy ? L"Stop" : L"Start", ButtonStyle::Accent,
-                           [this] { ToggleBusy(); })));
-        row(Add(new Button(L"Standard", ButtonStyle::Standard, [] {})));
-        Button *subtle = Add(new Button(L"Open folder", ButtonStyle::Subtle, [] {}));
-        subtle->glyph = glyph::kFolder;
-        row(subtle);
-        row(Add(new Button(L"Learn more", ButtonStyle::Link, [] {})));
+int wmain(int argc, wchar_t **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (std::wcscmp(argv[i], L"--dump") == 0) return Dump(700.0f, 620.0f);
     }
+    // A console program so that --dump has somewhere to print. Launched from Explorer that console
+    // is one nobody asked for, so it is dropped when it is ours and left alone when it is a
+    // terminal's.
+    DWORD owners = 0;
+    if (GetConsoleProcessList(&owners, 1) == 1) FreeConsole();
 
-    heading(L"Choices");
-    {
-        card(L"", L"", 0);
-        const D2D1_RECT_F r = cards.back().r;
-        const float cy = (r.top + r.bottom) / 2;
-        CheckBox *cb = Add(new CheckBox(L"Show a notification when done", notify,
-                                        [this](bool on) { notify = on; }));
-        cb->detail = L"CheckBox - a choice collected now and applied later";
-        place(cb, { r.left + 16, cy - 22, r.right - 16, cy + 22 });
-    }
-    {
-        ToggleSwitch *sw = Add(new ToggleSwitch(L"", background,
-                                               [this](bool on) { background = on; }));
-        // The switch draws no label of its own: the words are the card's, which is page text a
-        // screen reader has no way to tie back to the control. This is a page saying which words
-        // belong to which control. See the Accessibility section of docs/window.md.
-        sw->accessibleName = L"Run in the background";
-        place(sw, card(L"Run in the background",
-                       L"ToggleSwitch - takes effect the moment it changes", 40));
-    }
-    place(Add(new Segmented({ L"Auto", L"High", L"Low" }, quality,
-                            [this](int i) { quality = i; })),
-          card(L"Quality", L"Segmented - a few words, side by side", 180));
-    place(Add(new DropDown({ L"Never", L"Every hour", L"Every 3 hours", L"Every 6 hours",
-                             L"Every 12 hours", L"Daily", L"Every 3 days", L"Weekly",
-                             L"Monthly" },
-                           interval, [this](int i) { interval = i; })),
-          card(L"Check for updates",
-               L"DropDown - opens over the control, the chosen row on it", 180));
-
-    heading(L"Values");
-    {
-        const D2D1_RECT_F slot = card(L"Volume", Percent(volume), 200);
-        volumeCard = cards.size() - 1;
-        // No Invalidate here: a slider reports its drag from inside its own paint, and
-        // the window is already repainting for as long as the drag lasts.
-        Slider *sl = Add(new Slider(volume, 0.0f, 1.0f, 0.01f, [this](float v) {
-            volume = v;
-            if (volumeCard < cards.size()) cards[volumeCard].detail = Percent(v);
-            if (level) level->value = v;
-        }));
-        sl->accessibleName = L"Volume";
-        place(sl, slot);
-    }
-    {
-        TextBox *t = Add(new TextBox());
-        t->SetText(name);
-        t->onChange = [this](const std::wstring &s) { name = s; };
-        t->accessibleName = L"Display name";
-        place(t, card(L"Display name", L"TextBox - caret, selection, clipboard, IME", 220));
-    }
-    {
-        TextBox *t = Add(new TextBox());
-        t->SetText(folder);
-        t->pathField = true;
-        t->placeholder = L"C:\\Path\\to\\folder";
-        t->onChange = [this](const std::wstring &s) { folder = s; };
-        t->accessibleName = L"Folder";
-        place(t, card(L"Folder", L"pathField - pasted quotes are dropped", 220));
-    }
-
-    heading(L"Progress");
-    {
-        level = Add(new ProgressBar());
-        level->value = volume;
-        level->accessibleName = L"Level";
-        place(level, card(L"Level", L"ProgressBar - follows the volume slider", 200));
-    }
-    {
-        ProgressBar *spin = Add(new ProgressBar());
-        spin->indeterminate = busy;
-        spin->accessibleName = L"Working";
-        place(spin, card(L"Working", busy ? L"Indeterminate - press Stop to end it"
-                                          : L"Indeterminate - press Start to run it",
-                         200));
-    }
-    {
-        // The one control on this page that runs on its own account from the moment it is laid out:
-        // a ring that had to be started would be a ring nobody saw, and there is nothing here to
-        // start it with. The size is WinUI's own default for the control, and is also exactly what a
-        // card's control slot is tall -- a ring is square, so one number does for both sides.
-        constexpr float kRingSize = 32.0f;
-        ProgressRing *ring = Add(new ProgressRing());
-        ring->indeterminate = true;
-        ring->accessibleName = L"Connecting";
-        place(ring, card(L"Connecting", L"ProgressRing - the WinUI indeterminate ring", kRingSize));
-    }
-
-    const float extent = y - kRowGap + kPad;
-    const float viewport = h - kHeaderH;
-    maxScroll = (std::max)(0.0f, extent - viewport);
-    // A window made taller, or content made shorter, can leave the page scrolled past
-    // its own end. Laid out again from the end rather than drawn with a gap.
-    if (scroll > maxScroll) {
-        scroll = maxScroll;
-        Layout();
-        return;
-    }
-    // And the same for the drawing, which is what the page is really moved by.
-    if (drawn > maxScroll || drawn < 0.0f) drawn = scroll;
-
-    if (!bar) {
-        bar = Add(new ScrollBar([this](float to, bool glide) { ScrollTo(to, glide); }));
-        bar->persistent = true;
-    }
-    bar->rect = { w - ScrollBar::kSize - 1, kHeaderH, w - 1, h - 1 };
-    bar->area = ClipRect();
-    bar->viewport = viewport;
-    bar->extent = extent;
-    bar->visible = extent > viewport;
-    SyncBar();
-}
-
-void Gallery::PaintPage(const Painter &p) {
-    const Palette &c = *p.pal;
-    const float w = ClientW();
-    p.Text(L"Micula", { kPad, kCaptionH + 8, w - kPad, kCaptionH + 48 }, p.font->title,
-           c.textPrimary);
-    p.Text(L"Every control in the library, on one page.",
-           { kPad, kCaptionH + 48, w - kPad, kCaptionH + 68 }, p.font->body, c.textSecondary);
-
-    // The scrolling part, clipped to the same rectangle the window clips the scrolling
-    // controls to, so a card and the control on it disappear under the header together.
-    // The cards are in page coordinates like the controls, and PaintPage is not
-    // transformed, so the page's offset comes off the drawing here by hand.
-    p.rt->PushAxisAlignedClip(ClipRect(), D2D1_ANTIALIAS_MODE_ALIASED);
-    const float off = -drawn;
-    for (const Heading &hd : headings)
-        p.Text(hd.text, { kPad, hd.y + off, w - kPad, hd.y + off + 30 }, p.font->bodyStrong,
-               c.textPrimary);
-    for (const Card &cd : cards) {
-        const D2D1_RECT_F r = { cd.r.left, cd.r.top + off, cd.r.right, cd.r.bottom + off };
-        p.FillRound(r, metric::kRadiusControl, c.cardBg);
-        p.StrokeRound(r, metric::kRadiusControl, c.cardStroke);
-        if (cd.title.empty()) continue;
-        p.Text(cd.title, { r.left + 16, r.top + 12, cd.textRight, r.top + 32 },
-               p.font->body, c.textPrimary);
-        p.Text(cd.detail, { r.left + 16, r.top + 32, cd.textRight, r.top + 52 },
-               p.font->caption, c.textSecondary);
-    }
-    p.rt->PopAxisAlignedClip();
-}
-
-// The wheel over anything that did not take it itself -- an open drop-down's list does.
-bool Gallery::OnAppMessage(UINT m, WPARAM wp, LPARAM) {
-    if (m != WM_MOUSEWHEEL) return false;
-    UINT lines = 3;
-    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
-    if (lines == WHEEL_PAGESCROLL) lines = 6;
-    const float notches = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
-    ScrollTo(scroll - notches * (float)lines * 22.0f);
-    return true;
-}
-
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
     // Neither EnablePerMonitorDpi nor CoInitializeEx: Window::Create does both, and only when
     // nobody else has said anything. See the top of window.h.
     int code = 1;
     {
-        Gallery g;
-        // No icon. The caption draws one as a monochrome mask, which suits a white mark
-        // and turns a colour icon into its silhouette -- see Window::EnsureIconBitmap.
-        if (g.Create(560, 640, true, nullptr)) code = g.Run();
+        Page page;
+        Gallery gallery(&page);
+        page.Build(gallery.EnsureContent());
+        if (gallery.Create(700, 620, true, nullptr)) code = gallery.Run();
     }
     return code;
 }

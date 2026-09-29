@@ -1,8 +1,9 @@
 // Micula / widgets.h
 //
-// The control vocabulary: Button, CheckBox, ToggleSwitch, Segmented, Slider,
-// ScrollBar, DropDown, SideNav, TextBox, ProgressBar, and the Dialog a page asks its questions
-// with.
+// The control vocabulary -- Button, CheckBox, ToggleSwitch, Segmented, Slider, TextBox,
+// ProgressBar, ProgressRing -- and the things a page is built *out of* rather than filled with: the
+// View a layout arranges, the Label and Heading that are its words, and the Card the platform's
+// settings rows are made of.
 //
 // Kept small on purpose. Every control here is drawn by hand in four states, and the
 // next one is not free -- it is another rest/hover/pressed/disabled quartet to get
@@ -14,7 +15,9 @@
 // SideNav is here for a different reason: it is not a control a page repeats, it is a
 // piece of a *window*. Every window that has one would otherwise build it again out of
 // its own constants -- which is what examples/settings did, forty lines a window of
-// rows, a travelling accent bar, a hit test and a layout of its own.
+// rows, a travelling accent bar, a hit test and a layout of its own. That work is what
+// a layout is for, and is why a nav is a column with a selection in it rather than a
+// control with its own idea of where things go.
 //
 // Every geometry number below is in DIPs and comes from Microsoft's own control
 // specs (a 32-DIP control height, a 20-DIP checkbox, a 40x20 switch with a 12-DIP
@@ -25,20 +28,25 @@
 // Each control has a header of its own -- button.h, text_box.h and so on -- and this file
 // is the set of them: include it and you have every one, or include the single control a
 // page draws and parse nothing else.
+//
+// **Four of them are not in the list yet.** dialog.h, drop_down.h, scroll_bar.h and side_nav.h
+// are written against the flat list of widgets this branch replaced: each builds the controls it
+// shows into that list by hand, and reaches into the window for the rectangles it places them in.
+// Porting one is writing its own layout -- a flyout is a list that scrolls, a side nav is a column
+// that selects -- and until then including one of those four directly is a compile error rather
+// than a silent difference.
 
 #pragma once
 
 #include "window.h"
 
 #include "button.h"
+#include "card.h"
 #include "check_box.h"
-#include "dialog.h"
-#include "drop_down.h"
 #include "progress_bar.h"
 #include "progress_ring.h"
-#include "scroll_bar.h"
 #include "segmented.h"
-#include "side_nav.h"
 #include "slider.h"
+#include "text.h"
 #include "text_box.h"
 #include "toggle_switch.h"
