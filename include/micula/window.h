@@ -1046,6 +1046,12 @@ struct Window {
         layoutDirty = false;
         if (!content) return;
         content->rect = { 0.0f, kCaptionH, ClientW(), ClientH() };
+        // Placed, and drawn where it is, every time. The root is not a child of any layout, so
+        // nothing glides it and a window that was resized is not an animation -- and a drawn
+        // rectangle left behind by the old size would say "something is moving" for the rest of the
+        // window's life, with the frame loop turning frames for a page that is standing still.
+        content->drawn = content->rect;
+        content->placed = true;
         micula::ArrangeSubtree(content.get(), fonts);
     }
 

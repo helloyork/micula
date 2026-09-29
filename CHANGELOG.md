@@ -74,6 +74,18 @@ library can be: a minor version may break.
 
 ### Changed
 
+- **`Animating()` is what a widget *draws*, not where it is.** A widget being carried somewhere by its
+  container is not animating anything: that is the container's animation, and it is the container's
+  *layout* that reports it, through `Layout::Gliding()`. A widget that is only being moved answers no.
+  Two things follow. A page scrolling under a stationary pointer costs nothing -- the view says it is
+  animating and the forty controls in it say they are not -- and a control the pointer happens to be
+  over lights up on the way past while the ones beside it stay quiet. And the walk down stops at a
+  gliding layout instead of descending into a subtree whose answer is already known.
+- The root widget is placed where it is arranged, every time. It is not a child of any layout, so
+  nothing glides it -- and a `drawn` rectangle left behind by the window's old size said "something is
+  moving" for the rest of the window's life, with the frame loop turning frames for a page standing
+  still. The change above is what makes this matter: without it, a resized window would stop animating
+  altogether instead of never stopping.
 - **The wheel walks up the tree.** A notch was offered to the widget under the pointer and then to the
   top layer; it is offered to that widget and to each thing it is inside of, in its own space, which is
   what lets a control in a scrolling container turn the container. The layer is still offered it after

@@ -160,6 +160,16 @@ struct Layout {
     // One step of the glide, for every child, and whether anything is still moving.
     bool Glide(float dt);
 
+    // Whether anything this layout arranges is on its way somewhere: a child of it is drawn away
+    // from where it was arranged, or has not been placed yet.
+    //
+    // **This is the layout's animation and not the child's.** A widget being carried is not drawing
+    // anything, so it is not animating -- see Widget::Animating, which asks this instead of looking
+    // at its own rectangle. The two together are what make a page scrolling under a stationary
+    // pointer cost nothing: the container says it is moving, and the controls in it say they are
+    // not.
+    bool Gliding() const;
+
 protected:
     Widget *host_ = nullptr;   // set by Widget::SetLayout
     friend struct Widget;

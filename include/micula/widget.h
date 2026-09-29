@@ -195,12 +195,22 @@ struct Widget {
     // on the container either. See ScrollView.
     virtual bool Clips() const { return false; }
     // ---- animation --------------------------------------------------------------------------
-    // Whether this node is moving, for the window's frame loop: it is what keeps frames coming while
-    // a layout glides and stops them when everything has arrived.
+    // Whether this widget is animating **what it draws**: the three pointer states it paints, and
+    // whatever its own Tick advances.
+    //
+    // **Not where it is.** A widget that is being carried somewhere by its container is not animating
+    // anything: that is the container's animation, and it is the container's *layout* that says so
+    // (see Layout::Gliding). Keeping the two apart is what makes a page scrolling under a stationary
+    // pointer cost nothing at all -- the container is animating and the forty controls in it are not
+    // -- and it is what lets a control the pointer happens to be over light up on the way past while
+    // the ones beside it stay quiet.
+    //
+    // The walk down is a big OR and is written as one: a layout that is gliding has already answered
+    // for everything under it, so there is nothing to find by descending.
     virtual bool Animating() const {
         if (hoverT != Want(hover) || pressT != Want(PressedVisual()) || focusT != Want(focus))
             return true;
-        if (placed && !SameRect(drawn, rect)) return true;
+        if (layout && layout->Gliding()) return true;
         for (const auto &c : children) {
             if (c->visible && c->Animating()) return true;
         }
@@ -274,6 +284,15 @@ private:
 //
 // Defined here rather than in layout.h, which knows a Widget only by name: the glide moves a
 // child's drawn rectangle, and only this header knows what one is.
+
+inline bool Layout::Gliding() const {
+    if (!host_) return false;
+    for (const auto &child : host_->children) {
+        if (!child->visible) continue;
+        if (!child->placed || !SameRect(child->drawn, child->rect)) return true;
+    }
+    return false;
+}
 
 inline void Layout::Tick(float dt) { Glide(dt); }
 

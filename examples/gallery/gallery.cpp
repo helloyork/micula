@@ -266,6 +266,24 @@ void Scroll(Fonts &fonts, float dip) {
     view->ScrollBy(dip);
     ArrangeSubtree(gallery.content.get(), fonts);
     std::wprintf(L"after    scroll=%.1f  (asked for %+.1f)\n", view->scroll, dip);
+
+    // What the tree says about itself while the container is carrying it. The view is animating,
+    // because its layout is gliding; the first card in it is not animating at all -- it is being
+    // moved, and being moved is not something it draws. That split is the point, and it is also what
+    // keeps a scrolled page from turning frames for the rest of the window's life: when the glide
+    // lands everything says no, and the loop goes back to blocking in GetMessage.
+    Widget *first = view->children.empty() ? nullptr : view->children.front().get();
+    std::wprintf(L"moving   view=%ls (its layout is gliding)  first card=%ls (its own)\n",
+                 view->Animating() ? L"yes" : L"no",
+                 (first && first->Animating()) ? L"yes" : L"no");
+    int frames = 0;
+    while (view->Animating() && frames < 1000) {
+        view->Tick(1.0f / 60.0f);
+        frames++;
+    }
+    std::wprintf(L"glide    landed after %d frames, animating=%ls, first card drawn=%.1f rect=%.1f\n",
+                 frames, view->Animating() ? L"yes" : L"no",
+                 first ? first->drawn.top : 0.0f, first ? first->rect.top : 0.0f);
     Print(fonts, gallery.content.get(), 0, 0.0f, 0.0f);
 }
 
