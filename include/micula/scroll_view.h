@@ -3,73 +3,100 @@
 // A box whose children do not fit is scrolled by the box.
 //
 //     auto *page = root->Add(new ScrollView());
-//     page->Add(new Heading(L"Capture"));
-//     page->Add(new Card(...));      // and as many more as the page has
+//     page->Add(new Heading(L"Capture"));    // goes into the column, not into the viewport
+//     page->Add(new Card(...));              // and as many more as the page has
 //
-// The whole of it is one idea: **scrolling is arranging the children somewhere else.** They are laid
-// out in a box as tall as they come out and moved up by however far the view is scrolled, so what
-// changes when a wheel turns is a number, and everything downstream follows from the children being
-// where they would be if the page were that much taller:
+// The whole of it is one idea: **scrolling is arranging the children somewhere else.** The column is
+// laid out as tall as it comes out and moved up by however far the view is scrolled, so what changes
+// when a wheel turns is a number, and everything downstream follows from the column being where it
+// would be if the page were that much taller:
 //
-//   - the glide that already exists animates it, because a child whose rectangle has moved is a
-//     child whose `drawn` rectangle is on its way there -- there is no second animation for scrolling
-//     and no scroll offset for anything to remember;
+//   - the glide that already exists animates it, because a child whose rectangle has moved is a child
+//     whose `drawn` rectangle is on its way there -- there is no second animation for scrolling and no
+//     scroll offset for anything to remember;
 //   - the hit test follows it for the same reason, since it reaches a widget where it *looks*;
-//   - the clip is this box, and only the clip is about the container rather than the children.
+//   - the clip is the view, and it is the only part of this that is about the container rather than
+//     about what is in it.
 //
-// What is *not* here yet: a scroll bar. `ScrollBar` is one of the four controls still written against
-// the flat widget list, and the bar this wants is that control ported, drawn by the view itself at
-// its right-hand edge. The wheel and the keyboard are the whole of how it moves until then.
+// The tree underneath it is two children rather than one:
+//
+//     ScrollView            the viewport: clips, scrolls, and owns the bar
+//       View                the column a page adds to, and where the page's margin lives
+//       ScrollBar           the bar, drawn *over* the column
+//
+// The column is a child rather than the view itself for one reason: children are painted in order, so
+// the bar has to be last, and it cannot be last if the thing a page keeps adding to is the view.
 
+#include "scroll_bar.h"
 #include "stack_layout.h"
 
 namespace micula {
 
 struct ScrollView;
 
-// The column inside it: a StackLayout whose box is not the host's, which is the whole of what makes
-// it scroll. Everything else about it -- the margin, the gaps, the alignment -- is the stack's, and
-// deliberately: a scrolling page and a page that fits are the same page.
-struct ScrollLayout : StackLayout {
+// The viewport's own layout: the column, where it is scrolled to, and the bar down the right-hand
+// edge. Not a StackLayout -- the column inside is one, and asking a stack to arrange a stack is how a
+// page's margin ends up applied twice.
+struct ScrollLayout : Layout {
+    Want Measure(const Room &room) const override;
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
-    // The box a page is scrolled through is the host itself; the box its *children* are arranged in
-    // is the one `Arrange` works out.
     D2D1_RECT_F ContentBox(const D2D1_RECT_F &box) const override { return box; }
 };
 
 struct ScrollView : View {
-    ScrollView() { SetLayout(new ScrollLayout()); }
+    ScrollView();
 
-    // How far the content is scrolled, in DIPs from the top. The target, not where it is drawn: the
-    // glide is what moves the children, and this is what it moves them toward.
+    // How far the column is scrolled, in DIPs from the top: the target, not where it is drawn. The
+    // glide is what moves the column, and this is what it moves it toward.
     float scroll = 0.0f;
-    // How tall the children came out. Written by the layout on every arrangement, read by the wheel
-    // to know when to stop.
+    // How tall the column came out. Written by the view's layout on every arrangement, read by the
+    // wheel to know when to stop.
     float extent = 0.0f;
+
+    // The column a page adds to. `Add` below is the whole of the interface to it.
+    View *content = nullptr;
+    // The bar. A child of the view rather than a thing the view draws, so the tree paints it,
+    // hit-tests it and ticks it -- which is the work the old model handed to whoever owned one.
+    ScrollBar *bar = nullptr;
+
+    // A page adds to the column, not to the viewport. Written out rather than inherited because the
+    // order of the view's children is the order they are painted in, and the bar has to stay behind
+    // everything a page adds.
+    template <typename T> T *Add(T *w) { return content->Add(w); }
 
     // A view is a window onto its children: they are drawn where they are inside it and not
     // otherwise. See Widget::Clips.
     bool Clips() const override { return true; }
 
-    // It takes the room it is given rather than asking for the height of what is in it, which is the
-    // difference between a viewport and a page.
+    // The viewport takes the room it is given rather than asking for the height of what is in it,
+    // which is the difference between a viewport and a page.
     micula::Want Measure(const Room &) const override {
         return micula::Want(Axis::Fill(), Axis::Fill());
     }
 
-    // How much of the content is out of sight. Zero when everything fits, which is the state a
-    // viewer of a short page is in and the answer to "is there anything to scroll".
+    // How much of the column is out of sight. Zero when everything fits, which is the state a short
+    // page is in and the answer to "is there anything to scroll".
     float ScrollMax() const { return (std::max)(0.0f, extent - Height(rect)); }
 
-    // Move it, in DIPs, and stay inside what there is. The arrangement follows on the next frame --
-    // this marks the tree dirty and the window's own pass does the rest, so ten wheel notches inside
-    // one frame are one arrangement and one move.
-    void ScrollBy(float dip) {
-        const float to = std::clamp(scroll + dip, 0.0f, ScrollMax());
-        if (to == scroll) return;
-        scroll = to;
+    // Go to `to`, inside what there is. `glide` is false for a dragged thumb only: a thumb under the
+    // pointer has to stay under it rather than catch up with it, so that one move is not animated.
+    void ScrollTo(float to, bool glide) {
+        // Anything that moves the page brings the bar out, the way it does everywhere else in
+        // Windows: the bar is the feedback for the move, not only for the pointer. Awake before the
+        // clamp rather than after, so that pushing against the end of the page still shows where the
+        // end is instead of looking like nothing happened.
+        if (bar) { bar->Wake(); bar->Poll(); }
+        const float at = std::clamp(to, 0.0f, ScrollMax());
+        if (at == scroll) return;
+        scroll = at;
+        instant = !glide;
         InvalidateLayout();
     }
+
+    // Move it, in DIPs. The arrangement follows on the next frame -- this marks the tree dirty and
+    // the window's own pass does the rest, so ten wheel notches inside one frame are one arrangement
+    // and one move.
+    void ScrollBy(float dip) { ScrollTo(scroll + dip, true); }
 
     // A wheel turned over this, or over anything in it -- the window offers the notch to the widget
     // under the pointer and then to each thing it is inside of, which is what brings it here. One
@@ -83,40 +110,94 @@ struct ScrollView : View {
         ScrollBy(-notches * step);
         return true;
     }
+
+    // Set for the one arrangement after a move that is not to be animated, and cleared by the layout
+    // once the column has been placed at it.
+    bool instant = false;
 };
+
+inline ScrollView::ScrollView() {
+    // The viewport's own layout: the column where it is scrolled to, and the bar at the edge.
+    SetLayout(new ScrollLayout());
+    // Qualified, because this class hides `Add`: these two are the view's own children rather than
+    // things a page is putting in the column.
+    content = Widget::Add(new View());
+    content->SetLayout(new StackLayout());
+    bar = Widget::Add(new ScrollBar([this](float to, bool glide) { ScrollTo(to, glide); }));
+    // Nothing to scroll yet, and a bar that has never been arranged would otherwise flash at the
+    // right-hand edge before the first arrangement. See ScrollBar::Poll, which puts it away itself.
+    bar->visible = false;
+}
+
+inline Want ScrollLayout::Measure(const Room &room) const {
+    // The viewport's own answer, not the column's: how tall the page is, is the column's business and
+    // the layout asks it directly in Arrange, where the answer is needed next to the box it is for.
+    (void)room;
+    return Want(Axis::Fill(), Axis::Fill());
+}
 
 inline void ScrollLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     ScrollView *view = static_cast<ScrollView *>(host_);
-    const float pad = PadX();
     Room inner = room;
-    inner.width = (std::max)(0.0f, box.right - box.left - 2 * pad);
+    inner.width = (std::max)(0.0f, box.right - box.left);
 
-    // How tall the column comes out. Summed here rather than asked of StackLayout::Measure, which
-    // answers the same question for a box of a *given* height: this one has no bottom, and a child
-    // that asked to fill the way down has nothing to fill -- its presence cannot make the page
-    // shorter, so it contributes nothing to it.
-    float tall = 2 * padY;
-    bool first = true;
-    for (const auto &child : host_->children) {
-        if (!child->visible) continue;
-        if (gaps && !first) tall += spec.gap;
-        first = false;
-        const Want want = child->Measure(inner);
-        if (want.h.how != Sizing::Fill) tall += want.h.size;
-    }
+    const Want want = view->content->Measure(inner);
+    const float viewport = box.bottom - box.top;
+    // A column that asked to fill has no height of its own to report -- it is saying it is as tall as
+    // its box, and for a scrolling page that means the page fits and there is nothing to scroll.
+    const float tall = want.h.how == Sizing::Fill ? viewport : want.h.size;
     view->extent = tall;
 
-    // A window that shrank, or content that got shorter, leaves the view past the end of it. The
-    // offset is pulled back rather than treated as a fault: this is the same number the wheel clamps,
-    // and the arrangement is the only place that knows both halves of it.
-    const float most = (std::max)(0.0f, tall - (box.bottom - box.top));
-    if (view->scroll > most) view->scroll = most;
+    // A window that shrank, or a page that got shorter, leaves the view past the end of it. The
+    // offset is pulled back rather than treated as a fault: the arrangement is the only place that
+    // knows both halves of it.
+    if (view->scroll > view->ScrollMax()) view->scroll = view->ScrollMax();
     if (view->scroll < 0.0f) view->scroll = 0.0f;
 
-    // And the column, arranged in a box as tall as it is and moved up by the offset. This is the
-    // whole of scrolling: from here down, nothing knows it happened.
-    const float top = box.top - view->scroll;
-    StackLayout::Arrange(room, { box.left, top, box.right, top + tall });
+    // The column, in a box as tall as it is and moved up by the offset. This is the whole of
+    // scrolling: from here down, nothing knows it happened.
+    view->content->rect = { box.left, box.top - view->scroll,
+                            box.right, box.top - view->scroll + tall };
+    if (view->instant) {
+        // A move that is not to be animated -- a dragged thumb -- is placed where it is going, so
+        // that there is nothing left for the glide to do. Every other move is the glide's.
+        view->content->drawn = view->content->rect;
+        view->content->placed = true;
+        for (auto &child : view->content->children) {
+            child->drawn = child->rect;
+            child->placed = true;
+        }
+        view->instant = false;
+    }
+
+    // Where the column is *drawn*, which is what the bar's thumb follows: the offset, minus however
+    // much of the move the glide still owes. One child is enough to ask -- they all move together --
+    // and none at all means there is nothing to have moved.
+    float lag = 0.0f;
+    for (const auto &child : view->content->children) {
+        if (!child->visible || !child->placed) continue;
+        lag = child->drawn.top - child->rect.top;
+        break;
+    }
+
+    ScrollBar *bar = view->bar;
+    // WinUI's bar overlays the page at its right-hand edge rather than taking a column of its own,
+    // which is what a 12-DIP bar with a 2-DIP margin is.
+    bar->rect = { box.right - 2.0f - ScrollBar::kSize, box.top, box.right - 2.0f, box.bottom };
+    // The area the bar watches *outside itself*: the whole page, so that a pointer moving over the
+    // page brings the bar out. Not a hit-test area -- a click out there is a click on the page.
+    bar->area = { box.left - bar->rect.left, box.top - bar->rect.top,
+                  box.right - bar->rect.left, box.bottom - bar->rect.top };
+    bar->viewport = viewport;
+    bar->extent = tall;
+    bar->value = view->scroll;
+    bar->drawn = view->scroll - lag;
+    bar->visible = tall > viewport;
+    // The arrangement is the only moment either of them changes, so it is where the bar is told to
+    // look at them. It also has to be here rather than left to the bar's own clock: a bar that is
+    // out is being tweened, and a bar that is not yet out is not animating yet -- this is what says
+    // there is something to come out for.
+    bar->Poll();
 }
 
 }  // namespace micula

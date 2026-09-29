@@ -29,12 +29,15 @@
 // is the set of them: include it and you have every one, or include the single control a
 // page draws and parse nothing else.
 //
-// **Four of them are not in the list yet.** dialog.h, drop_down.h, scroll_bar.h and side_nav.h
+// **Three of them are not in the list yet.** dialog.h, drop_down.h and side_nav.h
 // are written against the flat list of widgets this branch replaced: each builds the controls it
 // shows into that list by hand, and reaches into the window for the rectangles it places them in.
 // Porting one is writing its own layout -- a flyout is a list that scrolls, a side nav is a column
-// that selects -- and until then including one of those four directly is a compile error rather
+// that selects -- and until then including one of those three directly is a compile error rather
 // than a silent difference.
+//
+// scroll_bar.h is included by scroll_view.h rather than listed here: a bar is not something a page
+// puts somewhere, it is the part of a scrolling container that shows where the page is.
 
 #pragma once
 

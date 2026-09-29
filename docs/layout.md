@@ -2,8 +2,8 @@
 
 **Status: being built.** This file describes the retained object tree, which is on the branch
 `layout-experimental` and is not in `master`. The core is written and `examples/gallery` is a page
-written against it; the scrolling container and the last four controls are not, and the migration list
-at the end is where that stands. Everything below is a decision unless it is under
+written against it; the scrolling container is written too, and the last three controls are not. The
+migration list at the end is where that stands. Everything below is a decision unless it is under
 [Open questions](#open-questions) at the end, which is working notes for the branch.
 
 ## Why the page is no longer rebuilt
@@ -193,9 +193,14 @@ that is about the container rather than about the children. There is no scroll o
 remember and no second animation. `VisibleArea()` answers with the nearest container that clips, which
 is the one thing that did have to be taught about it.
 
-What is not there: the `ScrollBar`. The bar this wants is `scroll_bar.h` ported, drawn by the view at
-its own right-hand edge -- one of the four controls still written against the flat widget list. The
-wheel and the keyboard are the whole of how it moves until then.
+The bar came after, and it is the reason the view is two children rather than one: the column a page
+adds to, and the bar, in that order -- the bar is painted over the column, so it has to be last, and it
+cannot be last if the thing a page keeps adding to is the view itself. A page still calls `Add` on the
+view; the view forwards it to the column, which is also where the page's margin lives. The bar is a
+child rather than something the view draws, so the tree paints it, hit-tests it and ticks it, and the
+view's layout is what keeps it told: how much of the page there is, how much of it is visible, where
+the page has been scrolled to, and where it is *drawn* -- which trails the target through a glide, so
+the thumb goes with the page instead of arriving before it.
 
 ## Motion
 
@@ -299,10 +304,10 @@ On the branch, in this order. Each phase is something a person can look at and d
    `Card` with its own layout, and the widgets a page needs to say anything at all: `Label`,
    `Heading`. *done* -- all of it compiles clean and `examples/gallery` is a page written against it,
    with a `--dump` that prints the rectangles it came out as.
-2. **Scrolling and the rest of the controls.** `ScrollView` is written, with the clip, the wheel and
-   the glide; what is left of this phase is its scroll bar and the four controls still on the flat
-   list -- `DropDown`, `ScrollBar`, `SideNav`, `Dialog` -- and `examples/settings` and `examples/nav`
-   with them. *(you are here)*
+2. **Scrolling and the rest of the controls.** `ScrollView` is written, with the clip, the wheel, the
+   glide and its bar; what is left of this phase is the three controls still on the flat list --
+   `DropDown`, `SideNav`, `Dialog` -- and `examples/settings` and `examples/nav` with them.
+   *(you are here)*
 3. **Pages and the grid.** `SideNav` as a root widget holding pages and switching by visibility;
    `Page` with its own layout; `GridLayout`.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the

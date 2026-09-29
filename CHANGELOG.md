@@ -71,6 +71,19 @@ library can be: a minor version may break.
   the box it is really seen through instead of one it does not have.
 - `SystemWheelLines()`, because the system's own "lines per notch" is a setting more than one control
   now reads.
+- **The scroll bar is the view's own.** `ScrollView` is two children rather than one: the column a page
+  adds to (which is where the page's margin lives) and the bar, in that order, because children are
+  painted in order and the bar is drawn over the column. `Add` on the view forwards to the column, so a
+  page never has to know there are two. A new `ScrollLayout` arranges both -- the column at minus the
+  offset, the bar at the right-hand edge -- and is what tells the bar what it is looking at: how much of
+  the page there is, how much of it is visible, where the page has been scrolled to, and where it is
+  *drawn*, which trails the target through a glide so the thumb goes with the page rather than arriving
+  before it. The bar being a child is the whole of the integration: the tree paints it, hit-tests it and
+  ticks it, and the wheel walks up into the view and scrolls.
+- `ScrollBar::Poll()` is called from the arrangement, and `Wake()` from anything that moves the page. A
+  bar that is out is being tweened and a bar that is not out yet is not animating yet, so without the
+  first of those nothing would ever come out; without the second, a wheel or a keyboard scroll would
+  move the page with no sign of where it went.
 
 ### Changed
 
