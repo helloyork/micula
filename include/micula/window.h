@@ -832,19 +832,6 @@ struct Window {
                cloaked == 0;
     }
 
-    // Whether a control that scrolls with the page is inside the strip the page shows, with the
-    // page's own offset already applied. Four DIPs of slack, because a control may draw a little
-    // outside its own rectangle: a focus ring, a shadow, a flyout it has not grown its rect to
-    // cover.
-    //
-    // Two callers, and they are meant to be the same question: `pass` asks it before drawing a
-    // control, and `Animating` asks it before counting one as something to run frames for.
-    static bool Reaches(const D2D1_RECT_F &rect, float dy, const D2D1_RECT_F &clip) {
-        const D2D1_RECT_F r = { rect.left, rect.top + dy, rect.right, rect.bottom + dy };
-        return r.right + 4.0f > clip.left && r.left - 4.0f < clip.right &&
-               r.bottom + 4.0f > clip.top && r.top - 4.0f < clip.bottom;
-    }
-
     virtual ~Window();
 
     // --- to implement -----------------------------------------------------------
@@ -863,19 +850,6 @@ struct Window {
     // question; a subclass overriding this does not have to know about them.
     virtual bool AnimationWanted() const { return false; }
     virtual bool OnAppMessage(UINT, WPARAM, LPARAM) { return false; }
-    // The area scrolling widgets live in, in DIPs. An empty rectangle -- the default --
-    // means the window does not scroll and nothing is clipped.
-    virtual D2D1_RECT_F ClipRect() const { return D2D1_RECT_F{ 0, 0, 0, 0 }; }
-    // An offset and an opacity for the scrolling half of the page, applied when it is
-    // painted and taken back off when a click is hit-tested against it.
-    //
-    // This is how a page arrives and how a wheel notch glides: the layout stays where
-    // the scroll says it is and the *drawing* lags behind it, which costs one transform
-    // per frame instead of a whole re-layout. Because the hit test subtracts the same
-    // number, a control clicked mid-glide is the control that was under the pointer.
-    virtual void ContentTransform(float *dy, float *opacity) const {
-        *dy = 0.0f; *opacity = 1.0f;
-    }
     // The smallest the window may be dragged to, in DIPs. Zero means no limit.
     //
     // A resizable window without one is a window somebody can drag to nothing, and a
@@ -1081,9 +1055,22 @@ struct Window {
         // the two goes on as a translation for this widget alone.
         const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
         p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
+        // A layer arriving or leaving is drawn as one group at one opacity, rather than each of its
+        // widgets at that opacity: fading them one by one shows the page through the gaps between
+        // them, and comes out darker where two of them overlap. Nothing is pushed for a layer at
+        // rest, which is every layer for all but a few frames. See Layer::Arrival.
+        Layer *layer = w->AsLayer();
+        const float op = layer ? layer->Arrival() : 1.0f;
+        const bool fading = layer && op < 1.0f;
+        if (fading) {
+            p.rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
+                                                  D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                  D2D1::IdentityMatrix(), op), nullptr);
+        }
         w->Paint(p);
         const float cx = ox + where.left, cy = oy + where.top;
         for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
+        if (fading) p.rt->PopLayer();
         p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
     }
 
@@ -1379,86 +1366,10 @@ inline void Window::Paint() {
     // the difference between a Mica window and a grey one.
     dc->Clear(micaActive ? D2D1::ColorF(0, 0, 0, 0) : pal.windowBg);
     // The page is the tree now: one walk from the root, which is the client area below the caption.
-    //
-    // The flat-list passes that used to be here are below, compiled out, until the three shapes they
-    // carried have been re-checked against a tree -- furniture before the page is a child order, the
-    // page-wide clip and the arrival opacity are a container's business -- and then they go with the
-    // rest of the flat-list code.
+    // What the flat-list passes here used to carry is now where it belongs -- furniture before the
+    // page is child order, the page-wide clip is a container's own clip, and the arrival opacity is
+    // what a `Layer` is drawn through. See docs/layout.md.
     PaintTree(p, content.get(), 0.0f, 0.0f);
-#if 0
-    const D2D1_RECT_F clip = ClipRect();
-    const bool clipping = clip.right > clip.left && clip.bottom > clip.top;
-    // The page's arrival and its scroll glide, applied to the scrolling half of the
-    // page only: a navigation list and a header button are furniture and stay put.
-    float dy = 0.0f, op = 1.0f;
-    ContentTransform(&dy, &op);
-    // The page's widgets go under one clip, one transform and at most one layer --
-    // rather than one of each per widget, which is what this was and which put twenty
-    // intermediate surfaces into every frame of a page transition.
-    //
-    // That means painting the furniture (widgets with `scrolls` false) before the page
-    // rather than interleaved with it in insertion order. They do not overlap -- the
-    // furniture is outside ClipRect by construction, which is the same fact that makes
-    // the clip legal -- so the order between the two groups cannot show.
-    // A control that has been scrolled clear of the clip is not painted at all. The clip
-    // would discard its pixels anyway, but only after it had built everything it draws --
-    // and a long page pays for every row above and below the visible strip, on every
-    // frame of a scroll. Four DIPs of slack, because a control may draw a little outside
-    // its own rectangle: a focus ring, a shadow, a flyout the control has not grown its
-    // rect to cover.
-    auto reaches = [&](const Widget *w) { return Reaches(w->rect, dy, clip); };
-    auto shown = [&](const Widget *w) {
-        return w->visible && (!clipping || !w->scrolls || reaches(w));
-    };
-    auto pass = [&](int z) {
-        for (auto &w : widgets)
-            if (w->visible && w->z == z && !w->scrolls) w->Paint(p);
-        bool any = false;
-        for (auto &w : widgets)
-            if (w->z == z && w->scrolls && shown(w.get())) { any = true; break; }
-        if (!any) return;
-        // Clip first, transform second. The clip is a fixed window onto the page and
-        // must not move with what is being drawn inside it -- pushed the other way round
-        // it slides too, and the cards then run off under the header.
-        //
-        // The clip is the *page's*, so it is the page's contents that take it. Anything
-        // with a z is over the page rather than in it -- a lid, a flyout, a pane that
-        // covers the content -- and is drawn whole: its shadow reaches outside its own
-        // rectangle by design, and a panel whose shadow is sliced off at the header stops
-        // reading as something floating above the page at all. What such a control still
-        // does is keep *itself* inside the room it has, which is `Bounds()` in the
-        // drop-down and the window's own edges in a pane.
-        const bool pageArea = z == 0;
-        const bool clipped = clipping && pageArea;
-        if (clipped) dc->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
-        if (dy != 0.0f) dc->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, dy));
-        const bool layered = op < 1.0f;
-        if (layered) {
-            const D2D1_RECT_F b = clipped
-                ? D2D1_RECT_F{ clip.left, clip.top - 32, clip.right, clip.bottom + 32 }
-                : D2D1::InfiniteRect();
-            dc->PushLayer(D2D1::LayerParameters(b, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                                D2D1::IdentityMatrix(), op), nullptr);
-        }
-        for (auto &w : widgets)
-            if (w->z == z && w->scrolls && shown(w.get())) w->Paint(p);
-        if (layered) dc->PopLayer();
-        if (dy != 0.0f) dc->SetTransform(D2D1::Matrix3x2F::Identity());
-        if (clipped) dc->PopAxisAlignedClip();
-    };
-    pass(0);
-    // Everything over the page is one group for as long as the layer on top of it is mid-fade, in
-    // either direction -- the length of one fade, and at rest nothing is pushed here at all. An
-    // opacity layer is what fades a group; see `arrive` in Layer for why the group cannot be each
-    // widget's own opacity.
-    Layer *top = TopLayer();
-    const float arrival = top ? top->Arrival() : 1.0f;
-    const bool fading = top && arrival != (top->Leaving() ? 0.0f : 1.0f);
-    if (fading)
-        dc->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
-                                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                            D2D1::IdentityMatrix(), arrival), nullptr);
-#endif
 #if MICULA_DEBUG_LAYOUT
     if (debug::layout && content) {
         // Blue: the page's own clip, which is what a container's overflow will narrow when there is
