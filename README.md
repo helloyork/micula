@@ -104,6 +104,8 @@ rebuilt as it scrolls. `examples/gallery` does this.
 - [Controls](docs/controls.md): the nine controls
 - [Custom controls](docs/widget.md): writing a control of your own
 - [Drawing](docs/drawing.md): painter, palette, fonts, icons, animation
+- [Layout](docs/layout.md): the retained object tree -- **design, on the branch
+  `layout-experimental`, not in this tree yet**
 
 ## License
 
