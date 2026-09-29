@@ -826,6 +826,20 @@ inline bool SystemAutoHidesScrollBars() {
     return v != 0;
 }
 
+// How far one notch of the wheel moves something the user is scrolling. Windows calls the setting
+// "lines", and a scroll bar in this library scrolls a *line* of its own: the wheel's own step is
+// `SystemWheelLines() * rows` wherever a control has rows to count.
+//
+// Zero is the answer for WHEEL_PAGESCROLL, which is what a trackpad in a shell and a mouse with no
+// wheel report: the setting means "a page at a time", and a page is a thing the caller knows the
+// size of and this does not.
+inline float SystemWheelLines() {
+    UINT lines = 3;
+    if (!SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) return 3.0f;
+    if (lines == WHEEL_PAGESCROLL) return 0.0f;
+    return (float)lines;
+}
+
 // The icon code points -- the ones the controls draw, and the ones a page wants -- are in
 // glyphs.h, which is the one header of this library a page is expected to add to.
 

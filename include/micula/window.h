@@ -1061,6 +1061,11 @@ struct Window {
         // the two goes on as a translation for this widget alone.
         const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
         p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
+        // A widget that is a window onto its children clips them to itself. The clip is pushed
+        // *after* the transform, so its rectangle is read in the space it is written in -- the
+        // parent's, which is where `where` lives -- and not in the client's. See Widget::Clips.
+        const bool clips = w->Clips();
+        if (clips) p.rt->PushAxisAlignedClip(where, D2D1_ANTIALIAS_MODE_ALIASED);
         // A layer arriving or leaving is drawn as one group at one opacity, rather than each of its
         // widgets at that opacity: fading them one by one shows the page through the gaps between
         // them, and comes out darker where two of them overlap. Nothing is pushed for a layer at
@@ -1076,6 +1081,7 @@ struct Window {
         w->Paint(p);
         const float cx = ox + where.left, cy = oy + where.top;
         for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
+        if (clips) p.rt->PopAxisAlignedClip();
         if (fading) p.rt->PopLayer();
         p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
     }
@@ -1916,11 +1922,23 @@ inline D2D1_POINT_2F Widget::Cursor() const {
 inline D2D1_RECT_F Widget::VisibleArea() const {
     Window *w = window();
     if (!w || !w->content) return D2D1_RECT_F{ 0, 0, 0, 0 };
-    // The page's box, in this widget's own space. A container that clips will narrow this to what it
-    // lets through; nothing clips yet, so the page is the whole answer.
-    const D2D1_POINT_2F o = w->OriginOf(this);
-    const D2D1_RECT_F page = w->content->rect;
-    return { page.left - o.x, page.top - o.y, page.right - o.x, page.bottom - o.y };
+    // Whatever clips is what this widget is really seen through: the nearest container above it that
+    // is a window onto its children, and the page's own box when nothing between the two does. A
+    // control inside a scrolling container that asked the page instead would be told it has room it
+    // does not have.
+    const Widget *box = w->content.get();
+    for (const Widget *at = this; at; at = at->parent) {
+        if (!at->Clips()) continue;
+        box = at;
+        break;
+    }
+    // And that box in this widget's own space. `OriginOf` is where a widget's rectangle is measured
+    // *from* in the client, so the two origins are what carries one space's rectangle into another.
+    const D2D1_POINT_2F mine = w->OriginOf(this);
+    const D2D1_POINT_2F its = w->OriginOf(box);
+    const D2D1_RECT_F r = box->rect;
+    return { r.left + its.x - mine.x, r.top + its.y - mine.y,
+             r.right + its.x - mine.x, r.bottom + its.y - mine.y };
 }
 
 inline bool Widget::ShowFocusRing() const {
@@ -3212,19 +3230,20 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         ScreenToClient(h, &pt);
         const float x = pt.x / s, y = pt.y / s;
         const float notches = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
-        // The widget under the pointer first, in its own space -- see Widget::OnWheel. What does not
-        // take it falls to the layer it is under, if there is one: a popup that is up is what a
-        // wheel over it is for, and the page under it is not the thing being turned. With no layer
-        // and nothing that took it, the notch goes to the page, which is where scrolling will come
-        // from when a container can overflow.
-        Widget *w = self->HitTest(x, y);
-        if (w) {
+        // The widget under the pointer first, and then each of the things it is inside of, in its
+        // own space -- see Widget::OnWheel. The walk up is what lets a control in a scrolling
+        // container turn the container: the innermost thing that wants the notch takes it, and a
+        // control that has no use for one is not in the way of the thing around it.
+        for (Widget *w = self->HitTest(x, y); w; w = w->parent) {
             const D2D1_POINT_2F at = self->LocalPoint(w, x, y);
             if (w->OnWheel(at.x, at.y, notches)) {
                 self->Invalidate();
                 return 0;
             }
         }
+        // Then the layer on top, which is offered the notch whether or not the pointer was over it:
+        // a flyout that is up is what a wheel over it is for, and the page under it is not the thing
+        // being turned.
         if (Layer *top = self->TopLayer()) {
             const D2D1_POINT_2F at = self->LocalPoint(top, x, y);
             if (top->OnWheel(at.x, at.y, notches)) {

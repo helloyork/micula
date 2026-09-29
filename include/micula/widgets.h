@@ -45,6 +45,7 @@
 #include "check_box.h"
 #include "progress_bar.h"
 #include "progress_ring.h"
+#include "scroll_view.h"
 #include "segmented.h"
 #include "slider.h"
 #include "text.h"

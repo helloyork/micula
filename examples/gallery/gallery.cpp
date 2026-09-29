@@ -46,48 +46,57 @@ struct Page {
     std::wstring device = L"Pixel 8";
 
     // --- the tree -------------------------------------------------------------------
-    void Build(Widget *root) {
-        root->SetLayout(new StackLayout());
+    // The page, in a window. Two nodes: the root the window gave the page, and the scroll view
+    // everything else is in -- so the page margin belongs to the view rather than to the window, and
+    // a window shorter than the page scrolls instead of cutting it off.
+    ScrollView *Build(Widget *root) {
+        // The root is a stack with no margin of its own, so its one child is the whole client area
+        // below the caption.
+        auto *whole = new StackLayout();
+        whole->padX = 0.0f;
+        root->SetLayout(whole);
 
-        root->Add(new Heading(L"捕获"));
+        ScrollView *page = root->Add(new ScrollView());
 
-        auto *capturer = root->Add(new Card(L"使用捕获器", L"打开后 scrcpy 的窗口会被裁掉，录制时只保留设备画面本身。"));
+        page->Add(new Heading(L"捕获"));
+
+        auto *capturer = page->Add(new Card(L"使用捕获器", L"打开后 scrcpy 的窗口会被裁掉，录制时只保留设备画面本身。"));
         capturer->icon = glyph::kEthernet;
         capturer->Set(new ToggleSwitch(L"", capture, [this](bool v) { capture = v; }));
         // Read when the card is painted rather than pushed into it, so the two never have to be kept
         // in step -- and the switch's own animation is what asks for the frames that redraw it.
         capturer->value = [this] { return capture ? L"开" : L"关"; };
 
-        auto *named = root->Add(new Card(L"设备名称", L"只影响本机显示，用来区分同时连接的多台设备。"));
+        auto *named = page->Add(new Card(L"设备名称", L"只影响本机显示，用来区分同时连接的多台设备。"));
         named->icon = glyph::kCellPhone;
         auto *field = named->Set(new TextBox());
         field->text = device;
         field->placeholder = L"Pixel";
         field->onChange = [this](const std::wstring &s) { device = s; };
 
-        root->Add(new Heading(L"高级"));
+        page->Add(new Heading(L"高级"));
 
-        auto *notified = root->Add(new Card(L"完成时通知", L"转录或搬运结束时弹出一条通知，窗口在后台也能看到。"));
+        auto *notified = page->Add(new Card(L"完成时通知", L"转录或搬运结束时弹出一条通知，窗口在后台也能看到。"));
         notified->icon = glyph::kInfo;
         notified->Set(new CheckBox(L"", notify, [this](bool v) { notify = v; }));
 
         // A card whose control takes the width the text did not: the slider asked to fill, and the
         // card gives it what is left. None of that arithmetic is in the page.
-        auto *gain = root->Add(new Card(L"音量", L"只改这台电脑回放时的增益，不会改动设备自己的音量。"));
+        auto *gain = page->Add(new Card(L"音量", L"只改这台电脑回放时的增益，不会改动设备自己的音量。"));
         gain->icon = glyph::kVolume;
         gain->Set(new Slider(this->volume, 0.0f, 1.0f, 0.05f, [this](float v) { this->volume = v; }));
         gain->value = [this] {
             return std::to_wstring((int)(this->volume * 100.0f + 0.5f)) + L"%";
         };
 
-        auto *sharp = root->Add(new Card(L"画质", L"流畅省电，清晰更接近原图，标准是两者的折中。"));
+        auto *sharp = page->Add(new Card(L"画质", L"流畅省电，清晰更接近原图，标准是两者的折中。"));
         sharp->icon = glyph::kView;
         sharp->Set(new Segmented({ L"流畅", L"标准", L"清晰" }, this->quality,
                                   [this](int i) { this->quality = i; }));
 
         // A row of its own for the two things a page *does* rather than sets: a card is a setting,
         // and these are not.
-        auto *verbs = root->Add(new View());
+        auto *verbs = page->Add(new View());
         verbs->SetLayout(new RowLayout());
         verbs->Add(new Button(L"开始", ButtonStyle::Accent, [this] { notify = true; }));
         // A control reaches the window through the tree it is in, which is what lets this callback
@@ -97,8 +106,9 @@ struct Page {
             if (Window *w = quit->window()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
         };
 
-        root->Add(new Label(L"这一页没有一处坐标：控件报告它们想要什么，布局决定它们在哪里。",
+        page->Add(new Label(L"这一页没有一处坐标：控件报告它们想要什么，布局决定它们在哪里。",
                             TextRole::Caption))->secondary = true;
+        return page;
     }
 };
 
@@ -136,9 +146,9 @@ void Print(const Fonts &fonts, const Widget *w, int depth, float ox, float oy) {
     }
 }
 
-// The page in a window that is never created: what `--dump` and `--hit` both need, since the fonts
-// and the tree are the whole of what a layout is measured against and a window is the one thing
-// neither of them has.
+// The page in a window that is never created: what `--dump`, `--hit` and `--scroll` all need, since
+// the fonts and the tree are the whole of what a layout is measured against and a window is the one
+// thing none of them has.
 //
 // The window object is still the right thing to build in. It is what owns the root widget, it is
 // what the hit test is a method of, and it is what a page adds to -- so a program that lays its page
@@ -150,17 +160,18 @@ struct Gallery : Window {
     const wchar_t *ClassName() const override { return L"MiculaGallery"; }
     const wchar_t *Title() const override { return L"Micula"; }
 
-    // The tree, and the box a window of this size would give it.
-    View *Build(float w, float h) {
-        page->Build(EnsureContent());
+    // The tree, and the box a window of this size would give it. The view the page is in comes back
+    // because that is what a wheel turns and what `--scroll` turns by hand.
+    ScrollView *Build(float w, float h) {
+        ScrollView *view = page->Build(EnsureContent());
         content->rect = { 0.0f, kCaptionH, w, h };
-        return static_cast<View *>(content.get());
+        return view;
     }
 };
 
-// The fonts, and the two things that need them. Every measurement a layout makes is a DirectWrite
+// The fonts, and the three things that need them. Every measurement a layout makes is a DirectWrite
 // one, so a factory and ten formats are the whole of what a window was providing.
-int WithFonts(void (*body)(Fonts &)) {
+int WithFonts(const std::function<void(Fonts &)> &body) {
     IDWriteFactory *dw = nullptr;
     if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                    reinterpret_cast<IUnknown **>(&dw))) || !dw) {
@@ -180,14 +191,24 @@ int WithFonts(void (*body)(Fonts &)) {
     return 0;
 }
 
+// The window the example opens at, and the box the three window-free modes lay the page out in.
+//
+// Shorter than the page: 480 DIP of client area under a page that comes out about 512, which is what
+// makes this the example's scroll view rather than a stack of cards that happens to end above the
+// bottom. A page that fits says nothing about a container that overflows.
+constexpr float kWinW = 700.0f;
+constexpr float kWinH = 480.0f;
+
 // The page, arranged into a window's worth of space and printed, with no window anywhere.
 void Dump(Fonts &fonts) {
     Gallery gallery(nullptr);
     Page page;
     gallery.page = &page;
-    View *root = gallery.Build(700.0f, 620.0f);
-    ArrangeSubtree(root, fonts);
-    Print(fonts, root, 0, 0.0f, 0.0f);
+    ScrollView *view = gallery.Build(kWinW, kWinH);
+    ArrangeSubtree(gallery.content.get(), fonts);
+    std::wprintf(L"scroll   scroll=%.1f extent=%.1f most=%.1f\n",
+                 view->scroll, view->extent, view->ScrollMax());
+    Print(fonts, gallery.content.get(), 0, 0.0f, 0.0f);
 }
 
 // Every widget's own centre, asked of the hit test. What should come back at a widget's centre is
@@ -201,8 +222,15 @@ void Hit(Fonts &fonts, Widget *w, int depth, float ox, float oy) {
     const float cx = ox + (r.left + r.right) / 2;
     const float cy = oy + (r.top + r.bottom) / 2;
     Widget *found = w->window()->HitTest(cx, cy);
+    // A widget scrolled out of the container it lives in is not reachable and is not meant to be: its
+    // own centre is outside the box it is seen through. That is a different answer from a click
+    // landing on something else, which is the fault this is looking for, so the print says which.
+    const D2D1_RECT_F seen = w->VisibleArea();
+    const bool clipped = r.bottom <= seen.top || r.top >= seen.bottom ||
+                         r.right <= seen.left || r.left >= seen.right;
     const wchar_t *verdict = L"other";
-    if (!found) verdict = L"nothing";
+    if (clipped) verdict = L"scrolled out";
+    else if (!found) verdict = L"nothing";
     else if (found == w) verdict = L"itself";
     else if (w->Holds(found)) verdict = L"inside";
 
@@ -218,24 +246,48 @@ void Hits(Fonts &fonts) {
     Gallery gallery(nullptr);
     Page page;
     gallery.page = &page;
-    View *root = gallery.Build(700.0f, 620.0f);
-    ArrangeSubtree(root, fonts);
-    Hit(fonts, root, 0, 0.0f, 0.0f);
+    gallery.Build(kWinW, kWinH);
+    ArrangeSubtree(gallery.content.get(), fonts);
+    Hit(fonts, gallery.content.get(), 0, 0.0f, 0.0f);
+}
+
+// The wheel, turned by hand: the same number `OnWheel` would move, through the same call. What it
+// checks is the arithmetic nobody can see -- that the children moved by exactly the notch, that the
+// offset stopped at the end of the content rather than past it, and that a notch's worth of them is
+// the system's own "lines" times a row.
+void Scroll(Fonts &fonts, float dip) {
+    Gallery gallery(nullptr);
+    Page page;
+    gallery.page = &page;
+    ScrollView *view = gallery.Build(kWinW, kWinH);
+    ArrangeSubtree(gallery.content.get(), fonts);
+    std::wprintf(L"before   scroll=%.1f extent=%.1f most=%.1f\n",
+                 view->scroll, view->extent, view->ScrollMax());
+    view->ScrollBy(dip);
+    ArrangeSubtree(gallery.content.get(), fonts);
+    std::wprintf(L"after    scroll=%.1f  (asked for %+.1f)\n", view->scroll, dip);
+    Print(fonts, gallery.content.get(), 0, 0.0f, 0.0f);
 }
 
 }  // namespace
 
 int wmain(int argc, wchar_t **argv) {
     bool dump = false, hit = false;
+    float scroll = 0.0f;
     for (int i = 1; i < argc; i++) {
         if (std::wcscmp(argv[i], L"--dump") == 0) dump = true;
         if (std::wcscmp(argv[i], L"--hit") == 0) hit = true;
+        if (std::wcscmp(argv[i], L"--scroll") == 0 && i + 1 < argc) scroll = (float)_wtof(argv[++i]);
     }
-    if (dump || hit) {
+    if (dump || hit || scroll != 0.0f) {
         // Wide rather than in the console's code page: the labels are Chinese, and a stream left
         // alone narrows every one of them through the CRT's default encoding on the way out.
         _setmode(_fileno(stdout), _O_U16TEXT);
-        return WithFonts(dump ? Dump : Hits);
+        if (dump) return WithFonts(Dump);
+        if (hit) return WithFonts(Hits);
+        // A closure rather than the function pointer the other two use, since this one has a number
+        // of its own to carry.
+        return WithFonts([scroll](Fonts &f) { Scroll(f, scroll); });
     }
 
     // A console program so that --dump has somewhere to print. Launched from Explorer that console
@@ -250,8 +302,8 @@ int wmain(int argc, wchar_t **argv) {
     {
         Page page;
         Gallery gallery(&page);
-        gallery.Build(700.0f, 620.0f);
-        if (gallery.Create(700, 620, true, nullptr)) code = gallery.Run();
+        gallery.Build(kWinW, kWinH);
+        if (gallery.Create((int)kWinW, (int)kWinH, true, nullptr)) code = gallery.Run();
     }
     return code;
 }

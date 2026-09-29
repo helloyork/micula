@@ -179,10 +179,23 @@ A container whose arranged children do not fit scrolls them: the children are cl
 keeps the offset, it takes the wheel, it holds a `ScrollBar` of its own and glides the offset on the
 frame loop. That is what CSS calls `overflow: auto` and what a WinUI `ScrollViewer` is.
 
-What disappears with it: `scrolls`, `ClipRect()`, `ContentTransform()`, `VisibleArea()`, the
-`ScrollBar` a page creates and wires up, the `maxScroll` arithmetic, and the rule that a page must
-not call `Layout()` while scrolling -- a rule that only exists because a rebuild would fight the
-scroll. `overflow = Clip` and `overflow = Visible` cover the containers that mean those.
+What disappears with it: `scrolls`, `ClipRect()`, `ContentTransform()`, the `ScrollBar` a page
+creates and wires up, the `maxScroll` arithmetic, and the rule that a page must not call `Layout()`
+while scrolling -- a rule that only exists because a rebuild would fight the scroll.
+
+**Written, and smaller than the paragraph above promised.** `ScrollView` is a `View` with a stack
+inside it, and scrolling turned out to be one idea rather than a mechanism: the children are arranged
+in a column as tall as they come out and moved up by however far the view is scrolled, so a wheel
+notch changes a number and everything downstream follows. The glide animates it because a child whose
+rectangle has moved is a child whose `drawn` rectangle is on its way there; the hit test follows it
+because it reaches a widget where it *looks*; the clip is the view, and it is the only part of this
+that is about the container rather than about the children. There is no scroll offset for anything to
+remember and no second animation. `VisibleArea()` answers with the nearest container that clips, which
+is the one thing that did have to be taught about it.
+
+What is not there: the `ScrollBar`. The bar this wants is `scroll_bar.h` ported, drawn by the view at
+its own right-hand edge -- one of the four controls still written against the flat widget list. The
+wheel and the keyboard are the whole of how it moves until then.
 
 ## Motion
 
@@ -286,9 +299,10 @@ On the branch, in this order. Each phase is something a person can look at and d
    `Card` with its own layout, and the widgets a page needs to say anything at all: `Label`,
    `Heading`. *done* -- all of it compiles clean and `examples/gallery` is a page written against it,
    with a `--dump` that prints the rectangles it came out as.
-2. **Scrolling and the rest of the controls.** Overflow in a container, the scroll bar it owns, the
-   glide; then `DropDown`, `ScrollBar`, `SideNav` and `Dialog` ported, and `examples/settings` and
-   `examples/nav` with them. *(you are here)*
+2. **Scrolling and the rest of the controls.** `ScrollView` is written, with the clip, the wheel and
+   the glide; what is left of this phase is its scroll bar and the four controls still on the flat
+   list -- `DropDown`, `ScrollBar`, `SideNav`, `Dialog` -- and `examples/settings` and `examples/nav`
+   with them. *(you are here)*
 3. **Pages and the grid.** `SideNav` as a root widget holding pages and switching by visibility;
    `Page` with its own layout; `GridLayout`.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the

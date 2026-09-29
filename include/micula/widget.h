@@ -186,8 +186,14 @@ struct Widget {
     bool ShowFocusRing() const;
     // The layer this widget is, when it is one. Asked by the window, which routes Esc, Enter and the
     // Tab ring through the top layer before the page sees them.
-    virtual Layer *AsLayer() { return nullptr; }
-
+    virtual Layer *AsLayer() { return nullptr; }    // Whether this widget is a **window onto its children** rather than a box they fit in: they are
+    // drawn only where they are inside it, which is what makes a page too long for the room it has
+    // readable. The paint walk pushes it as a clip, and VisibleArea answers with it -- so a control
+    // asking how much room it has is told about the container it is scrolling in rather than about
+    // the page behind it. Nothing else changes: what is outside the box is drawn, and simply not
+    // seen, and the hit test never reaches it because a click outside the container is not a click
+    // on the container either. See ScrollView.
+    virtual bool Clips() const { return false; }
     // ---- animation --------------------------------------------------------------------------
     // Whether this node is moving, for the window's frame loop: it is what keeps frames coming while
     // a layout glides and stops them when everything has arrived.

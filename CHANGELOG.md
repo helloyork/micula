@@ -53,9 +53,31 @@ library can be: a minor version may break.
 - **`ArrangeSubtree`** (`widget.h`), the walk the window arranges with, as a free function -- so a
   program can place a tree and read the rectangles without a window. `micula-gallery --dump` prints
   them, which is how a layout fault is found and checked without taking a screenshot.
+- **`ScrollView`** (`scroll_view.h`). A box whose children do not fit is scrolled by the box, and the
+  whole of it is one idea: **scrolling is arranging the children somewhere else.** They are laid out in
+  a column as tall as they come out and moved up by however far the view is scrolled, so a wheel notch
+  changes a number and everything downstream follows -- the glide that already exists animates it,
+  because a child whose rectangle has moved is a child whose `drawn` rectangle is on its way there;
+  the hit test follows it, because it reaches a widget where it *looks*; and the clip is the view,
+  which is the only part of this that is about the container rather than about the children. No scroll
+  offset, no second animation, and nothing inside knows it happened. Verified by arithmetic rather
+  than by eye: a 480-DIP window over a 512-DIP page gives `most = 64`, `ScrollBy(40)` moves the first
+  heading from 32 to -8, `ScrollBy(200)` stops at 64 and `ScrollBy(-30)` at 0.
+- **`Widget::Clips()`**, and the paint walk pushes it as a clip. A container that is a window onto its
+  children is what makes a page too long for the room it has readable; nothing else changes, what is
+  outside the box is drawn and simply not seen, and the hit test never reaches it because a click
+  outside the container is not a click on the container either. `Widget::VisibleArea()` answers with
+  the nearest container that clips rather than with the page, so a control inside one is told about
+  the box it is really seen through instead of one it does not have.
+- `SystemWheelLines()`, because the system's own "lines per notch" is a setting more than one control
+  now reads.
 
 ### Changed
 
+- **The wheel walks up the tree.** A notch was offered to the widget under the pointer and then to the
+  top layer; it is offered to that widget and to each thing it is inside of, in its own space, which is
+  what lets a control in a scrolling container turn the container. The layer is still offered it after
+  the walk.
 - **Every control answers `Measure(const Room &) const` instead of being handed a rectangle**, and
   draws inside the one it was given. A button is as wide as its label, a field is as wide as the room
   it is in, a ring is as big as it says it is.
