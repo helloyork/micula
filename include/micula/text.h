@@ -57,6 +57,13 @@ struct Label : Widget {
 
     const wchar_t *AccessibleName() const override { return text.empty() ? nullptr : text.c_str(); }
     int AccessibleType() const override { return UIA_TextControlTypeId; }
+
+    // **Words are not something the pointer can act on.** A line of text is a widget because the
+    // arrangement and the screen reader both have to reach it, and the pointer is the one thing that
+    // does not: a click on a label is a click on the page, so it is the page that takes the capture and
+    // the page that the focus rule hears about. What is behind it is not covered up either -- see
+    // Widget::Covers -- so a label over something is not in that thing's way.
+    bool Covers(float, float) const override { return false; }
 };
 
 // A section heading: the line a group of cards is under.
@@ -86,6 +93,10 @@ struct Heading : Widget {
         p.Text(text, { rect.left, rect.top + band, rect.right, rect.top + band + line },
                p.font->subtitle, p.pal->textPrimary);
     }
+
+    // A heading is its own margin and a line of words: the pointer goes past it the same way it goes
+    // past a label. See Label::Covers.
+    bool Covers(float, float) const override { return false; }
 
     const wchar_t *AccessibleName() const override { return text.empty() ? nullptr : text.c_str(); }
     int AccessibleType() const override { return UIA_TextControlTypeId; }

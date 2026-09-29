@@ -649,9 +649,9 @@ struct Layer : Widget {
     }
 
     // Where this layer goes is `Widget::Cover`, which the tree asks of every child that answered
-    // `AsLayer` here: the default is the whole of the widget it was added to, and a layer that wants
-    // a rectangle of its own -- a drop-down's list under the field that opened it -- overrides it.
-    // Nothing in between: a layer takes no place in its host's layout, so nothing else arranges one.
+    // `AsLayer` here: the default is the whole of the widget it was added to, and a layer that is a
+    // box of its own rather than a cover -- a tip -- overrides it. Nothing in between: a layer takes
+    // no place in its host's layout, so nothing else arranges one.
 
     // What Tab walks while this is open, in order. Empty leaves the page's own order alone, which
     // is right for a layer that is only a picture.
@@ -998,6 +998,10 @@ struct Window {
     // closure running to protect.
     std::vector<std::unique_ptr<Widget>> retired;
     int dispatchDepth = 0;
+    // True while the window is taking its tree down, which is the one time a removal must not happen:
+    // a control that owns a layer outside its own subtree would be unlinking a sibling from a vector
+    // that is being destroyed. See ~Window and Widget::Remove.
+    bool tearingDown = false;
 
     // One window message, and any nested ones -- a modal dialog, a drop-down running
     // its own loop -- that happen inside it. Only the outermost frees, because the
@@ -1893,6 +1897,12 @@ inline void Widget::Invalidate() {
 }
 
 inline void Widget::Remove(Widget *child) {
+    // A tree on its way down takes every node with it, and this is the one moment a removal is not a
+    // removal: the parent's vector of children is what is running this, and erasing from it is a write
+    // into memory it no longer owns. See Window::tearingDown.
+    if (Window *w = window()) {
+        if (w->tearingDown) return;
+    }
     for (size_t i = 0; i < children.size(); i++) {
         if (children[i].get() != child) continue;
         // Deferred while a message is being dispatched, and that is the whole of it: a control is
@@ -2297,6 +2307,12 @@ inline Window::~Window() {
     // A window that dies while it is still in an app takes itself out of it: the app holds bare
     // pointers, and this may be the last thing that happens to either of them.
     if (app) app->Remove(*this);
+    // **The tree comes down now, and it has to be allowed to.** A control may own a layer that is not
+    // in its own subtree -- a drop-down's list is added where it covers the page -- and unlinking that
+    // from its parent's vector of children while that vector is being destroyed is not a removal, it
+    // is a write into memory the vector no longer owns. Everything under `content` dies either way, so
+    // the removal is dropped rather than performed. See Widget::Remove.
+    tearingDown = true;
 }
 
 // What used to be the first and the last thing the one window's loop did, now per window because
@@ -3155,7 +3171,21 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             SetCapture(h);
             self->capture = w;
             w->pressed = true;
+            // **A click either lands the focus or puts it away.** A control that can be operated from
+            // the keyboard takes it; anything else on the page -- the page itself, a card, a line of
+            // text -- is the blank part of the page, and a field that kept the focus while somebody
+            // clicked there would eat the next keystroke. This is what commits a field whose text was
+            // edited and left. In the flat list the page was not a widget, so "not focusable" and
+            // "nothing" were one answer and one line of code served both; every box on a page is a
+            // widget now, and the hit test has something to say about all of them.
+            //
+            // **A layer is the exception**, and it is why this is not simply the `else` branch: it
+            // covers the page, so a click inside one -- a question's dim, the row of a list a drop-down
+            // opened -- belongs to the layer, and what is on a layer has its own focus. A click between
+            // its rows must not take the ring off whatever the page put there.
+            Layer *const top = self->TopLayer();
             if (w->Focusable()) self->SetFocusTo(w);
+            else if (!top || !top->Holds(w)) self->SetFocusTo(nullptr);
             // From the message rather than from GetCursorPos, and the difference is not
             // theoretical: the pointer can have moved between the click being queued and
             // this running, and a press position that disagrees with the hit test by a
@@ -3163,7 +3193,11 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // widget's own space, which is the space its `rect` is in.
             const D2D1_POINT_2F at = self->LocalPoint(w, mx, my);
             w->OnPress(at.x, at.y);
-        } else {
+        } else if (!self->LeavingLayer()) {
+            // Nothing at all, and no layer on its way out to have swallowed the click -- and a layer
+            // that is leaving *is* what swallows it: the hit test answers with nothing while one is
+            // going, which is what stops the click that dismissed a flyout from also landing on the
+            // page it was over. That click is the layer's; this one is the blank page's.
             self->SetFocusTo(nullptr);
         }
         self->Invalidate();

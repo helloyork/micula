@@ -20,6 +20,10 @@
 //
 // `--dump` prints the rectangles all of that came out as, without opening a window. It is how a
 // layout fault is found and checked, and it is what a screenshot is not.
+//
+// The window draws the layout overlay when the run asks for it -- `--keys`, or `--layout` -- and not
+// otherwise: a window with a box around every widget in it is a window to watch the arithmetic in, and
+// an animation is watched instead. See the guard in `wmain`.
 
 #include <micula/micula.h>
 
@@ -43,7 +47,11 @@ struct Page {
     bool  notify = false;
     int   quality = 1;                  // the middle one of the three
     float volume = 0.6f;
+    int   language = 1;                  // the middle one, from the drop-down
     std::wstring device = L"Pixel 8";
+    // The drop-down, kept because `--dump` opens it: a flyout is anchored to the control it hangs off,
+    // so opening one needs a rectangle, and a rectangle needs an arrangement.
+    DropDown *languageBox = nullptr;
 
     // --- the tree -------------------------------------------------------------------
     // The root the window gave the page -- the client area below the caption -- kept because that is
@@ -81,6 +89,10 @@ struct Page {
         field->text = device;
         field->placeholder = L"Pixel";
         field->onChange = [this](const std::wstring &s) { device = s; };
+
+        auto *lang = page->Add(new Card(L"语言", L"只影响这一页显示的措辞，不影响输出文件。"));
+        languageBox = lang->Set(new DropDown({ L"简体中文", L"English", L"日本語" }, language,
+                                              [this](int i) { language = i; }));
 
         page->Add(new Heading(L"高级"));
 
@@ -242,11 +254,14 @@ void Dump(Fonts &fonts) {
     Page page;
     gallery.page = &page;
     ScrollView *view = gallery.Build(kWinW, kWinH);
-    // And the question the 关闭 button would ask, open, because that is the state worth printing. The
-    // layer is added to the page and covers it, and every rectangle below it has to come out exactly
-    // as it did in the run without one -- so a layer that took a place in the column shows up as the
-    // whole page having moved down by the height of it.
+    ArrangeSubtree(gallery.content.get(), fonts);
+    // And the question the 关闭 button would ask, and the list the language card would open -- both of
+    // them layers, and both of them added to the page. Open *after* the first arrangement, because a
+    // layer is anchored to a control and a control's rectangle is the arrangement's answer. Every
+    // rectangle on the page below them has to come out exactly as it did without them: that is what a
+    // layer that took a place in the column would show up as.
     page.root->Add(page.AskClose());
+    page.languageBox->SetOpen(true);
     ArrangeSubtree(gallery.content.get(), fonts);
     std::wprintf(L"scroll   scroll=%.1f extent=%.1f most=%.1f\n",
                  view->scroll, view->extent, view->ScrollMax());
@@ -371,13 +386,24 @@ void Scroll(Fonts &fonts, float dip) {
 }  // namespace
 
 int wmain(int argc, wchar_t **argv) {
-    bool dump = false, hit = false;
+    bool dump = false, hit = false, overlay = false;
     float scroll = 0.0f;
     for (int i = 1; i < argc; i++) {
         if (std::wcscmp(argv[i], L"--dump") == 0) dump = true;
         if (std::wcscmp(argv[i], L"--hit") == 0) hit = true;
+        if (std::wcscmp(argv[i], L"--keys") == 0) overlay = true;
+        if (std::wcscmp(argv[i], L"--layout") == 0) overlay = true;
         if (std::wcscmp(argv[i], L"--scroll") == 0 && i + 1 < argc) scroll = (float)_wtof(argv[++i]);
     }
+    // The layout overlay: off unless this run asked for it. It exists at all only in a build that has
+    // it (`MICULA_DEBUG_LAYOUT`), and a box around every widget is what watching an animation has to
+    // look past -- so the run that wants the arithmetic in front of it says so, and every other run
+    // gets the window.
+#if MICULA_DEBUG_LAYOUT
+    debug::layout = overlay;
+#else
+    (void)overlay;
+#endif
     if (dump || hit || scroll != 0.0f) {
         // Wide rather than in the console's code page: the labels are Chinese, and a stream left
         // alone narrows every one of them through the CRT's default encoding on the way out.

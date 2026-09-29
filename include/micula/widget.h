@@ -192,11 +192,17 @@ struct Widget {
     // own space. A dialog is added to the page and says nothing here, because covering the page is
     // covering the widget a page is.
     //
-    // A layer that wants a rectangle of its own overrides this, and one has to be able to: a
-    // drop-down's list covers nothing at all -- it hangs under the field that opened it, as wide as
-    // the field, as tall as its list came out and the room allows -- and it would be in the wrong
-    // place wherever it was added. The room comes along because sizing itself is measuring, and
-    // measuring needs the fonts.
+    // A layer that wants a rectangle of its own overrides this, because not every layer is a cover:
+    // a tip beside the pointer is a box the size of its own words, and it would be as wrong at the
+    // host's size as it would be in the wrong place anywhere else. A drop-down's flyout is *not* one
+    // of these -- it covers the page, and has to: it takes the wheel so the page behind it does not
+    // scroll, and a click outside the list closes it, which means the click has to land on the layer.
+    // The list itself, under the field that opened it, is a child of the flyout, and a child's
+    // rectangle is its host layout's business.
+    //
+    // The room comes along because sizing itself is measuring, and measuring needs the fonts; `spec`
+    // is the host's own, so a layer that wants to know what a control is tall has the numbers the
+    // host is arranged with.
     //
     // It is on the node rather than on `Layer` because the walk is what asks it (see
     // ArrangeSubtree), and the walk is here, where `Layer` is not yet a complete type. A widget that

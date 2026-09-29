@@ -70,8 +70,27 @@ struct ScrollView : View {
 
     // The viewport takes the room it is given rather than asking for the height of what is in it,
     // which is the difference between a viewport and a page.
-    micula::Want Measure(const Room &) const override {
-        return micula::Want(Axis::Fill(), Axis::Fill());
+    //
+    // `shrink` is the other answer, and it is what a panel hanging off a control wants: **as big as
+    // what is in it, and no bigger than the room it has.** A drop-down's list is four things, not a
+    // page, and a panel that took the whole window for four rows would be a panel three quarters full
+    // of nothing. The clamp needs the room, which a measurement does not always have: it arrives as
+    // `Room::height`, which is zero while the parent does not know its own height yet -- and zero is
+    // answered with the content's own height, which is the honest answer at that moment.
+    //
+    // Across, it is the wider of the two: a list of long words is a wider panel than the control it
+    // hangs off, and the flyout hands it the control's width to start from.
+    //
+    // The bar needs nothing said about it: a list that fits has no overflow, and `ScrollBar` puts
+    // itself away.
+    bool shrink = false;
+    micula::Want Measure(const Room &room) const override {
+        if (!shrink || !content) return micula::Want(Axis::Fill(), Axis::Fill());
+        const micula::Want want = content->Measure(room);
+        const float w = (std::max)(want.w.how == Sizing::Fill ? 0.0f : want.w.size, room.width);
+        const float h = want.h.how == Sizing::Fill ? room.height : want.h.size;
+        return micula::Want(Axis::Content(w),
+                            Axis::Content(room.height > 0.0f ? (std::min)(h, room.height) : h));
     }
 
     // How much of the column is out of sight. Zero when everything fits, which is the state a short

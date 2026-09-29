@@ -90,9 +90,11 @@ library can be: a minor version may break.
   its children now, which leaves one question for it to answer: where it goes. That is `Widget::Cover`,
   asked by the tree of every child that answered `AsLayer`, and the default answer is the whole of the
   widget it was added to -- which is what a dialog wants, since adding it to the page covers the page.
-  **A layer that is not a cover overrides it**, and one has to be able to: a drop-down's list covers
-  nothing at all -- it hangs under the field that opened it, as wide as the field, as tall as its list
-  came out -- and it would be in the wrong place wherever it was added.
+  **A layer that is not a cover overrides it**, because not every layer is one: a tip beside the pointer
+  is a box the size of its own words, and it would be as wrong at the host's size as in the wrong
+  place. A flyout is not one of those -- it covers the page and has to, since it takes the wheel and a
+  click outside the list closes it, which means the click has to land on the layer -- so its list,
+  under the field that opened it, is a child of the flyout.
 - A layout never arranges a layer. The tree hands it a rectangle and the host's layout leaves it alone,
   in `Measure` as well as in `Arrange`: a column that measured one would have counted the height of a
   page, and every rectangle below it on the page would have moved down by that much -- on a page where
@@ -103,6 +105,47 @@ library can be: a minor version may break.
   panel and a hit-tested button from being able to disagree. `--dump` prints the three of them beside
   the buttons, because they are the only geometry on the page with no widget behind them -- and `--hit`
   asks one point twice, once with a question open, to show the click landing on the dialog instead.
+- **A flyout, and the drop-down at last** (`flyout.h`, `drop_down.h`). A flyout is the layer a panel
+  that hangs off a control is put in. It covers the page, and that is what keeps the wheel and the
+  clicks with it rather than with the page behind -- the layer is a sibling of the page laid over it, so
+  the pointer under it is the flyout's and the wheel offered to its subtree is never offered to the
+  page's -- and it light-dismisses, which needs the covering: the click that misses the panel has to
+  land on the layer for the layer to hear about it. Its one child is placed under the anchor, or over it
+  when there is no room, or lined up with it.
+- The drop-down's list is a `ScrollView`, and it is a `ScrollView` that is **only as big as its list**
+  (`shrink`): a list longer than the room scrolls under the platform's own bar, and a list that fits is
+  a panel the height of its rows. The rows are one widget that draws all of them -- forty countries is
+  forty rows and not forty widgets -- and the panel comes to rest covering the control with the chosen
+  row on it, which is what Windows 11's combo box does and what makes a choice read as a swap rather
+  than a menu. Its own popup rectangle and its own bar are the tree's now: the panel is where the flyout
+  puts it and the bar is the scroll view's.
+- **The accent mark is the flyout's, and not the list's** -- see `Flyout::marker` -- and that is the
+  whole of what a choice looks like. A list with room to spare moves the *panel* a row to bring the
+  choice to the control; a mark inside the panel would move with it, and a choice would be a thing that
+  slid past. Placed at the panel's own line instead, the mark is already where the panel is going and
+  the options travel under it. Where the room has pinned the panel the rows cannot move at all, and the
+  mark is the only thing left that can show the change: then it travels down them, on a follower that
+  is the glide, so the change is seen rather than snapped.
+- A notch of the wheel steps the *choice* rather than scrolling the view, because the gesture is a walk
+  down a list rather than a movement of one: a wheel that moved the list 66 DIPs, as a page's does,
+  would leave the chosen row somewhere other than under the control it was chosen from. Shift asks for
+  the view instead. **It steps the choice only while the control has the focus**, which is WinUI 3's own
+  rule -- `ComboBox::OnPointerWheelChanged` asks `HasFocus` before it touches the selection, and
+  swallows the notch it used -- and the reason for it is the page behind: a wheel that changed the value
+  of whatever the pointer crossed would change a setting on the way down the page, under a pointer that
+  was aimed at nothing. The click that focuses the control is the gesture that says *this* one is being
+  worked on, and a drop-down nobody has clicked is transparent to the wheel, so the page scrolls as it
+  did before. The two mark shapes that answer a gesture with nowhere to go are back with it: the shake
+  at the end of the list, and the give-way of a letter that found nothing.
+- **Words are not something the pointer acts on.** `Label` and `Heading` answer `Covers() == false`, so
+  a click on a line of text is a click on the page under it -- which is what keeps a click in the blank
+  space beside a field taking the focus off it. `Card` is not one of these: it covers its own box and
+  keeps taking the pointer, because the controls in it are its children, and a container that refused
+  the pointer refuses it to everything inside it.
+- `Window::tearingDown`, because a control may own a layer outside its own subtree. A page that drops a
+  drop-down while its list is open has the list unlinked from its parent -- but a *tree* coming down is
+  destroying that parent's vector of children as it goes, and erasing from it is a write into memory it
+  no longer owns. The removal is dropped instead, since everything under the root dies either way.
 
 ### Changed
 
