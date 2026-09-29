@@ -42,6 +42,15 @@ inline bool SameRect(const D2D1_RECT_F &a, const D2D1_RECT_F &b) {
     return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
 }
 
+// The four geometry helpers everything reaches for. They live here rather than beside the painter
+// because a widget is the thing that has a rectangle.
+inline D2D1_RECT_F Rect(float x, float y, float w, float h) { return { x, y, x + w, y + h }; }
+inline float Width(const D2D1_RECT_F &r)  { return r.right - r.left; }
+inline float Height(const D2D1_RECT_F &r) { return r.bottom - r.top; }
+inline bool Inside(const D2D1_RECT_F &r, float x, float y) {
+    return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+}
+
 struct Widget {
     Widget() = default;
     virtual ~Widget() {}
@@ -94,10 +103,11 @@ struct Widget {
 
     // ---- what it wants -----------------------------------------------------------------------
     // A container answers with what its layout measured; a control answers from its own content; one
-    // with no opinion at all takes the room it is given.
-    virtual Want Measure(const Room &room) const {
+    // with no opinion at all takes the room it is given. `micula::Want` is spelled out because this
+    // class has a member called `Want` as well -- the value a pointer state is crossing over to.
+    virtual micula::Want Measure(const Room &room) const {
         if (layout) return layout->Measure(room);
-        return Want(Sizing::Fill, Sizing::Fill);
+        return micula::Want(Sizing::Fill, Sizing::Fill);
     }
 
     // ---- what it draws and what it answers ---------------------------------------------------
@@ -131,10 +141,46 @@ struct Widget {
     // Something happened that should put away anything transient this widget is showing: a press
     // somewhere else, the window being deactivated.
     virtual void Dismiss() {}
-    virtual bool OnKey(UINT /*key*/, bool /*shift*/, bool /*ctrl*/) { return false; }
+    virtual bool OnKey(WPARAM /*vk*/) { return false; }
     virtual bool OnChar(wchar_t /*c*/) { return false; }
     virtual void OnFocus() {}
     virtual void OnBlur() {}
+    // The mouse went up on a widget that had capture, wherever the pointer ended up. OnClick is not
+    // the same event and cannot stand in for it: it fires only when the release lands back inside
+    // the widget, which is exactly what a drag does not do.
+    virtual void OnRelease() {}
+    // Where the IME should put its composition window, in this widget's own space. Only meaningful
+    // for one that takes text; ignored otherwise.
+    virtual bool CaretPoint(D2D1_POINT_2F * /*out*/) const { return false; }
+    virtual bool HandCursor() const { return false; }
+    virtual bool TextCursor() const { return false; }
+    // This widget draws something that follows the pointer *inside* itself: an open flyout's hovered
+    // row, a segmented control's hovered cell, a slider being dragged. The window repaints on hover
+    // *changes*, and moving from one row of a list to the next is not one -- the same widget is
+    // hovered throughout -- so without this the highlight stays where it was and only catches up
+    // when something else happens to repaint.
+    virtual bool TracksPointer() const { return false; }
+    // Whether the press shadow should be showing. The window clears `pressed` the moment the pointer
+    // leaves the rectangle, which is what makes a button cancellable by dragging off it; a control
+    // whose gesture outlives its own rectangle -- a slider dragged out of its track -- says so here.
+    virtual bool PressedVisual() const { return pressed; }
+    // Whether the pointer is on this widget, in the space its `rect` is in: what the window's hit
+    // test asks. Virtual because a control whose box is not simply `rect` -- one that derives it
+    // from its own state -- answers with that box.
+    virtual bool Covers(float x, float y) const { return Inside(rect, x, y); }
+    // The animated shadows of the three flags: 0 is off, 1 is on, anything between is a brush
+    // crossing over. Only the background follows them -- a WinUI control under the pointer moves one
+    // property, `<ContentPresenter.BackgroundTransition>`, and leaves its border, its text and its
+    // focus ring to change between two frames.
+    float Want(bool on) const { return on && enabled ? 1.0f : 0.0f; }
+    // The pointer, in this widget's own space: the space its rectangle is in, which is the one its
+    // input callbacks are handed points in. It is the *physical* pointer, so a harness that posts
+    // mouse messages cannot drive a control that reads this -- take a drag's points from OnPress and
+    // OnDrag, and read this only for what genuinely means "where is the pointer now".
+    D2D1_POINT_2F Cursor() const;
+    // How much room this widget really has: the page's box in its own space, and a container's clip
+    // once containers clip. For a control deciding whether something it would show fits.
+    D2D1_RECT_F VisibleArea() const;
     // The layer this widget is, when it is one. Asked by the window, which routes Esc, Enter and the
     // Tab ring through the top layer before the page sees them.
     virtual Layer *AsLayer() { return nullptr; }
@@ -143,15 +189,20 @@ struct Widget {
     // Whether this node is moving, for the window's frame loop: it is what keeps frames coming while
     // a layout glides and stops them when everything has arrived.
     virtual bool Animating() const {
+        if (hoverT != Want(hover) || pressT != Want(PressedVisual()) || focusT != Want(focus))
+            return true;
         if (placed && !SameRect(drawn, rect)) return true;
         for (const auto &c : children) {
             if (c->visible && c->Animating()) return true;
         }
         return false;
     }
-    // One frame for the subtree: the children first, then the layout that owns them, which is what
-    // glides whatever it arranged somewhere new.
-    void Tick(float dt) {
+    // One frame for the subtree: this widget's own pointer states, then its children, then the layout
+    // that owns them -- which is what glides whatever it arranged somewhere new.
+    virtual void Tick(float dt) {
+        motion::Ramp(&hoverT, Want(hover), dt, motion::kFaster);
+        motion::Ramp(&pressT, Want(PressedVisual()), dt, motion::kFaster);
+        motion::Ramp(&focusT, Want(focus), dt, motion::kFaster);
         for (auto &c : children) {
             if (c->visible) c->Tick(dt);
         }
@@ -162,7 +213,7 @@ struct Widget {
     // Found by walking up. The root of a tree holds the window itself, which is how a subtree that
     // was built before it was added still answers: the walk reaches the root and the root knows. A
     // widget in no window at all answers null, which is the state a page builds in.
-    virtual Window *window() { return parent ? parent->window() : win; }
+    virtual Window *window() const { return parent ? parent->window() : win; }
     // The window this node's root belongs to. Set on the root alone -- see Window::EnsureContent.
     Window *win = nullptr;
     // Ask for another arrangement, and for a repaint.

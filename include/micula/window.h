@@ -542,13 +542,6 @@ struct Painter {
     }
 };
 
-inline D2D1_RECT_F Rect(float x, float y, float w, float h) { return { x, y, x + w, y + h }; }
-inline float Width(const D2D1_RECT_F &r)  { return r.right - r.left; }
-inline float Height(const D2D1_RECT_F &r) { return r.bottom - r.top; }
-inline bool  Inside(const D2D1_RECT_F &r, float x, float y) {
-    return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-}
-
 // ---------------------------------------------------------------- Layer
 
 struct Window;
@@ -920,6 +913,9 @@ struct Window {
     // has outlived its widget harmless. See the UIA section near the end of this header.
     IRawElementProviderSimple *UiaRoot();
     Widget *UiaFind(int uid) const;
+    // The same question asked from a widget down, because a uid belongs to the widget Add gave it to
+    // and an element resolves it against the whole tree.
+    Widget *FindUid(Widget *w, int uid) const;
     // Told to a client that is listening that the keyboard focus moved. Called from SetFocusTo.
     void UiaFocusChanged();
     // The provider reads the widget list, the focus, the hovered control and the page's own
@@ -1037,28 +1033,6 @@ struct Window {
         Dispatch &operator=(const Dispatch &) = delete;
     };
 
-    void ClearWidgets() {
-        // A persistent control keeps its place, and the capture or focus it holds with it.
-        // See Widget::persistent.
-        if (capture && !capture->persistent) capture = nullptr;
-        if (focused && !focused->persistent) focused = nullptr;
-        std::vector<std::unique_ptr<Widget>> kept;
-        for (auto &w : widgets) {
-            // A control that is leaving with a layer keeps its place until that layer is gone,
-            // whether or not it was marked persistent: the page was told the moment the layer
-            // started leaving (see Layer::Close) and the call that told it is the one that lays the
-            // page out -- so without this, every dismissal would pull the panel and the buttons on
-            // it out on the same frame and the fade would never be seen. One that has already
-            // arrived at nothing is not kept: that is the one this layout is meant to drop.
-            if (w->leavingWith && !w->leavingWith->HasLeft()) {
-                kept.emplace_back(std::move(w));
-                continue;
-            }
-            if (w->persistent)          kept.emplace_back(std::move(w));
-            else if (dispatchDepth > 0) retired.emplace_back(std::move(w));
-        }
-        widgets = std::move(kept);
-    }
     // --- internals --------------------------------------------------------------
     void ApplyThemeToFrame();
     void ReloadTheme();
@@ -1067,8 +1041,8 @@ struct Window {
     // what is being dismissed is not a place to be pressed again, the controls on it are on their
     // way to being gone, and the page under it was not clickable a moment ago either.
     Layer *LeavingLayer();
-    // Drops the layers that have finished leaving, the way ClearWidgets drops the rest. Called from
-    // Frame, after the tick, so that the list is not rebuilt while it is being walked.
+    // Drops the layers that have finished leaving, subtree and all. Called from Frame, after the
+    // tick, so that the tree is not taken apart while it is being walked.
     void DropGoneLayers();
     bool CreateSizedResources();
     void ReleaseSizedResources();
@@ -1160,7 +1134,34 @@ struct Window {
     ID2D1Bitmap1 *Image(const std::wstring &path, UINT maxW);
     void ReleaseImages();
     LRESULT CaptionHitTest(POINT screen) const;
+    // The control under a point, in client DIPs. Walks the tree, and the reverse of the order it is
+    // painted in, so whatever is drawn on top is whatever the click reaches.
     Widget *HitTest(float x, float y);
+    Widget *HitTestIn(Widget *w, float x, float y);
+    // Where a widget's own space begins in the client area: the accumulated origins of its
+    // ancestors, which is the translation the paint walk reaches it with. A control that reads the
+    // pointer or asks how much room it has wants that same answer, and this is the one place it is
+    // worked out.
+    D2D1_POINT_2F OriginOf(const Widget *w) const;
+    // The layer calls the keyboard goes through first: the last visible one in the tree, which is
+    // the same one the hit test reaches.
+    Layer *TopLayer();
+    Layer *TopLayerIn(Widget *w);
+    void CollectTab(Widget *w, std::vector<Widget *> &out);
+    void CollectLayers(Widget *w, std::vector<Layer *> &out);
+    void DropGoneIn(Widget *w);
+    bool SetHover(Widget *w, Widget *over);
+    void DismissIn(Widget *w);
+    // The pointer moved: the widget under it hears about it, and so does any widget whose watched
+    // region outside itself contains it (see Widget::ExternalRegion). Returns true when something
+    // under the pointer wants a repaint per move.
+    bool SendMove(Widget *w, float x, float y, Widget *over);
+    // The same point, in the space of a widget's own rectangle: what every input callback is handed.
+    D2D1_POINT_2F LocalPoint(const Widget *w, float x, float y) const {
+        const D2D1_POINT_2F o = OriginOf(w);
+        return D2D1::Point2F(x - o.x, y - o.y);
+    }
+    Layer *LeavingIn(Widget *w);
     // Everything but `except` puts away what it is showing -- an open list, a peeked pane. From
     // a copy of the list, because a dismissal is allowed to lay the page out again and the list
     // itself may not survive that. See `retired`.
@@ -1170,7 +1171,6 @@ struct Window {
     void DismissOthers(Widget *except, float x, float y);
     // The last raised control that is a layer, which is where Esc, Enter and the Tab ring go
     // first. See Widget::AsLayer.
-    Layer *TopLayer();
     void MoveFocus(int delta);
     void SetFocusTo(Widget *w);
     // Ends a gesture the pointer is no longer allowed to finish, and hands the widget
@@ -1394,9 +1394,14 @@ inline void Window::Paint() {
     // Transparent when the material is there, opaque when it is not. This one call is
     // the difference between a Mica window and a grey one.
     dc->Clear(micaActive ? D2D1::ColorF(0, 0, 0, 0) : pal.windowBg);
-    PaintPage(p);
-    // Scrolling widgets are clipped to the page's own area, so a card that has been
-    // scrolled up stops at the header instead of drawing across it.
+    // The page is the tree now: one walk from the root, which is the client area below the caption.
+    //
+    // The flat-list passes that used to be here are below, compiled out, until the three shapes they
+    // carried have been re-checked against a tree -- furniture before the page is a child order, the
+    // page-wide clip and the arrival opacity are a container's business -- and then they go with the
+    // rest of the flat-list code.
+    PaintTree(p, content.get(), 0.0f, 0.0f);
+#if 0
     const D2D1_RECT_F clip = ClipRect();
     const bool clipping = clip.right > clip.left && clip.bottom > clip.top;
     // The page's arrival and its scroll glide, applied to the scrolling half of the
@@ -1469,9 +1474,16 @@ inline void Window::Paint() {
         dc->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
                                             D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                             D2D1::IdentityMatrix(), arrival), nullptr);
-    pass(1);
-    pass(2);
-    if (fading) dc->PopLayer();
+#endif
+#if MICULA_DEBUG_LAYOUT
+    if (debug::layout && content) {
+        // Blue: the page's own clip, which is what a container's overflow will narrow when there is
+        // one. Drawn from the client area, before the walk that draws the rest.
+        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
+        p.StrokeRound({ 0.0f, kCaptionH, ClientW(), ClientH() }, 0.0f, Rgb(0x0A84FF, 0.85f));
+        PaintGuides(p, content.get(), 0.0f, 0.0f);
+    }
+#endif
     // Last, so a page that draws to the top of its own area cannot run under the
     // caption -- which is now client area like any other, and has nothing but paint
     // order protecting it.
@@ -1695,107 +1707,126 @@ inline LRESULT Window::CaptionHitTest(POINT screen) const {
     return HTCLIENT;
 }
 
-inline Layer *Window::LeavingLayer() {
-    for (auto &w : widgets) {
-        Layer *l = w->AsLayer();
-        if (l && l->Leaving()) return l;
+inline Layer *Window::LeavingLayer() { return LeavingIn(content.get()); }
+
+inline Layer *Window::LeavingIn(Widget *w) {
+    if (!w) return nullptr;
+    if (Layer *l = w->AsLayer()) {
+        if (l->Leaving()) return l;
     }
+    for (const auto &child : w->children)
+        if (Layer *l = LeavingIn(child.get())) return l;
     return nullptr;
 }
 
 inline Widget *Window::HitTest(float x, float y) {
     // One fade's worth of "no": while a layer is on its way out, nothing answers the pointer. What
     // is being dismissed is not a place to be pressed again, the controls on it are on their way to
-    // being gone, and the page under it was not clickable a moment ago either -- a click in the
-    // middle of a dismissal was aimed at what is leaving.
+    // being gone, and the page under it was not clickable a moment ago either.
     if (LeavingLayer()) return nullptr;
-    // A scrolled-away control is not there. Without this the half of a card that has
-    // slid under the header still answers the mouse, which is worse than invisible:
-    // the click lands on something the person cannot see.
-    const D2D1_RECT_F clip = ClipRect();
-    const bool clipping = clip.right > clip.left && clip.bottom > clip.top;
-    // The same offset the page is drawn with, taken back off. A glide or an arriving
-    // page draws the cards a few DIPs from where the layout put them, and the control
-    // the pointer is over has to be the one it *looks* like it is over.
-    float dy = 0.0f, op = 1.0f;
-    ContentTransform(&dy, &op);
-    auto reachable = [&](const Widget *w) {
-        // The clip is tested against the real pointer, not the shifted one: it is a
-        // window onto the page and does not move with the page.
-        return w->visible && w->enabled && (!clipping || !w->scrolls || Inside(clip, x, y));
-    };
-    auto over = [&](const Widget *w) {
-        return w->Covers(x, w->scrolls ? y - dy : y);
-    };
-    // Raised first, then the rest back-to-front: the reverse of the paint order, so
-    // whatever is drawn on top is whatever the click reaches.
-    for (auto it = widgets.rbegin(); it != widgets.rend(); ++it)
-        if (reachable(it->get()) && (*it)->z != 0 && over(it->get()))
-            return it->get();
-    for (auto it = widgets.rbegin(); it != widgets.rend(); ++it)
-        if (reachable(it->get()) && (*it)->z == 0 && over(it->get()))
-            return it->get();
+    return content ? HitTestIn(content.get(), x, y) : nullptr;
+}
+
+// The last child that covers the point, depth first: the reverse of the order it is painted in, so
+// whatever is drawn on top is whatever the click reaches. A modul layer covers the page by
+// construction, so a click that misses its contents finds the layer itself and stops there -- there
+// is no "under it" to reach, which is the whole of what modal means here.
+inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
+    for (auto it = w->children.rbegin(); it != w->children.rend(); ++it) {
+        Widget *child = it->get();
+        if (!child->visible || !child->enabled) continue;
+        // The point in the child's arranged space, and then in its own space. A widget on its way
+        // somewhere is reached where it *looks*: the same difference between where it was arranged
+        // and where it is drawn that painting puts on is taken off here.
+        const D2D1_RECT_F where = child->placed ? child->drawn : child->rect;
+        if (!child->Covers(x - (where.left - child->rect.left), y - (where.top - child->rect.top)))
+            continue;
+        if (Widget *deep = HitTestIn(child, x - where.left, y - where.top)) return deep;
+        return child;
+    }
     return nullptr;
 }
 
+// Where a widget's own space begins in the client area: the accumulated origins of the widgets
+// above it. The root's rectangle is in client coordinates -- that is what the arrange pass gives it
+// -- so the walk starts at the widget's parent.
+inline D2D1_POINT_2F Window::OriginOf(const Widget *w) const {
+    float x = 0.0f, y = 0.0f;
+    for (const Widget *at = w ? w->parent : nullptr; at; at = at->parent) {
+        const D2D1_RECT_F r = at->placed ? at->drawn : at->rect;
+        x += r.left;
+        y += r.top;
+    }
+    return D2D1::Point2F(x, y);
+}
+
 inline void Window::DismissOthers(Widget *except, float x, float y) {
-    std::vector<Widget *> shown;
-    shown.reserve(widgets.size());
-    for (auto &w : widgets) shown.push_back(w.get());
-    // Three things survive a click. What the click was over, obviously. What is *above* it -- a
-    // layer over a layer keeps its place while the lower one is being used. And **any layer whose
-    // own body holds the click**, wherever the click was aimed: a dialog sits below the button on
-    // it, so z alone would read a click on that button as a click outside the dialog, and close
-    // the dialog that was just used. Geometry settles it: a layer owns everything inside it.
-    for (Widget *w : shown) {
-        if (w == except) continue;
-        if (except && w->z > except->z) continue;
-        if (Layer *l = w->AsLayer()) {
-            if (Inside(l->Body(), x, y)) continue;
+    std::vector<Layer *> layers;
+    CollectLayers(content.get(), layers);
+    // Three things survive a click. What the click was over, and the widgets above it. What is
+    // *above* it -- a layer over a layer keeps its place while the lower one is being used, and
+    // "above" in a tree is "later in the order", which is where the walk found it. And any layer
+    // whose own body holds the click, wherever the click was aimed: a dialog sits below the button
+    // on it, so an order alone would read a click on that button as a click outside the dialog.
+    size_t stop = layers.size();
+    if (except) {
+        for (size_t i = 0; i < layers.size(); i++) {
+            if (!layers[i]->Holds(except)) continue;
+            stop = i;
+            break;
         }
-        w->Dismiss();
+    }
+    for (size_t i = 0; i < stop; i++) {
+        Layer *l = layers[i];
+        if (l->Holds(except)) continue;
+        const D2D1_POINT_2F o = OriginOf(l);
+        if (Inside(l->Body(), x - o.x, y - o.y)) continue;
+        l->Dismiss();
+    }
+}
+
+inline void Window::CollectLayers(Widget *w, std::vector<Layer *> &out) {
+    if (!w) return;
+    for (const auto &child : w->children) {
+        if (!child->visible) continue;
+        if (Layer *l = child->AsLayer()) out.push_back(l);
+        CollectLayers(child.get(), out);
     }
 }
 
 // The layer the window's keyboard goes to first: the last of the raised controls that is one,
 // which is the same one the pointer would reach -- the hit test walks the list this way round.
 inline Layer *Window::TopLayer() {
-    for (auto it = widgets.rbegin(); it != widgets.rend(); ++it) {
-        Widget *w = it->get();
-        if (w->visible) {
-            if (Layer *l = w->AsLayer()) return l;
-        }
-    }
-    return nullptr;
+    return content ? TopLayerIn(content.get()) : nullptr;
 }
 
-inline D2D1_RECT_F Layer::CoverPage() const {
-    if (!owner) return {};
-    return { 0.0f, kCaptionH, owner->ClientW(), owner->ClientH() };
+inline Layer *Window::TopLayerIn(Widget *w) {
+    for (auto it = w->children.rbegin(); it != w->children.rend(); ++it) {
+        Widget *child = it->get();
+        if (!child->visible) continue;
+        // Depth first, and the deepest wins: a dialog with a flyout open over it has the flyout on
+        // top, and the flyout's own contents are above the flyout.
+        if (Layer *l = TopLayerIn(child)) return l;
+        if (Layer *l = child->AsLayer()) return l;
+    }
+    return nullptr;
 }
 
 inline void Layer::Close() {
     if (leaving) return;
     leaving = true;
-    // Everything at or above this layer's `z` came out with it -- that is the convention the page was
-    // given when it added them: the layer first, and what sits on it after it, with a higher `z` --
-    // and each of them is marked with the layer it is leaving with. That mark is what keeps them in
-    // the list and out of reach for the length of the fade (see ClearWidgets and MoveFocus) and what
-    // tells the window what to take out at the end, which `z` alone could not: two layers can be
-    // leaving at once, and the one that set off first finishes first.
-    if (owner) {
-        for (auto &w : owner->widgets)
-            if (w->z >= z) w->leavingWith = this;
-        // The focus goes too, and before the page is told, so that whatever the page does about it
-        // wins and no caret is left in a control that is on its way out.
-        if (owner->focused && owner->focused->leavingWith == this) owner->SetFocusTo(nullptr);
+    // The focus goes before the page is told, so that whatever the page does about it wins and no
+    // caret is left in a control that is on its way out. Everything else the layer owns is its own
+    // subtree, which fades with it and is dropped with it -- what used to be marked with
+    // `leavingWith` and hunted for in a flat list.
+    if (Window *w = window()) {
+        if (w->focused && Holds(w->focused)) w->SetFocusTo(nullptr);
     }
     if (Animations()) {
         arrive.To(0.0f);
     } else {
-        // Nothing to watch: gone now. `visible` false rather than a fade of no frames, so that the
-        // layout the page is about to do drops it -- ClearWidgets keeps a layer while it is leaving
-        // *and* still has somewhere to go, and this one has arrived.
+        // Nothing to watch: gone now. `visible` false rather than a fade of no frames, so that
+        // nothing waits for a fade that is never going to run.
         arrive.Set(0.0f);
         visible = false;
     }
@@ -1803,26 +1834,33 @@ inline void Layer::Close() {
 }
 
 inline void Window::DropGoneLayers() {
-    for (size_t i = 0; i < widgets.size(); ) {
-        Layer *l = widgets[i]->AsLayer();
-        if (!l || !l->HasLeft()) { i++; continue; }
-        // Everything that came out with it goes out of the window's hands the same frame -- off,
-        // unmarked, and left for the page's next layout to drop, which is the page's own trade and
-        // not the window's to make. One layer at a time, so that a second one still fading in the
-        // same list is not taken with it.
-        for (auto &w : widgets)
-            if (w->leavingWith == l) { w->leavingWith = nullptr; w->visible = false; }
-        if (focused && focused->leavingWith == l) focused = nullptr;
-        if (capture && capture->leavingWith == l) capture = nullptr;
-        // Retired rather than deleted while a message is being dispatched, the same way ClearWidgets
-        // retires one: the page was told inside a callback of its own, and a page that kept a
-        // pointer to the layer has a live object to read until that message returns.
-        if (dispatchDepth > 0) retired.emplace_back(std::move(widgets[i]));
-        widgets.erase(widgets.begin() + i);
+    if (content) DropGoneIn(content.get());
+}
+
+inline void Window::DropGoneIn(Widget *w) {
+    for (size_t i = 0; i < w->children.size(); ) {
+        Widget *child = w->children[i].get();
+        Layer *l = child->AsLayer();
+        if (!l || !l->HasLeft()) {
+            DropGoneIn(child);
+            i++;
+            continue;
+        }
+        // A layer that has finished leaving takes its whole subtree with it: what came out with a
+        // layer is its children now, so there is nothing to mark and nothing to hunt for. One at a
+        // time, so that a second layer still fading is not taken with it.
+        if (focused && child->Holds(focused)) focused = nullptr;
+        if (capture && child->Holds(capture)) capture = nullptr;
+        // Retired rather than deleted while a message is being dispatched: the page was told inside
+        // a callback of its own, and a page that kept a pointer to the layer has a live object to
+        // read until that message returns. See Window::retired.
+        if (dispatchDepth > 0) retired.emplace_back(std::move(w->children[i]));
+        w->children.erase(w->children.begin() + (ptrdiff_t)i);
     }
 }
 
-inline bool Window::RefreshHover() {    POINT pt = {};
+inline bool Window::RefreshHover() {
+    POINT pt = {};
     if (!GetCursorPos(&pt)) return false;
     // Nothing changes state while a layer is on its way out. The pointer cannot reach anything (see
     // HitTest), so the answer is the same as last frame's -- and a highlight going out under the
@@ -1836,12 +1874,57 @@ inline bool Window::RefreshHover() {    POINT pt = {};
     ScreenToClient(hwnd, &pt);
     const float s = scale();
     Widget *over = capture ? capture : (mine ? HitTest(pt.x / s, pt.y / s) : nullptr);
+    return content ? SetHover(content.get(), over) : false;
+}
+
+// One widget is hovered and every other one is not. A walk rather than a loop over a list, and the
+// point of doing it from the tick is that the widget which is *not* under the pointer has to be told
+// so whether or not it ever heard about a move: a page can change shape under a pointer that has not
+// moved at all.
+inline bool Window::SetHover(Widget *w, Widget *over) {
     bool changed = false;
-    for (auto &w : widgets) {
-        const bool now = (w.get() == over);
-        if (w->hover != now) { w->hover = now; changed = true; }
+    for (const auto &child : w->children) {
+        const bool now = (child.get() == over);
+        if (child->hover != now) {
+            child->hover = now;
+            changed = true;
+        }
+        if (SetHover(child.get(), over)) changed = true;
     }
     return changed;
+}
+
+// The pointer moved, in client DIPs. The widget under the pointer hears about it, and so does any
+// widget whose watched region outside itself contains it -- a scroll bar showing itself when the
+// pointer crosses the page it scrolls is what that exists for. Nobody else hears about it: being
+// told about every move in the window is not the same offer, it is a coordinate space each control
+// would then have to correct by hand.
+inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
+    bool tracks = false;
+    for (const auto &child : w->children) {
+        Widget *c = child.get();
+        if (!c->visible || !c->enabled) continue;
+        const D2D1_RECT_F where = c->placed ? c->drawn : c->rect;
+        const float px = x - (where.left - c->rect.left);
+        const float py = y - (where.top - c->rect.top);
+        if (c == over || Inside(c->ExternalRegion(), px, py)) {
+            c->OnPointerMove(px, py);
+            if (c->TracksPointer()) tracks = true;
+        }
+        if (SendMove(c, x - where.left, y - where.top, over)) tracks = true;
+    }
+    return tracks;
+}
+
+// Everything puts away what it is showing -- an open list, a peeked pane. A walk rather than a
+// broadcast to a list, and the reason it is a broadcast at all is that a control cannot see a click
+// or a deactivation it did not get.
+inline void Window::DismissIn(Widget *w) {
+    for (const auto &child : w->children) {
+        child->Dismiss();
+        child->hover = false;
+        DismissIn(child.get());
+    }
 }
 
 // The gesture that was in progress cannot finish: the capture went to another window,
@@ -1896,24 +1979,24 @@ inline void Widget::Remove(Widget *child) {
 inline D2D1_POINT_2F Widget::Cursor() const {
     POINT pt = {};
     GetCursorPos(&pt);
-    if (!owner) return D2D1::Point2F((float)pt.x, (float)pt.y);
-    ScreenToClient(owner->hwnd, &pt);
-    float dy = 0.0f, op = 1.0f;
-    if (scrolls) owner->ContentTransform(&dy, &op);
-    const float s = owner->scale();
-    return D2D1::Point2F(pt.x / s, pt.y / s - dy);
+    Window *w = window();
+    if (!w) return D2D1::Point2F((float)pt.x, (float)pt.y);
+    ScreenToClient(w->hwnd, &pt);
+    const float s = w->scale();
+    // The physical pointer, in this widget's own space: the space its rectangle is in, which is the
+    // one its input callbacks are handed points in.
+    const D2D1_POINT_2F o = w->OriginOf(this);
+    return D2D1::Point2F(pt.x / s - o.x, pt.y / s - o.y);
 }
 
 inline D2D1_RECT_F Widget::VisibleArea() const {
-    if (!owner) return D2D1_RECT_F{ 0, 0, 0, 0 };
-    const D2D1_RECT_F clip = owner->ClipRect();
-    if (clip.right <= clip.left || clip.bottom <= clip.top) return clip;
-    // The page is drawn `dy` from where it was laid out, so the window's strip becomes a
-    // strip of the page by shifting it the other way -- the same offset the pointer is
-    // shifted by, in the other direction.
-    float dy = 0.0f, op = 1.0f;
-    if (scrolls) owner->ContentTransform(&dy, &op);
-    return D2D1_RECT_F{ clip.left, clip.top - dy, clip.right, clip.bottom - dy };
+    Window *w = window();
+    if (!w || !w->content) return D2D1_RECT_F{ 0, 0, 0, 0 };
+    // The page's box, in this widget's own space. A container that clips will narrow this to what it
+    // lets through; nothing clips yet, so the page is the whole answer.
+    const D2D1_POINT_2F o = w->OriginOf(this);
+    const D2D1_RECT_F page = w->content->rect;
+    return { page.left - o.x, page.top - o.y, page.right - o.x, page.bottom - o.y };
 }
 
 inline void Window::SetFocusTo(Widget *w) {
@@ -1936,9 +2019,7 @@ inline void Window::MoveFocus(int delta) {
     if (Layer *top = TopLayer()) {
         if (!top->Leaving()) tab = top->FocusRing();
     }
-    if (tab.empty())
-        for (auto &w : widgets)
-            if (w->visible && w->enabled && w->Focusable() && !w->leavingWith) tab.push_back(w.get());
+    if (tab.empty() && content) CollectTab(content.get(), tab);
     if (tab.empty()) return;
     int at = -1;
     for (size_t i = 0; i < tab.size(); i++) if (tab[i] == focused) at = (int)i;
@@ -1946,6 +2027,21 @@ inline void Window::MoveFocus(int delta) {
                   : (int)(((size_t)at + tab.size() + delta) % tab.size());
     showFocusRing = true;
     SetFocusTo(tab[at]);
+}
+
+// Tab order is document order, which is the order a screen reader reads and the order the controls
+// were added -- a page no longer has to keep anything in step. A layer that is on its way out is not
+// in it: its ring is on its way to being gone, and Tab in the middle of a dismissal belongs to the
+// page that is about to be the only thing there.
+inline void Window::CollectTab(Widget *w, std::vector<Widget *> &out) {
+    for (const auto &child : w->children) {
+        if (!child->visible || !child->enabled) continue;
+        if (Layer *l = child->AsLayer()) {
+            if (l->Leaving()) continue;
+        }
+        if (child->Focusable()) out.push_back(child.get());
+        CollectTab(child.get(), out);
+    }
 }
 
 // Put the IME's candidate and composition windows at the caret rather than at the
@@ -2033,7 +2129,11 @@ inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
     SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER);
 
     ApplyThemeToFrame();
-    Layout();
+    // A page has already built its tree by the time it gets here -- Add forwards to the root widget
+    // -- so there is nothing to lay out yet: the first arrangement happens on the way to the first
+    // paint.
+    EnsureContent();
+    layoutDirty = true;
     if (showCommand != SW_HIDE) {
         ShowWindow(hwnd, showCommand);
         UpdateWindow(hwnd);
@@ -2613,8 +2713,15 @@ struct UiaElement : IRawElementProviderSimple,
             // No parent: the HWND is the root's host, not its parent.
             return S_OK;
         }
-        if (dir == NavigateDirection_Parent) { *out = new UiaElement(win, 0); return S_OK; }
-        const int at = ChildIndexOf(widget);
+        if (dir == NavigateDirection_Parent) {
+            // The parent widget, and the window for one whose parent is the root widget -- which is
+            // not an element of its own, because the window already is one.
+            Widget *p = widget ? Target() : nullptr;
+            Widget *up = p ? p->parent : nullptr;
+            *out = new UiaElement(win, (up && up != win->content.get()) ? up->uid : 0);
+            return S_OK;
+        }
+        const int at = SiblingIndex(Target());
         if (at < 0) return S_OK;
         if (dir == NavigateDirection_NextSibling && at + 1 < count) *out = ChildAt(at + 1);
         else if (dir == NavigateDirection_PreviousSibling && at > 0) *out = ChildAt(at - 1);
@@ -2654,16 +2761,11 @@ struct UiaElement : IRawElementProviderSimple,
         }
         Widget *w = Target();
         if (!w) return S_OK;
-        // A control in the scrolling half of the page is painted at an offset, and its `rect` is
-        // where it lives in the page rather than where it is on the screen.
-        D2D1_RECT_F r = w->rect;
-        if (w->scrolls) {
-            float dy = 0.0f, op = 1.0f;
-            win->ContentTransform(&dy, &op);
-            r.top -= dy;
-            r.bottom -= dy;
-        }
-        *out = { origin.x + (double)r.left * s, origin.y + (double)r.top * s,
+        // Where the widget is *drawn*, in the client area: the accumulated origins of its ancestors
+        // plus its own drawn rectangle. A widget on its way somewhere is reported where it looks.
+        const D2D1_POINT_2F o = win->OriginOf(w);
+        const D2D1_RECT_F r = w->placed ? w->drawn : w->rect;
+        *out = { origin.x + (double)(o.x + r.left) * s, origin.y + (double)(o.y + r.top) * s,
                  (double)Width(r) * s, (double)Height(r) * s };
         return S_OK;
     }
@@ -2770,27 +2872,36 @@ private:
         std::wstring v;
         return w && w->AccessibleValue(v);
     }
-    // Visible widgets only, in paint order: what is not drawn is not there as far as a client is
-    // concerned.
-    int ChildCount() const {
+    // The widget whose children this element reports: the widget the uid names, and for the window
+    // itself the root widget -- whose box is the client area, and which is not an element of its own
+    // because the window already is one.
+    Widget *Host() const { return widget ? Target() : win->content.get(); }
+    // Where a widget sits among its parent's visible children, which is the order a client visits
+    // them in: what is not drawn is not there as far as a client is concerned.
+    static int SiblingIndex(const Widget *w) {
+        if (!w || !w->parent) return -1;
         int n = 0;
-        for (const auto &w : win->widgets)
-            if (w->visible) n++;
-        return n;
-    }
-    UiaElement *ChildAt(int index) const {
-        for (const auto &w : win->widgets)
-            if (w->visible && index-- == 0) return new UiaElement(win, w->uid);
-        return nullptr;
-    }
-    int ChildIndexOf(int uid) const {
-        int n = 0;
-        for (const auto &w : win->widgets) {
-            if (!w->visible) continue;
-            if (w->uid == uid) return n;
+        for (const auto &child : w->parent->children) {
+            if (!child->visible) continue;
+            if (child.get() == w) return n;
             n++;
         }
         return -1;
+    }
+    int ChildCount() const {
+        Widget *host = Host();
+        if (!host) return 0;
+        int n = 0;
+        for (const auto &child : host->children)
+            if (child->visible) n++;
+        return n;
+    }
+    UiaElement *ChildAt(int index) const {
+        Widget *host = Host();
+        if (!host) return nullptr;
+        for (const auto &child : host->children)
+            if (child->visible && index-- == 0) return new UiaElement(win, child->uid);
+        return nullptr;
     }
 
     // A property, four ways, into a VARIANT the caller has already initialised. One that is not
@@ -2836,8 +2947,14 @@ inline IRawElementProviderSimple *Window::UiaRoot() { return new UiaElement(this
 // controls, on a call that only happens when somebody is running a screen reader.
 inline Widget *Window::UiaFind(int uid) const {
     if (!uid) return nullptr;
-    for (const auto &w : widgets)
-        if (w->uid == uid) return w.get();
+    return FindUid(content.get(), uid);
+}
+
+inline Widget *Window::FindUid(Widget *w, int uid) const {
+    if (!w) return nullptr;
+    if (w->uid == uid) return w;
+    for (const auto &child : w->children)
+        if (Widget *hit = FindUid(child.get(), uid)) return hit;
     return nullptr;
 }
 
@@ -2964,7 +3081,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // activation. See WM_CAPTURECHANGED.
         if (!self->active) {
             self->CancelCapture();
-            for (auto &w : self->widgets) { w->Dismiss(); w->hover = false; }
+            if (self->content) self->DismissIn(self->content.get());
         }
         self->Invalidate();
         break;
@@ -3014,7 +3131,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         if (wp == SIZE_RESTORED) self->MeasureFrame();
         self->Resize();
-        self->Layout();
+        self->layoutDirty = true;
         self->Invalidate();
         return 0;
     case WM_DPICHANGED: {
@@ -3025,7 +3142,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // After the move, because Resize reads the new client size and the bitmap
         // carries the DPI.
         self->Resize();
-        self->Layout();
+        self->layoutDirty = true;
         self->Invalidate();
         return 0;
     }
@@ -3044,47 +3161,19 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
         TrackMouseEvent(&tme);
         Widget *over = self->capture ? self->capture : self->HitTest(mx, my);
-        bool changed = false;
-        for (auto &w : self->widgets) {
-            const bool now = (w.get() == over);
-            if (w->hover != now) { w->hover = now; changed = true; }
-        }
-        // The page's offset, read once per move rather than once per control: every
-        // control that hears about a pointer below hears about it in the space its own
-        // rect is in.
-        float pdy = 0.0f, popacity = 1.0f;
-        self->ContentTransform(&pdy, &popacity);
+        const bool changed = self->content ? self->SetHover(self->content.get(), over) : false;
 
         if (self->capture) {
-            // The page's paint offset taken back off, so a control dragged while the page
-            // is still gliding does not un-press itself.
-            const float dragY = self->capture->scrolls ? my - pdy : my;
-            // From the message, and the same point OnDrag gets. This used to read
-            // GetCursorPos: two coordinates for one event, and the one that decided
-            // whether the control was still pressed was not the one it was being dragged
-            // with. It also put every drag out of reach of a harness that posts messages,
-            // since the widget answered the physical pointer instead of the message.
-            //
-            // `pressed` follows the rectangle honestly and nothing here overrides it: a
-            // control whose gesture outlives its own rectangle says so in PressedVisual.
-            const bool down = Inside(self->capture->rect, mx, dragY);
-            if (self->capture->pressed != down) { self->capture->pressed = down; changed = true; }
-            self->capture->OnDrag(mx, dragY);
+            // In the capture's own space, so a control dragged while something above it is still
+            // moving does not un-press itself -- and from the message, so the point that decides
+            // whether it is still pressed is the point it is being dragged with.
+            const D2D1_POINT_2F at = self->LocalPoint(self->capture, mx, my);
+            const bool down = Inside(self->capture->rect, at.x, at.y);
+            self->capture->pressed = down;
+            self->capture->OnDrag(at.x, at.y);
         }
 
-        // The control under the pointer, and any control that watches a region outside
-        // its own rectangle. See Widget::ExternalRegion. By index, because a drag above
-        // may have laid the page out and replaced the list.
-        bool tracks = false;
-        for (size_t i = 0; i < self->widgets.size(); i++) {
-            Widget *wd = self->widgets[i].get();
-            const float wy = wd->scrolls ? my - pdy : my;
-            if (wd != over &&
-                !(wd->visible && wd->enabled && Inside(wd->ExternalRegion(), mx, wy)))
-                continue;
-            wd->OnPointerMove(mx, wy);
-            if (wd->TracksPointer()) tracks = true;
-        }
+        const bool tracks = self->content ? self->SendMove(self->content.get(), mx, my, over) : false;
         SetCursor(LoadCursorW(nullptr, !over            ? kCursorArrow
                                      : over->TextCursor() ? kCursorIBeam
                                      : over->HandCursor() ? kCursorHand
@@ -3093,7 +3182,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_MOUSELEAVE:
-        for (auto &w : self->widgets) w->hover = false;
+        if (self->content) self->SetHover(self->content.get(), nullptr);
         self->Invalidate();
         return 0;
     case WM_LBUTTONDOWN: {
@@ -3120,10 +3209,10 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // From the message rather than from GetCursorPos, and the difference is not
             // theoretical: the pointer can have moved between the click being queued and
             // this running, and a press position that disagrees with the hit test by a
-            // pixel is a gesture that grabbed the wrong sub-region of its own control.
-            float pdy = 0.0f, popacity = 1.0f;
-            self->ContentTransform(&pdy, &popacity);
-            w->OnPress(mx, w->scrolls ? my - pdy : my);
+            // pixel is a gesture that grabbed the wrong sub-region of its own control. In the
+            // widget's own space, which is the space its `rect` is in.
+            const D2D1_POINT_2F at = self->LocalPoint(w, mx, my);
+            w->OnPress(at.x, at.y);
         } else {
             self->SetFocusTo(nullptr);
         }
@@ -3192,55 +3281,29 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // Delivered in screen coordinates, unlike every other mouse message.
         POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         ScreenToClient(h, &pt);
-        // The control under the pointer first, in its own space -- see Widget::OnWheel.
-        {
-            const float x = pt.x / s, y = pt.y / s;
-            if (Widget *w = self->HitTest(x, y)) {
-                float pdy = 0.0f, popacity = 1.0f;
-                if (w->scrolls) self->ContentTransform(&pdy, &popacity);
-                if (w->OnWheel(x, y - pdy,
-                               (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA)) {
-                    self->Invalidate();
-                    return 0;
-                }
+        const float x = pt.x / s, y = pt.y / s;
+        const float notches = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        // The widget under the pointer first, in its own space -- see Widget::OnWheel. What does not
+        // take it falls to the layer it is under, if there is one: a popup that is up is what a
+        // wheel over it is for, and the page under it is not the thing being turned. With no layer
+        // and nothing that took it, the notch goes to the page, which is where scrolling will come
+        // from when a container can overflow.
+        Widget *w = self->HitTest(x, y);
+        if (w) {
+            const D2D1_POINT_2F at = self->LocalPoint(w, x, y);
+            if (w->OnWheel(at.x, at.y, notches)) {
+                self->Invalidate();
+                return 0;
             }
         }
-        // Then anything floating over the page. A popup that is up is what a wheel over it is for,
-        // and the page under it is not the thing being turned: a page that scrolled out from under
-        // an open list would take the list's own place in it with it. Tried after the control the
-        // pointer is actually over, so that an ordinary control's wheel still wins where the two
-        // overlap, and only where a floating control says it wants the turn at all.
-        {
-            const float x = pt.x / s, y = pt.y / s;
-            for (auto &w : self->widgets) {
-                if (!w->visible || w->z <= 0) continue;
-                float pdy = 0.0f, popacity = 1.0f;
-                if (w->scrolls) self->ContentTransform(&pdy, &popacity);
-                if (w->OnWheel(x, y - pdy,
-                               (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA)) {
-                    self->Invalidate();
-                    return 0;
-                }
+        if (Layer *top = self->TopLayer()) {
+            const D2D1_POINT_2F at = self->LocalPoint(top, x, y);
+            if (top->OnWheel(at.x, at.y, notches)) {
+                self->Invalidate();
+                return 0;
             }
         }
-        // The page scrolls only when the wheel is over the page. `ClipRect` is where the page
-        // draws its scrolling content; its *box* is that strip widened up to the top of the page's
-        // own furniture, because the page's title and its caption are the page's -- a wheel over
-        // them is a wheel over the page. What is left out is everything that belongs to the window
-        // rather than to the page: the caption bar and its buttons above, and the pane's rail to
-        // the left. A wheel over one of those used to scroll the page underneath it.
-        //
-        // Where the page names no strip at all -- nothing to scroll -- the box is what is left of
-        // the client under the caption bar, which is the same rule with the page's own answer
-        // missing.
-        const float wx = pt.x / s, wy = pt.y / s;
-        D2D1_RECT_F page = self->ClipRect();
-        if (page.right <= page.left || page.bottom <= page.top)
-            page = D2D1_RECT_F{ 0, 0, self->ClientW(), self->ClientH() };
-        const D2D1_RECT_F box = { page.left, kCaptionH, page.right, self->ClientH() };
-        if (wx < box.left || wx >= box.right || wy < box.top || wy >= box.bottom) return 0;
-        return self->OnAppMessage(m, wp, MAKELPARAM(pt.x, pt.y)) ? 0
-                                                                 : DefWindowProcW(h, m, wp, lp);
+        return self->OnAppMessage(m, wp, MAKELPARAM(pt.x, pt.y)) ? 0 : DefWindowProcW(h, m, wp, lp);
     }
     case WM_GETDLGCODE:
         return DLGC_WANTALLKEYS | DLGC_WANTCHARS;
