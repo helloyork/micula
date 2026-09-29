@@ -51,14 +51,14 @@ struct Page {
 
         root->Add(new Heading(L"捕获"));
 
-        auto *capturer = root->Add(new Card(L"使用捕获器", L"scrcpy 的窗口会被截断。"));
+        auto *capturer = root->Add(new Card(L"使用捕获器", L"打开后 scrcpy 的窗口会被裁掉，录制时只保留设备画面本身。"));
         capturer->icon = glyph::kEthernet;
         capturer->Set(new ToggleSwitch(L"", capture, [this](bool v) { capture = v; }));
         // Read when the card is painted rather than pushed into it, so the two never have to be kept
         // in step -- and the switch's own animation is what asks for the frames that redraw it.
         capturer->value = [this] { return capture ? L"开" : L"关"; };
 
-        auto *named = root->Add(new Card(L"设备名称", L"设备的显示名，用来区分多个连接。"));
+        auto *named = root->Add(new Card(L"设备名称", L"只影响本机显示，用来区分同时连接的多台设备。"));
         named->icon = glyph::kCellPhone;
         auto *field = named->Set(new TextBox());
         field->text = device;
@@ -67,20 +67,20 @@ struct Page {
 
         root->Add(new Heading(L"高级"));
 
-        auto *notified = root->Add(new Card(L"完成时通知", L"转录结束后弹出一条通知。"));
+        auto *notified = root->Add(new Card(L"完成时通知", L"转录或搬运结束时弹出一条通知，窗口在后台也能看到。"));
         notified->icon = glyph::kInfo;
         notified->Set(new CheckBox(L"", notify, [this](bool v) { notify = v; }));
 
         // A card whose control takes the width the text did not: the slider asked to fill, and the
         // card gives it what is left. None of that arithmetic is in the page.
-        auto *gain = root->Add(new Card(L"音量", L"从设备回放到这台电脑上的增益。"));
+        auto *gain = root->Add(new Card(L"音量", L"只改这台电脑回放时的增益，不会改动设备自己的音量。"));
         gain->icon = glyph::kVolume;
         gain->Set(new Slider(this->volume, 0.0f, 1.0f, 0.05f, [this](float v) { this->volume = v; }));
         gain->value = [this] {
             return std::to_wstring((int)(this->volume * 100.0f + 0.5f)) + L"%";
         };
 
-        auto *sharp = root->Add(new Card(L"画质"));
+        auto *sharp = root->Add(new Card(L"画质", L"流畅省电，清晰更接近原图，标准是两者的折中。"));
         sharp->icon = glyph::kView;
         sharp->Set(new Segmented({ L"流畅", L"标准", L"清晰" }, this->quality,
                                   [this](int i) { this->quality = i; }));
