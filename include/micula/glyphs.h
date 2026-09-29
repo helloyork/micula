@@ -82,10 +82,6 @@ constexpr const wchar_t *kDocument = L"\uE8A5";  // Document
 constexpr const wchar_t *kCloud    = L"\uE753";  // Cloud
 constexpr const wchar_t *kGlobe    = L"\uE774";  // Globe
 constexpr const wchar_t *kLanguage = L"\uF2B7";  // LocaleLanguage: a globe with a letter and a character on it
-// The two ends of a connection to a machine somewhere else. Named from Microsoft's own icon list
-// rather than picked by eye: the glyph font carries no names of its own (its `post` table is empty),
-// and a code point chosen by looking at a contact sheet is a code point that is eventually the wrong
-// picture -- the one this pair replaced had been read as "a server" and is in fact a smartcard.
 constexpr const wchar_t *kEthernet     = L"\uE839";  // Ethernet
 constexpr const wchar_t *kRemoteDevice = L"\uE836";  // Add Remote Device
 constexpr const wchar_t *kCalendar = L"\uE787";  // Calendar
