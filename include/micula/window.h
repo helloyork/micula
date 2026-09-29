@@ -64,6 +64,8 @@
 #pragma once
 
 #include "theme.h"
+#include "view.h"                   // the root widget a page builds into, and what a card puts a control in
+#include "widget.h"                 // the tree: Widget, Layout, Spec -- see docs/layout.md
 
 #include <d2d1_1.h>
 #include <d3d11.h>
@@ -547,340 +549,53 @@ inline bool  Inside(const D2D1_RECT_F &r, float x, float y) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
-// ---------------------------------------------------------------- Widget
+// ---------------------------------------------------------------- Layer
 
 struct Window;
 struct App;
-// A control that floats over the page -- a dialog, a flyout, a menu. Forward-declared for
-// Widget::AsLayer() below and defined further down this same header, after Widget: the window
-// routes Esc, Enter and the Tab ring through the top one, so the two belong together.
+// A control that floats over the page. Forward-declared for Widget::AsLayer(), and defined here,
+// after the painter it draws its dim with.
 struct Layer;
-
-// The whole control vocabulary derives from this. Deliberately small: a rectangle,
-// three interaction flags, a paint call and a click.
-struct Widget {
-    D2D1_RECT_F rect = {};
-    bool visible = true;
-    bool enabled = true;
-    bool hover   = false;
-    bool pressed = false;
-    bool focus   = false;
-    // The animated shadows of the three flags above: 0 is off, 1 is on, and anything
-    // between is a brush crossing over.
-    //
-    // **Only the background follows these.** A WinUI control under the pointer moves one
-    // property -- `<ContentPresenter.BackgroundTransition>` -- and leaves its border, its
-    // text and its focus ring to change between two frames. Fading all of them together
-    // is what made the first version of this read as some other platform's idea of
-    // Fluent. micula::motion::Ramp is the transition, linear and 83 ms, because that is what
-    // BrushTransition is.
-    float hoverT = 0.0f, pressT = 0.0f, focusT = 0.0f;
-    // Paint order, and hit-test order reversed. Three layers: 0 is the furniture and the
-    // page, 1 is raised *within* the page -- a dropdown's list is drawn over the controls
-    // below it and takes the click that lands on one of them, and insertion order cannot
-    // express that, because the dropdown was added in the middle of the page -- and 2 is
-    // over the page altogether, which is what a navigation pane is while it is open over
-    // one. Only the drawing order knows the difference between 1 and 2; the hit test asks
-    // whether a widget is raised at all, since a click belongs to whatever is on top.
-    int  z = 0;
-    Window *owner = nullptr;
-
-    // ---- what a screen reader is told ---------------------------------------------------------
-    //
-    // Four questions, and none of them is looked at unless a client is listening: the window
-    // answers WM_GETOBJECT with a provider only while UiaClientsAreListening() says somebody is,
-    // and every question after that is one that was asked. See the UIA section near the end of
-    // this header for the whole of it.
-    //
-    // Four rather than a hook per pattern, and the *actions* behind the patterns are the ones a
-    // control already has: Invoke and Toggle both land on `OnActivate`, which is Space, so a
-    // control wired up for the keyboard is wired up for a screen reader by the same code.
-    //
-    // `tips` is the tooltip text as well, and one string is the whole point: what a control says
-    // in a tooltip and what it says to somebody who cannot see it are the same thought.
-    std::wstring tips;
-    // What the page calls this control, for the times the page knows a name the control does not.
-    // The words beside a switch are page text and not part of the control, so without this a screen
-    // reader has nothing to read out for a perfectly ordinary form -- and a page cannot override a
-    // virtual on a control it did not write. Set, and it wins over AccessibleName below.
-    std::wstring accessibleName;
-    // What the control is called. Null means it has no name -- the honest answer for a control
-    // whose whole content is a glyph, and better than a name made up out of the class.
-    virtual const wchar_t *AccessibleName() const { return nullptr; }
-    // Both answers together, which is the one the provider asks for.
-    const wchar_t *AccessibleLabel() const {
-        return accessibleName.empty() ? AccessibleName() : accessibleName.c_str();
-    }
-    // The UIA control type. Custom rather than Pane: a widget that has not said what it is has
-    // not said it is a container either, and a client guessing from Custom guesses less wrong.
-    virtual int AccessibleType() const { return UIA_CustomControlTypeId; }
-    // -1 when this is not a switch; otherwise 0 off, 1 on, 2 indeterminate.
-    virtual int AccessibleToggle() const { return -1; }
-    // False when the control has no value worth reading. True fills `out` with what a screen
-    // reader should say -- "40%", the text of a field -- so the formatting stays the control's
-    // business, and a slider reads as a percentage rather than as 0.4.
-    virtual bool AccessibleValue(std::wstring & /*out*/) const { return false; }
-    // Whether `OnActivate` does something a client may ask for on the control's behalf. False by
-    // default, focusable or not: a text field is focusable and activating it does nothing, and a
-    // client offering Invoke on one would be offering nothing.
-    virtual bool AccessibleActionable() const { return false; }
-    // The number Add gave this widget. What an element holds instead of a pointer, which is what
-    // makes an element that has outlived its widget harmless. See the UIA section.
-    int uid = 0;
-
-    virtual ~Widget() {}
-    virtual void Paint(const Painter &p) = 0;
-    // Only widgets that can be operated from the keyboard join the Tab order.
-    virtual bool Focusable() const { return false; }
-    virtual void OnClick() {}
-    // The mouse went down on this widget, at this point in the widget's own space.
-    //
-    // For a control that has to know *which part* of itself was grabbed: a colour
-    // panel is one rectangle with a square, two strips and a row of swatches in it, and
-    // `pressed` does not say which of them the gesture started on.
-    //
-    // Taken from the message rather than from GetCursorPos, and the difference is not
-    // theoretical: the pointer can have moved between the click being queued and this
-    // running, so a press position read from the cursor can disagree with the hit test
-    // that chose this widget.
-    virtual void OnPress(float /*x*/, float /*y*/) {}
-    // The mouse moved while this widget holds capture, in the same space as OnPress and
-    // taken from the message for the same reason.
-    //
-    // This and OnPress are the whole of a drag. A control must not update itself out of
-    // Paint instead, by reading the cursor each frame: Slider did, and it cost both
-    // correctness and testability -- see PressedVisual below for the first and the
-    // note on Cursor() for the second.
-    virtual void OnDrag(float /*x*/, float /*y*/) {}
-    // The pointer moved over this control, or over the region it watches outside itself
-    // (see ExternalRegion), in the control's own space.
-    //
-    // It is sent to the control under the pointer and to nobody else, so a control that
-    // has to hear about a move it does not contain says where that is: a scroll bar shows
-    // itself when the pointer crosses the page it scrolls, which is a page and not a
-    // control. Being told about every move in the window is not the same offer -- it is
-    // a coordinate space each control then has to correct by hand.
-    virtual void OnPointerMove(float /*x*/, float /*y*/) {}
-    // The area outside `rect` -- in the control's own space, so for a scrolling control
-    // the page's offset is already off it -- where this control wants OnPointerMove as
-    // well. Empty for a control that only answers to itself.
-    //
-    // Moves only. A press here is a press on whatever is behind, so this widens what a
-    // control can see, not what it takes: a scroll bar that could be grabbed by clicking
-    // the page it scrolls would be a different control.
-    virtual D2D1_RECT_F ExternalRegion() const { return {}; }
-    // A wheel turned over this control, in its own space; `notches` is positive away from
-    // the user. Return true to keep it from the page.
-    //
-    // For an open drop-down's list, which scrolls by itself when it is taller than the
-    // room it has. Left to the page, the notch scrolled the page instead: the list's own
-    // anchor moved out from under it, and on a page that lays itself out in response to a
-    // scroll the open list was thrown away with everything else.
-    virtual bool OnWheel(float /*x*/, float /*y*/, float /*notches*/) { return false; }
-    // The keyboard's way of working this control: Space, and Enter on a control that has one.
-    //
-    // Distinct from `OnClick`, which is what a mouse press and release means, because a click
-    // is the *pointer* doing something and this is not. A drop-down chooses the row the
-    // pointer is over, and there is no pointer to read when the choice came from a keyboard:
-    // what Space means there is "the one the list has already arrived at". The default is a
-    // click, which is what every other control wants.
-    virtual void OnActivate() { OnClick(); }
-    // Something happened that should put away anything transient this control is
-    // showing: a press somewhere else, the window being deactivated. Only a flyout has
-    // anything to put away, and the reason this is a window-level broadcast rather than
-    // the flyout's own business is that a control cannot see a click it did not get --
-    // which is exactly why the drop-down used to stay open until it was clicked again.
-    virtual void Dismiss() {}
-    // The layer this control is, when it is one. Asked by the window, which routes Esc, Enter and
-    // the Tab ring through the top layer before the page sees them. See Layer.
-    virtual Layer *AsLayer() { return nullptr; }
-    // This control draws something that follows the pointer *inside* itself: an open
-    // flyout's hovered row, a segmented control's hovered cell, a slider being dragged.
-    //
-    // The window repaints on hover *changes*, and moving from one row of a list to the
-    // next is not one -- the same widget is hovered throughout -- so without this the
-    // highlight stays wherever it was when the pointer arrived and only catches up when
-    // something else happens to repaint.
-    virtual bool TracksPointer() const { return false; }
-    // Whether the press shadow should be showing.
-    //
-    // The window clears `pressed` the moment the pointer leaves the rectangle, which is
-    // what makes a button cancellable by dragging off it. A control whose gesture
-    // outlives the rectangle overrides this to say it is still held -- a slider dragged
-    // out of its own track would otherwise grow its thumb back under a finger that is
-    // plainly still on it, and the press is the only cue that the drag has not ended.
-    virtual bool PressedVisual() const { return pressed; }
-    // The mouse went up on a widget that had capture, wherever the cursor ended up.
-    //
-    // OnClick is not the same event and cannot stand in for this one: it fires only
-    // when the release lands back inside the control, which is exactly what a drag
-    // does not do. A slider dragged past its own edge and let go there needs to know
-    // the gesture finished, or the value it just produced is never committed.
-    virtual void OnRelease() {}
-    // Return true to say the key was consumed, so the window does not also treat it
-    // as Tab navigation or as the default button.
-    virtual bool OnKey(WPARAM /*vk*/) { return false; }
-    // A character the keyboard or the IME committed. Only the text field wants these.
-    virtual bool OnChar(wchar_t /*ch*/) { return false; }
-    // Focus has just left this widget.
-    //
-    // For a field whose value is only meaningful once it is finished. A text box that
-    // wrote its setting on every keystroke would save `#00` on the way to `#0000008C`
-    // -- five times, each one a real value that a reader of the file cannot tell from
-    // a choice. This is the text field's half of the split Slider already makes
-    // between `onChange` and `onCommit`, and it exists for the same reason.
-    virtual void OnBlur() {}
-    // Focus has just arrived. The other half of OnBlur, and the reason it is here at all: a control
-    // that reports something when it is left has to know what it found when it arrived, or it cannot
-    // tell a change from a visit. See TextBox, which commits a value only when there is one.
-    virtual void OnFocus() {}
-    // Where the IME should put its composition window, in DIPs. Only meaningful for a
-    // widget that takes text; ignored otherwise.
-    virtual bool CaretPoint(D2D1_POINT_2F * /*out*/) const { return false; }
-    virtual bool HandCursor() const { return false; }
-    virtual bool TextCursor() const { return false; }
-
-    // --- animation ---------------------------------------------------------------
-    //
-    // Where the 16 ms timer stops. The default is "the three cross-fades have caught up
-    // with the three flags", which is the whole of it for most controls; one with a
-    // value of its own -- the switch's knob, the segmented control's pill, a flyout
-    // opening -- overrides both of these and calls them.
-    virtual bool Animating() const {
-        return hoverT != Want(hover) || pressT != Want(PressedVisual()) || focusT != Want(focus);
-    }
-    virtual void Tick(float dt) {
-        motion::Ramp(&hoverT, Want(hover), dt, motion::kFaster);
-        motion::Ramp(&pressT, Want(PressedVisual()), dt, motion::kFaster);
-        // Focus moves a fill too (a text field lightens when the caret is in it) and
-        // nothing else: the accent underline and the focus ring are setters, and arrive
-        // whole.
-        motion::Ramp(&focusT, Want(focus), dt, motion::kFaster);
-    }
-    // A disabled control animates nothing: its states are all off, so the cross-fades
-    // run down to zero and stay there.
-    float Want(bool on) const { return on && enabled ? 1.0f : 0.0f; }
-
-    // Called by the window the moment the control joins it -- see Window::Add.
-    //
-    // For a control that brings controls of its own: a dialog and its buttons, a pane and its rows.
-    // They have to be added *after* it and above it in `z` -- the hit test reaches the last added of
-    // the raised ones while the painter orders by `z`, and this is the order that makes the two
-    // agree -- and this is the one moment a control can do that without the page being told to.
-    virtual void OnAdded() {}
-
-    // The cursor, in this widget's own coordinates: window DIPs with the page's paint
-    // offset taken back off, so a control that reads the mouse while it is being
-    // dragged agrees with where it was drawn. Defined under Window, which is what
-    // knows the offset.
-    //
-    // This is the *physical* pointer, so a control that takes its value from here cannot
-    // be driven by posted messages -- a harness sends a WM_MOUSEMOVE at one place and the
-    // widget reads the mouse at another. Take a drag's coordinates from OnPress and
-    // OnDrag; this is for the few things that genuinely mean "where is the pointer now",
-    // such as a hovered row.
-    D2D1_POINT_2F Cursor() const;
-    // The part of the page that is on screen, in this widget's own coordinates -- the
-    // window's ClipRect with the page's paint offset added back on. Empty when the page
-    // does not scroll, and empty in the same way ClipRect is.
-    //
-    // For a control that has to know how much room it really has. A drop-down deciding
-    // whether its list fits below it is asking about the visible strip, and on a
-    // scrolling page that strip is not the window's: it moves with the page while the
-    // control's own rectangle stays where the layout put it.
-    D2D1_RECT_F VisibleArea() const;
-
-    // Whether the pointer is on this control, in the control's own coordinates -- the page's
-    // offset has already been taken off. This is what the window's hit test asks, rather than
-    // `rect` on its own.
-    //
-    // It exists for the control whose rectangle is not its own to keep: a page hands one a fresh
-    // `rect` in every Layout, taking back the edge the control derives from its own state, and
-    // deriving it again is a frame's work. Between the two -- a layout with no animation after
-    // it -- the control is drawn correctly and cannot be clicked, which is a control that is
-    // broken for seconds at a time and comes back when anything else in the window happens to
-    // animate. See `SideNav`.
-    virtual bool Covers(float x, float y) const { return Inside(rect, x, y); }
-
-    // This widget moves with the page's scroll: its `rect` is in the page's own space --
-    // window coordinates with the scroll *not* taken off -- and the offset that puts it
-    // on screen comes from ContentTransform() when it is painted and hit-tested. So,
-    // painted only inside the window's ClipRect() and taking no clicks outside it.
-    //
-    // Left false for the furniture -- a navigation list, a title-bar button, the page's
-    // own scroll bar -- which does not scroll, and which clipping to the scrolling area
-    // would hide.
-    bool scrolls = false;
-    // Survives ClearWidgets, together with the capture or focus it holds.
-    //
-    // For a control the page lays out *while it is being operated*: the page is rebuilt,
-    // the gesture is not over, and a rebuild would drop the capture -- so it would end on
-    // its first pixel. A scroll bar's thumb held through a resize is what this is for, and
-    // so is anything else a page repositions on every layout that a person can hold on
-    // to. The page makes such a control once and repositions it in each Layout().
-    bool persistent = false;
-    // The layer this control is on its way out with, or null. The window's bookkeeping, set for the
-    // controls a leaving layer was carrying and cleared when it is gone.
-    //
-    // A page lays itself out the moment a layer starts leaving -- that is what `onDismiss` is for --
-    // so without this the controls on the layer would be pulled out of the page on that same frame
-    // and vanish while the panel under them was still fading. Instead they stay in the list and in
-    // their places until the fade is over, and answer nothing while it runs: they are what the
-    // window drops afterwards, and z alone cannot say which of them belonged to which layer when two
-    // layers are leaving at once.
-    Layer *leavingWith = nullptr;
-};
-
-// One Windows timer, whose id nobody had to choose: the window hands them out from a pool of its
-// own, so a control that needs one does not have to know which numbers the library uses -- or
-// which numbers a page picked for itself.
-//
-// It is also the answer to where the timer's message goes. The window keeps the timers that are
-// running and offers every `WM_TIMER` to them by id, so a timer belongs to whatever started it.
-// ---------------------------------------------------------------- Layer
 
 // A control that floats over the page: a dialog, a flyout, a menu, a tip.
 //
-// A widget with a `z` already paints over the page and is reached by the pointer before it. What
-// this adds are the three things that make a layer a layer rather than a control that happens to
-// be raised:
+// Under the tree this is a small class, because most of what it used to do is what a child *is*.
+// It used to live in a flat list, where the controls that came out with it were somewhere else in
+// that list and had to be marked with `leavingWith`, and where it had to be added *before* them
+// with a lower `z` so that the paint order and the hit-test order agreed about what was on top.
+// A layer's contents are its children now, and that one fact replaces all of it: the fade takes the
+// subtree, the window drops the subtree when the fade is over, the hit test reaches it first
+// because it is later in the order, and a screen reader reads those controls as the layer's
+// children -- which is the thing a flat list could never say.
 //
-//   - `modal` takes the input *under* it. The layer's rectangle is the whole page -- see
-//     CoverPage, which leaves the title bar out on purpose -- so a click that is not on top of
-//     something the layer itself put there lands on the layer and stops there.
-//   - `lightDismiss` closes it when a click misses it, or when the window loses activation: both
-//     arrive through the `Dismiss()` every control gets. What "closed" *means* is the page's, and
-//     is given as `onDismiss` -- for a dialog, that is its cancel.
+// What is left is the part that is not structure:
 //
-//     **It is off by default, and having it as a switch at all is the point.** A click that
-//     misses a flyout closing it is what a flyout is; a question that has to be answered -- *this
-//     file has unsaved changes* -- is not answered by a stray click on the dim, and Windows draws
-//     the same line: `Popup` carries `IsLightDismissEnabled`, which a flyout turns on, while
-//     `ContentDialog` has no property of the kind and can only be answered with a button. A
-//     dialog that *can* be abandoned says so by turning this on, or by having a cancel button --
-//     which is `escape` below, and separate on purpose: a dialog with a job still running refuses
-//     both, and one that is merely dismissible refuses neither.
-//   - `smoke` dims what is behind it, over the same black the pane puts on a page it floats over.
-//   - and it arrives by fading in -- itself, its smoke and the controls the page put on it, as one
-//     group -- rather than appearing whole on the next frame. See `arrive` below.
+//   - `modal` takes the input *under* it. The rectangle of a page-level layer is the page, so a
+//     click that is not on something the layer put there lands on the layer and stops there.
+//   - `lightDismiss` closes it when a click misses it or the window loses activation: both arrive
+//     through the `Dismiss()` every widget gets, and what "closed" *means* is the page's, given as
+//     `onDismiss`.
 //
-// **Add the layer first, and what sits on it after it**, with a higher `z`: the hit test reaches
-// the last added of the raised controls, while the painter orders by `z`, and adding them in this
-// order is what makes the two agree.
+//     **It is off by default, and having it as a switch at all is the point.** A click that misses
+//     a flyout closing it is what a flyout is; a question that has to be answered -- *this file has
+//     unsaved changes* -- is not answered by a stray click on the dim, and Windows draws the same
+//     line: `Popup` carries `IsLightDismissEnabled`, which a flyout turns on, while `ContentDialog`
+//     has no property of the kind and can only be answered with a button.
+//   - `smoke` dims what is behind it, and it arrives by fading in -- itself, its dim and the
+//     controls on it, as one group -- rather than appearing whole on the next frame.
 //
-// The rectangle stops at the caption bar. Windows' own modal dialogs keep their title bar -- it
-// belongs to the window, and the smoke of a WinUI ContentDialog does not reach past the client
-// area either -- so dragging the window, double-clicking the caption and the Windows 11
-// snap-layout flyout all keep working with a modal open. `CoverPage()` is that rectangle.
+// The rectangle stops at the caption bar, and that now needs no arithmetic: a layer is added to the
+// widget it covers, and that widget starts below the caption. Dragging the window, double-clicking
+// the caption and the Windows 11 snap-layout flyout therefore all keep working with a modal open.
 struct Layer : Widget {
     bool modal = true;
     bool lightDismiss = false;
     bool smoke = false;
-    // Esc closes it: the window offers Esc to the top layer before the page's cancel. A layer
-    // that must not be closed this way -- a dialog with a job still running -- says so.
+    // Esc closes it: the window offers Esc to the top layer before the page's cancel. A layer that
+    // must not be closed this way -- a dialog with a job still running -- says so.
     bool escape = true;
-    // The dim's own alpha, over black. A dialog that wants to be the only thing on screen turns
-    // it up; a suggestion can turn it down.
+    // The dim's own alpha, over black. A dialog that wants to be the only thing on screen turns it
+    // up; a suggestion can turn it down.
     float smokeAlpha = 0.14f;
 
     std::function<void()> onDismiss;
@@ -888,49 +603,20 @@ struct Layer : Widget {
     // A layer arrives rather than appearing, and leaves the same way: the whole of it fades up over
     // `motion::kFast` and back down over the same, the dim with it. `kFast` rather than `kNormal`,
     // which is what a page and a flyout take: those are watched, and this is *read* -- the panel is
-    // legible well before the fade is over, and a quarter of a second of dim creeping over the page
-    // is a quarter of a second of "not yet" for nothing. `Track::Step` already eases with `Decel`,
-    // so 0.9 of the way there is about 90 ms into the 167.
+    // legible well before the fade is over.
     //
-    // A panel that is simply there on the next frame is the other half of it: the page behind it
-    // changes in one step, which reads as a repaint rather than as something coming up.
+    // The fade is the *window's* work: it paints everything a layer is, as one group, through one
+    // opacity layer, which is what a group needs -- fading each widget on its own would show the
+    // page through the gaps between them and come out darker where two overlap.
     //
-    // The fade is the *window's* work, not this widget's: the window paints everything over the
-    // page through one opacity layer while `Arrival()` is short of where it is going (see Paint).
-    // That is what a group needs and what a per-widget opacity could not give -- the panel and the
-    // controls the page put on it are separate widgets with their own rectangles, so fading each on
-    // its own would show the page through the gaps between them and come out darker where two
-    // overlap.
-    //
-    // The track is started on its target, and `Arrival()` answers 1 for as long as the animation
-    // switch is off -- so with animations off the layer is drawn whole on the first frame that asks
-    // for it, with no invisible frame in between and no frame run to get there.
+    // The track starts on its target, and `Arrival()` answers 1 for as long as the animation switch
+    // is off -- so with animations off the layer is drawn whole on the first frame that asks for
+    // it, with no invisible frame in between.
     float Arrival() const { return Animations() ? arrive.value : (leaving ? 0.0f : 1.0f); }
     bool leaving = false;
     motion::Track arrive{};
     Layer() { arrive.To(1.0f); }
 
-    // How far the layer has arrived: 0 as it comes up, 1 at rest, and on its way back down while it
-    // is leaving. Exposed because a subclass that draws a panel of its own may want to bring it in
-    // on the same clock -- a few DIPs of rise, the way a page arrives -- and because the two ends
-    // are worth being able to tell apart by test.
-    //
-    // It is not the whole of Windows' own entrance, which also scales the dialog up from about
-    // 1.05. A scale is not offered here on purpose: it resamples every glyph in the panel, and the
-    // text of a control that is resampled for a sixth of a second is text that shimmers.
-    //
-    // Read it rather than `Arrival()` for a position that follows the fade both ways; `Arrival()`
-    // is the same number until the layer starts leaving.
-
-    // Ask it to go away. `onDismiss` fires at once rather than at the end of the fade, and that is
-    // the point of the fence: what the page keeps is the page's own state, and a page that has been
-    // told can lay itself out and put the focus somewhere sensible while the layer is still on its
-    // way out. The layer outlives that layout -- ClearWidgets keeps it until it has gone -- and the
-    // window drops it when the fade is over. Defined below, beside CoverPage, because it asks the
-    // window things only the window can answer.
-    void Close();
-
-    // On its way out, and gone. `HasLeft()` is what the window sweeps for.
     bool Leaving() const { return leaving; }
     bool HasLeft() const { return leaving && !arrive.Wants(arrive.to); }
 
@@ -940,23 +626,24 @@ struct Layer : Widget {
         arrive.Step(dt, motion::kFast);
     }
 
-    // The part of the layer that is the layer's own content. A click in `rect` that is not in
-    // this is a click on the dim, which is what light-dismissing is. The default is the whole
-    // rectangle -- a layer with no dim, and so nothing to miss.
+    // The part of the layer that is the layer's own content. A click in `rect` that is not in this
+    // is a click on the dim, which is what light-dismissing is. The default is the whole rectangle
+    // -- a layer with no dim, and so nothing to miss.
     virtual D2D1_RECT_F Body() const { return rect; }
 
-    // A click that missed. This is where light-dismissing actually happens, and it has to be
-    // here: a layer *covers* the page, so a click that misses its content lands on the layer
-    // itself rather than on a control beside it -- and the window's own "something else was
-    // clicked, dismiss the rest" never fires for the thing that was clicked.
+    // Ask it to go away. `onDismiss` fires at once rather than at the end of the fade, and that is
+    // the point of the fence: what the page keeps is the page's own state, and a page that has been
+    // told can put the focus somewhere sensible while the layer is still on its way out. The fade
+    // runs on, and the window drops the subtree when it is over.
+    void Close();
+
+    // A click that missed. This is where light-dismissing actually happens, and it has to be here:
+    // a layer *covers* the page, so a click that misses its content lands on the layer itself
+    // rather than on a control beside it.
     void OnPress(float x, float y) override {
         if (!lightDismiss || !onDismiss) return;
         if (!Inside(Body(), x, y)) Close();
     }
-
-    // What a layer covers: the page, and not the title bar above it. A page sets its layer's
-    // `rect` to this in `Layout()`. Defined below, beside the window it asks for the size of.
-    D2D1_RECT_F CoverPage() const;
 
     // The click missed what the layer put on screen, or the window was deactivated: for a layer
     // that light-dismisses, that is a dismissal.
@@ -966,6 +653,14 @@ struct Layer : Widget {
 
     void Paint(const Painter &p) override {
         if (smoke) p.Fill(rect, Rgb(0x000000, smokeAlpha));
+    }
+
+    // What a layer covers: the whole of the widget it was added to, which for a page's dialog is
+    // the client area below the caption. That rectangle used to be arithmetic about the caption
+    // height; a page starts below the caption, so covering the page is covering its whole box.
+    D2D1_RECT_F CoverPage() const {
+        if (!parent) return {};
+        return { 0.0f, 0.0f, Width(parent->rect), Height(parent->rect) };
     }
 
     // What Tab walks while this is open, in order. Empty leaves the page's own order alone, which
@@ -1090,9 +785,18 @@ struct Window {
     // while Windows is running a modal size or move loop of its own.
     Timer caretTimer, frameTimer;
 
-    std::vector<std::unique_ptr<Widget>> widgets;
+    // The tree, and the one widget a page builds into: the client area, which is WinUI's
+    // `Window::Content`. Everything a page adds is under it. The window's own furniture -- the
+    // caption and its three buttons -- is still painted by the window rather than being a child of
+    // it, which is a later pass.
+    std::unique_ptr<Widget> content;
     Widget *capture = nullptr;    // the widget the mouse went down on
     Widget *focused = nullptr;
+    // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
+    // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
+    // because an arrangement is one walk from the root -- a widget whose parent has not been
+    // arranged has no rectangle whose subtree could be arranged on its own.
+    bool layoutDirty = true;
     // Set when the keyboard was used to move focus. Windows only paints focus rings
     // after somebody has pressed Tab, and copying that is the difference between a
     // window that looks calm on arrival and one covered in rectangles.
@@ -1153,8 +857,9 @@ struct Window {
     // --- to implement -----------------------------------------------------------
     virtual const wchar_t *ClassName() const = 0;
     virtual const wchar_t *Title() const = 0;
-    virtual void Layout() {}                       // position widgets, in DIPs
-    virtual void PaintPage(const Painter &) {}     // everything that is not a widget
+    // The page no longer has a `Layout()` to override: what places a page's controls is the layout
+    // of the widget they were added to (see docs/layout.md). `PaintPage` is gone the same way --
+    // what a page used to draw there is widgets now, a `Heading` and a `Card` among them.
     virtual void OnDefaultAction() {}              // Enter
     virtual void OnCancel() { PostMessageW(hwnd, WM_CLOSE, 0, 0); }   // Esc
     // ~16 ms while anything is moving. `dt` is real elapsed seconds, clamped; a page
@@ -1242,20 +947,12 @@ struct Window {
     bool Animating() const {
         for (int i = 0; i < 3; i++)
             if (captionT[i] != (captionHot == i ? 1.0f : 0.0f)) return true;
-        const D2D1_RECT_F clip = ClipRect();
-        const bool clipping = clip.right > clip.left && clip.bottom > clip.top;
-        float dy = 0.0f, op = 1.0f;
-        if (clipping) ContentTransform(&dy, &op);
-        for (const auto &w : widgets) {
-            if (!w->visible || !w->Animating()) continue;
-            if (!clipping || !w->scrolls || Reaches(w->rect, dy, clip)) return true;
-        }
-        return false;
+        return content && content->Animating();
     }
     void Tick(float dt) {
         for (int i = 0; i < 3; i++)
             motion::Ramp(&captionT[i], captionHot == i ? 1.0f : 0.0f, dt, motion::kFaster);
-        for (auto &w : widgets) w->Tick(dt);
+        if (content) content->Tick(dt);
     }
 
     // One frame's worth of time, and what it is spent on. Called from the loop in Run().
@@ -1292,20 +989,18 @@ struct Window {
     // rebuild has just happened.
     bool RefreshHover();
 
-    template <typename T> T *Add(T *w) {
-        w->owner = this;
-        // The number an element identifies this widget by. Not an address: the page is laid out
-        // again all the time, and the widget at an address is a different control afterwards,
-        // which to a screen reader is a lie. See the UIA section.
-        w->uid = ++uidNext;
-        widgets.emplace_back(w);
-        // A control that brings controls of its own makes them now, which is why this is called from
-        // inside Add rather than after it: they have to sit after it in the list and above it in
-        // `z`. Adding here is safe -- what grows is the vector, and what Add hands back is the heap
-        // block, not an element of it.
-        w->OnAdded();
-        return w;
+    // The root widget, made on first use. A page adds to the window, so this is what it is adding
+    // to; `Add` here is the same call it has always been.
+    View *EnsureContent() {
+        if (!content) {
+            content.reset(new View());
+            content->win = this;
+        }
+        return static_cast<View *>(content.get());
     }
+    template <typename T> T *Add(T *w) { return EnsureContent()->Add(w); }
+    // What arranges the page: one call, on the widget a page builds into.
+    void SetLayout(Layout *l) { EnsureContent()->SetLayout(l); }
     // --- what a running callback is still standing on -----------------------------
     //
     // `Layout()` is routinely called from inside a widget's own callback, because "go
@@ -1381,6 +1076,82 @@ struct Window {
     void Resize();
     void Paint();
     void PaintCaption(const Painter &p);
+
+    // ---- the tree --------------------------------------------------------------------------
+    //
+    // The geometry convention, stated once because three passes depend on it: **a widget's `rect`
+    // is in its parent's space, and it draws in that space** -- so a control keeps drawing against
+    // its own rectangle, exactly as it did when a page placed it by hand. Descending into a
+    // widget's children moves the origin to that widget's top left, which is where their rectangles
+    // are measured from: a subtree that moves is a translation, and nothing inside it has to know.
+    //
+    // One arrangement, from the root down: a widget's box is what its parent's layout made it, and
+    // its own layout then arranges its children inside that box -- measured against the room it
+    // really has, which is why the room comes along with the box.
+    void ArrangeTree() {
+        layoutDirty = false;
+        if (!content) return;
+        content->rect = { 0.0f, kCaptionH, ClientW(), ClientH() };
+        if (!content->placed) {
+            content->drawn = content->rect;
+            content->placed = true;
+        }
+        ArrangeInside(content.get());
+    }
+    void ArrangeInside(Widget *w) {
+        if (w->layout) {
+            Room room;
+            room.fonts = &fonts;
+            room.spec = &w->layout->spec;
+            room.width = Width(w->rect);
+            room.height = Height(w->rect);
+            w->layout->Arrange(room, { 0.0f, 0.0f, room.width, room.height });
+            // A child that has never been placed is placed without gliding; the ones that have been
+            // keep their rectangles until the glide moves them.
+            w->layout->Glide(0.0f);
+        }
+        for (const auto &child : w->children)
+            if (child->visible) ArrangeInside(child.get());
+    }
+
+    // Paint the tree. `ox, oy` is where the widget's own space sits in the client area: the
+    // accumulated translation of its ancestors.
+    void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
+        if (!w->visible) return;
+        const D2D1_RECT_F where = w->placed ? w->drawn : w->rect;
+        // A widget that is not where it was arranged is drawn where it is: the difference between
+        // the two goes on as a translation for this widget alone.
+        const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
+        p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
+        w->Paint(p);
+        const float cx = ox + where.left, cy = oy + where.top;
+        for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
+        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    }
+
+#if MICULA_DEBUG_LAYOUT
+    // The boxes a layout worked out, drawn on top of the page: red for where a widget is, magenta
+    // for where it was arranged while it is on its way there, orange for the box its own layout
+    // places children in, and blue -- drawn once at the top -- for the page's own clip. Unclipped
+    // on purpose: a box that overflows what it should be inside is the thing worth seeing. See
+    // layout.h for the contract this draws against.
+    void PaintGuides(const Painter &p, Widget *w, float ox, float oy) {
+        if (!w->visible) return;
+        p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox, oy));
+        const D2D1_RECT_F where = w->placed ? w->drawn : w->rect;
+        p.StrokeRound(where, 0.0f, Rgb(0xFF3B30, 0.85f));
+        if (w->placed && !SameRect(w->drawn, w->rect))
+            p.StrokeRound(w->rect, 0.0f, Rgb(0xBF5AF2, 0.85f));
+        if (w->layout) {
+            const D2D1_RECT_F in = w->layout->ContentBox(w->rect);
+            if (in.right > in.left && in.bottom > in.top)
+                p.StrokeRound(in, 0.0f, Rgb(0xFF9500, 0.85f));
+        }
+        const float cx = ox + where.left, cy = oy + where.top;
+        for (const auto &child : w->children) PaintGuides(p, child.get(), cx, cy);
+        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    }
+#endif
     void EnsureIconBitmap();
     // A picture from disk, decoded once and scaled on the way in to `maxW` pixels
     // wide. Null when the file is not there, which callers draw around rather than
@@ -2090,6 +1861,36 @@ inline void Window::CancelCapture() {
     w->pressed = false;
     if (w->enabled) w->OnRelease();
     Invalidate();
+}
+
+// ---- the three calls that belong to the window, which is what widget.h has only declared --------
+//
+// A node knows how to ask for things and the window knows what to do about them: an arrangement is
+// one walk of the whole tree, and there is no per-widget dirty flag to keep honest.
+
+inline void Widget::InvalidateLayout() {
+    if (Window *w = window()) w->layoutDirty = true;
+}
+
+inline void Widget::Invalidate() {
+    if (Window *w = window()) w->Invalidate();
+}
+
+inline void Widget::Remove(Widget *child) {
+    for (size_t i = 0; i < children.size(); i++) {
+        if (children[i].get() != child) continue;
+        // Deferred while a message is being dispatched, and that is the whole of it: a control is
+        // allowed to take itself out from inside its own callback, and the closure running that
+        // callback lives in the block this would free. See Window::retired.
+        Window *w = window();
+        if (w && w->dispatchDepth > 0) {
+            w->retired.emplace_back(std::move(children[i]));
+            children.erase(children.begin() + i);
+            return;
+        }
+        children.erase(children.begin() + i);
+        return;
+    }
 }
 
 inline D2D1_POINT_2F Widget::Cursor() const {

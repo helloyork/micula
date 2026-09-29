@@ -159,12 +159,22 @@ struct Widget {
     }
 
     // ---- the window --------------------------------------------------------------------------
-    // Found by walking up, so a subtree may be built before it is added to a window. Null while it
-    // is not in one yet.
-    virtual Window *window() { return parent ? parent->window() : nullptr; }
+    // Found by walking up. The root of a tree holds the window itself, which is how a subtree that
+    // was built before it was added still answers: the walk reaches the root and the root knows. A
+    // widget in no window at all answers null, which is the state a page builds in.
+    virtual Window *window() { return parent ? parent->window() : win; }
+    // The window this node's root belongs to. Set on the root alone -- see Window::EnsureContent.
+    Window *win = nullptr;
     // Ask for another arrangement, and for a repaint.
     void InvalidateLayout();
     void Invalidate();
+    // Whether `w` is this widget or under it, which is what the window asks before it takes a
+    // subtree out of the way -- a modal layer's own contents have to stay reachable.
+    bool Holds(const Widget *w) const {
+        for (const Widget *at = w; at; at = at->parent)
+            if (at == this) return true;
+        return false;
+    }
 
     // ---- what a screen reader is told --------------------------------------------------------
     // Four questions and one string. `tips` is the tooltip text as well, and one string is the
