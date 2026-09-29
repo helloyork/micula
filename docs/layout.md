@@ -51,6 +51,13 @@ somewhere -- and hit testing unwinds the same stack. Scrolling is already a tran
 level up; this is the same idea with the level count freed. It is also what makes motion cheap: a
 subtree that moves is a transform, and nothing has to be told.
 
+A widget may opt out with `space = Space::Page`: its rectangle is then in the window's own space, no
+ancestor transform touches it, and what the transforms were doing becomes its own job -- clip itself
+to the room it has, keep out of the way of anything that scrolls around it, and be hit-tested exactly
+where it draws. That is the honest answer for a widget that hosts a child window or draws a canvas of
+its own, and taking it on should be a decision somebody makes on purpose, which is why it is a field
+a widget sets rather than a mode the window is put into.
+
 The rectangle a layout arranges is the *target*; what is drawn is a rectangle gliding toward it.
 See [Motion](#motion).
 
@@ -59,18 +66,25 @@ See [Motion](#motion).
 `Widget` gains one question:
 
 ```cpp
-virtual Want Measure(const Space &space) const;
+virtual Want Measure(const Room &room) const;
 ```
 
-`Want` is what it would like to be, per axis: a size it measured, or `kFill` for "whatever you are
-giving me". `Space` is what the question is asked in: the fonts (with the measured-text cache behind
-them), the width on offer, the height if it is known, and the `Spec` in force. A button answers with
-its preferred width and the control height; a wrapping label answers with the height it needs at the
-width on offer; a control with no opinion answers `kFill`, which is the default. A widget with
-children answers with what its own layout measured.
+`Want` is what it would like to be, per axis, and there are three answers rather than a number:
 
-This is the one part of the protocol that has to be right the first time, because every control
-implements it.
+| | |
+|---|---|
+| `Content` | As big as its content measures. `size` carries the measurement, and it is a preference: a parent may give more, or less. |
+| `Fill` | As big as there is. In a column the `Fill` children share what the others left over. |
+| `Fixed` | Exactly `size`, and a parent honours it: a square ring, a control that is one switch wide. |
+
+`Room` is what the question is asked in: the fonts (with the measured-text cache behind them), the
+`Spec` in force, the width on offer and the height when it is known. A button answers `Content` with
+its preferred width and `Fixed` at the control height; a wrapping label answers `Content` with the
+height it needs *at the width on offer*, which is why the width is part of the question; a widget
+with no opinion answers `Fill`. A widget with children answers with what its own layout measured.
+
+This is the one part of the protocol that cannot be changed cheaply later, because every control
+implements it. **Decided: three states per axis.**
 
 ## The Layout
 
@@ -85,12 +99,17 @@ struct Widget {
 
 ```cpp
 struct Layout {
-    virtual Want Measure(Widget *host, const Space &space);
-    virtual void Arrange(Widget *host, const D2D1_RECT_F &box);
+    virtual Want Measure(const Room &room) const;
+    virtual void Arrange(const Room &room, const D2D1_RECT_F &box) = 0;
     virtual void Tick(float dt);          // the animations this layout owns
     void Invalidate();                    // mark the subtree dirty
+    bool Glide(float dt);                 // move the drawn rectangles, and say whether anything moved
+    Spec spec;                            // the numbers, edit in place
 };
 ```
+
+Both passes take the room, because arranging is also where a child is measured against the width it
+is *really* being given -- which is not the one it was offered, once a line wraps.
 
 **Nothing arranges inside a callback.** A change marks the subtree dirty, and the window arranges
 once, at one defined point in the frame, before it paints. That is what makes a retained tree cheap
@@ -104,7 +123,7 @@ Built-in layouts, in the order they are needed:
 |---|---|
 | `StackLayout` | The default, and the one most pages want: children one after another, a gap between them, padding, headings that take their own band. |
 | `RowLayout` | Children side by side, each as wide as it asked to be, or sharing the room. |
-| `CardLayout` | The settings card: a title and a line of detail on the left, a slot for one control on the right, its own height and padding from the `Spec`. |
+| `CardLayout` | The settings card, and the layout of the `Card` widget below. |
 | `GridLayout` | Columns and rows, with a cell able to span. The one that needs a real measure pass, and the one to build last. |
 | `CustomLayout` | A callback: `CustomLayout([](Widget *host, const D2D1_RECT_F &box) { ... })`. The escape hatch for a page that wants to do its own arithmetic, which is what today's `Layout()` is. |
 
@@ -135,6 +154,13 @@ card->Add(new Segmented({ L"Auto", L"High", L"Low" }, quality, onChange));
 A `Heading`, a `Label` and a `Card` are widgets, so what a page used to draw in `PaintPage()` -- its
 headings, its card backgrounds, its lines of detail -- is placed, measured, ordered and reported like
 anything else, and `PaintPage()` has nothing left to do.
+
+A `Card` is the platform's control template rather than a shape: an icon if it has one, a title line,
+a description line, one control in its slot (a `Button`, a `ToggleSwitch`, a `TextBox`, a `Segmented`)
+and the line that reads that control's value back. Windows Settings is built out of that one template,
+so a library that looks like Windows Settings is built out of it too -- which is why it belongs in the
+library as a widget instead of being a shape every page assembles, and why it is the widget a page
+reaches for most.
 
 ## Scrolling belongs to the container
 
@@ -184,10 +210,11 @@ express. The four questions a control answers about itself (`AccessibleName`, `A
 
 ## What the window becomes
 
-`Window` becomes the root of the tree -- it is a `Widget` -- and its own furniture is children of it:
-the title bar, its buttons, the pane. `kCaptionH` stops being a constant and becomes the height of a
-widget, and the minimise, maximise and close buttons join the automation tree, which they are missing
-from today.
+`Window` becomes the root of the tree -- it is a `Widget` -- and it holds the root widget the page
+builds into: the client area, which is WinUI's `Window.Content` and the thing a page adds to. Its own
+furniture is its other children: the title bar, its buttons, the pane. `kCaptionH` stops being a
+constant and becomes the height of a widget, and the minimise, maximise and close buttons join the
+automation tree, which they are missing from today.
 
 The frame becomes:
 
@@ -243,21 +270,15 @@ one: a page stops computing rectangles and starts adding children, and a control
 
 ## Open questions
 
-1. **Is `Window` the root?** This file assumes yes (`Window : Widget`), which puts the title bar in
-   the tree and the window buttons in the automation tree. The alternative is a root `Widget` the
-   window owns, which keeps `Window` as it is but means two kinds of top-level, forever.
-2. **`rect` in the parent's space, unconditionally?** It is what makes nesting, scrolling and motion
-   one mechanism, and the price is that every `Paint` implementation has to be true to its own
-   rectangle -- most already are, because scrolling already arrives as a transform.
-3. **`Want`'s shape.** `{ w, h }` with `kFill` per axis, or an explicit per-axis `Content / Fill /
-   Fixed`? The former is what a control wants to write; the latter is what a grid needs to read.
-4. **Overflow by default?** This file says a container that overflows scrolls without being asked.
-   The alternative is a flag on the container. Default-scrolls is the behaviour that makes the
-   library own the problem; the flag is the behaviour that surprises nobody.
-5. **How much is a widget?** The design above turns headings, labels and cards into widgets. Whether
-   the title bar, the pane and the window buttons follow in v1, or later, is a question about how
-   much of the window moves in the first pass.
-6. **What the v1 animation set is.** The glide, the page switch and the re-arrange tween are in this
-   file; enter and exit are not.
-7. **`CustomLayout`.** Keep it, or let a page subclass `Layout` and be done? (This file keeps it: it
-   is the cheap path for a page with one odd row, and it is what today's `Layout()` becomes.)
+1. **How much of the window is a widget in v1.** The title bar, the pane and the window buttons are
+   children of the root in this design; whether they become widgets in the first pass or the second is
+   a question about how much moves at once, not about the model.
+2. **What the v1 animation set is.** The glide, the page switch and a re-arrange that tweens are in
+   this file; enter and exit transitions are not.
+3. **`CustomLayout`.** Keep it, or let a page subclass `Layout` and be done? This file keeps it: it is
+   the cheap path for a page with one odd row, and it is what today's `Layout()` becomes.
+
+Answered on 2026-09-29, and the answers are in the sections above: `Window` is the root and holds the
+root widget; a rectangle is in the parent's space, with an opt-out for a widget that would rather do
+all of it itself; `Want` has three states per axis; a container that overflows scrolls without being
+asked.
