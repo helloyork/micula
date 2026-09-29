@@ -1,0 +1,243 @@
+#pragma once
+
+// The node. A widget owns the widgets under it, its parent's layout decides where it is, and
+// `visible` decides whether it is anywhere at all -- which is how a page that used to be torn down
+// and rebuilt to change what is on screen changes it instead.
+//
+// Nothing a control says about itself is a coordinate. A control reports what it wants (`Measure`),
+// draws itself inside the rectangle it was given (`Paint`), and answers input in its own space; the
+// tree is what moves things, with transforms, and the window is what runs the arrangement.
+
+#include "layout.h"
+#include "theme.h"                  // Fonts, and motion for the glide
+
+#include <uiautomationclient.h>     // the UIA_* control type ids
+
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace micula {
+
+struct Painter;
+struct Window;
+struct Layer;
+
+// Where a widget's rectangle is measured from.
+enum class Space {
+    // The parent's space. This is what makes nesting, scrolling and motion one mechanism: every
+    // transform in the tree is inherited, so a subtree on its way somewhere is a transform and
+    // nothing inside it has to know it is moving.
+    Parent,
+    // The window's own space, with no ancestor transform on it. For a widget that is a world of its
+    // own -- a hosted child window, a canvas. Taking this on means doing by hand what the transforms
+    // were doing: clipping to the room it has, staying out of the way of whatever scrolls around
+    // it, and being hit-tested exactly where it is drawn.
+    Page,
+};
+
+// An arranged rectangle, and where it is being drawn. A widget is only ever in one of these states,
+// which is what lets `Animating` answer with a comparison.
+inline bool SameRect(const D2D1_RECT_F &a, const D2D1_RECT_F &b) {
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+struct Widget {
+    Widget() = default;
+    virtual ~Widget() {}
+
+    // ---- the tree ----------------------------------------------------------------------------
+    Widget *parent = nullptr;
+    std::vector<std::unique_ptr<Widget>> children;
+
+    // Takes ownership, appends, returns. The order is paint order, hit-test order reversed, Tab
+    // order, and the order a screen reader reads.
+    template <typename T> T *Add(T *w) {
+        w->parent = this;
+        w->uid = NextUid();
+        children.emplace_back(w);
+        InvalidateLayout();
+        return w;
+    }
+
+    // Takes a child out. The node is not destroyed here: it is handed to the window, which destroys
+    // it after the message being handled has finished, so a control may remove itself from its own
+    // callback -- which is a thing controls do.
+    void Remove(Widget *w);
+
+    // What arranges the children of this node. Null, and they keep the rectangles they were given,
+    // which is what a page with one control in it wants.
+    std::unique_ptr<Layout> layout;
+    void SetLayout(Layout *l) {
+        layout.reset(l);
+        if (layout) layout->host_ = this;
+        InvalidateLayout();
+    }
+
+    // ---- what it is --------------------------------------------------------------------------
+    bool visible = true;
+    bool enabled = true;
+    bool hover = false;
+    bool pressed = false;
+    bool focus = false;
+    // The animated shadows of the three flags above: 0 is off, 1 is on, anything between is a brush
+    // crossing over. Only the background follows these -- a WinUI control under the pointer moves
+    // one property, `<ContentPresenter.BackgroundTransition>`, and leaves its border, its text and
+    // its focus ring to change between two frames.
+    float hoverT = 0.0f, pressT = 0.0f, focusT = 0.0f;
+
+    // ---- where it is -------------------------------------------------------------------------
+    D2D1_RECT_F rect = {};      // what the parent's layout arranged, in the parent's space
+    D2D1_RECT_F drawn = {};     // where it is drawn and hit-tested: `rect`, gliding toward it
+    bool placed = false;        // false until the first arrangement, and the first one never glides
+    Space space = Space::Parent;
+
+    // ---- what it wants -----------------------------------------------------------------------
+    // A container answers with what its layout measured; a control answers from its own content; one
+    // with no opinion at all takes the room it is given.
+    virtual Want Measure(const Room &room) const {
+        if (layout) return layout->Measure(room);
+        return Want(Sizing::Fill, Sizing::Fill);
+    }
+
+    // ---- what it draws and what it answers ---------------------------------------------------
+    virtual void Paint(const Painter &p) = 0;
+
+    // Only widgets that can be operated from the keyboard join the Tab order.
+    virtual bool Focusable() const { return false; }
+    virtual void OnClick() {}
+    // The mouse went down on this widget, at this point in the widget's own space. Taken from the
+    // message rather than read from the cursor: the pointer can have moved between the click being
+    // queued and this running, and a control that reads the cursor can disagree with the hit test
+    // that chose it.
+    virtual void OnPress(float /*x*/, float /*y*/) {}
+    // The mouse moved while this widget holds capture, in the same space as OnPress. This and
+    // OnPress are the whole of a drag; a control must not update itself out of Paint instead.
+    virtual void OnDrag(float /*x*/, float /*y*/) {}
+    // The pointer moved over this widget, or over the region it watches outside itself
+    // (ExternalRegion), in the widget's own space.
+    virtual void OnPointerMove(float /*x*/, float /*y*/) {}
+    // The area outside `rect` -- in the widget's own space -- where it wants OnPointerMove as well.
+    // Empty for a widget that only answers to itself. Moves only: a press here is a press on
+    // whatever is behind, so this widens what a widget sees, not what it takes.
+    virtual D2D1_RECT_F ExternalRegion() const { return {}; }
+    // A wheel turned over this widget, in its own space; `notches` is positive away from the user.
+    // Return true to keep it from the container, which would otherwise scroll.
+    virtual bool OnWheel(float /*x*/, float /*y*/, float /*notches*/) { return false; }
+    // The keyboard's way of working this widget: Space, and Enter on one that has a job. Distinct
+    // from OnClick, which is the pointer doing something: a drop-down chooses the row the pointer is
+    // over, and there is no pointer to read when the choice came from the keyboard.
+    virtual void OnActivate() { OnClick(); }
+    // Something happened that should put away anything transient this widget is showing: a press
+    // somewhere else, the window being deactivated.
+    virtual void Dismiss() {}
+    virtual bool OnKey(UINT /*key*/, bool /*shift*/, bool /*ctrl*/) { return false; }
+    virtual bool OnChar(wchar_t /*c*/) { return false; }
+    virtual void OnFocus() {}
+    virtual void OnBlur() {}
+    // The layer this widget is, when it is one. Asked by the window, which routes Esc, Enter and the
+    // Tab ring through the top layer before the page sees them.
+    virtual Layer *AsLayer() { return nullptr; }
+
+    // ---- animation --------------------------------------------------------------------------
+    // Whether this node is moving, for the window's frame loop: it is what keeps frames coming while
+    // a layout glides and stops them when everything has arrived.
+    virtual bool Animating() const {
+        if (placed && !SameRect(drawn, rect)) return true;
+        for (const auto &c : children) {
+            if (c->visible && c->Animating()) return true;
+        }
+        return false;
+    }
+    // One frame for the subtree: the children first, then the layout that owns them, which is what
+    // glides whatever it arranged somewhere new.
+    void Tick(float dt) {
+        for (auto &c : children) {
+            if (c->visible) c->Tick(dt);
+        }
+        if (layout) layout->Tick(dt);
+    }
+
+    // ---- the window --------------------------------------------------------------------------
+    // Found by walking up, so a subtree may be built before it is added to a window. Null while it
+    // is not in one yet.
+    virtual Window *window() { return parent ? parent->window() : nullptr; }
+    // Ask for another arrangement, and for a repaint.
+    void InvalidateLayout();
+    void Invalidate();
+
+    // ---- what a screen reader is told --------------------------------------------------------
+    // Four questions and one string. `tips` is the tooltip text as well, and one string is the
+    // point: what a control says in a tooltip and what it says to somebody who cannot see it are
+    // the same thought.
+    std::wstring tips;
+    // What the page calls this widget, for the times the page knows a name the widget does not. The
+    // words beside a switch are page text and are not part of it. Set, and it wins over the virtual.
+    std::wstring accessibleName;
+    virtual const wchar_t *AccessibleName() const { return nullptr; }
+    const wchar_t *AccessibleLabel() const {
+        return accessibleName.empty() ? AccessibleName() : accessibleName.c_str();
+    }
+    // Custom rather than Pane: a widget that has not said what it is has not said it is a container
+    // either, and a client guessing from Custom guesses less wrong.
+    virtual int AccessibleType() const { return UIA_CustomControlTypeId; }
+    // -1 when this is not a switch; otherwise 0 off, 1 on, 2 indeterminate.
+    virtual int AccessibleToggle() const { return -1; }
+    // False when there is no value worth reading. True fills `out` with what a screen reader should
+    // say -- "40%", the text of a field -- so the formatting stays the widget's business.
+    virtual bool AccessibleValue(std::wstring & /*out*/) const { return false; }
+    // Whether OnActivate does something a client may ask for on this widget's behalf. False by
+    // default, focusable or not: a field is focusable and activating it does nothing.
+    virtual bool AccessibleActionable() const { return false; }
+    // The number Add gave this widget. What a UIA element holds instead of a pointer, which is what
+    // makes an element that has outlived its widget harmless.
+    int uid = 0;
+
+private:
+    static int NextUid() {
+        static int next = 0;
+        return ++next;
+    }
+};
+
+// ---- the parts of the protocol that need the node they walk ------------------------------------
+//
+// Defined here rather than in layout.h, which knows a Widget only by name: the glide moves a
+// child's drawn rectangle, and only this header knows what one is.
+
+inline void Layout::Tick(float dt) { Glide(dt); }
+
+inline void Layout::Invalidate() {
+    if (host_) host_->InvalidateLayout();
+}
+
+inline bool Layout::Glide(float dt) {
+    if (!host_) return false;
+    bool moving = false;
+    for (auto &child : host_->children) {
+        Widget *w = child.get();
+        if (!w->visible) continue;
+        if (!w->placed) {
+            // The first arrangement places without moving: a page that has just been built is where
+            // it is, and sliding it in from wherever the empty rectangle happens to be is not a
+            // transition anybody asked for.
+            w->drawn = w->rect;
+            w->placed = true;
+            continue;
+        }
+        if (!Animations()) {
+            w->drawn = w->rect;
+            continue;
+        }
+        // All four edges, every frame: Follow is also what puts a value on its target when
+        // animations are off, so it is called rather than skipped.
+        bool m = motion::Follow(w->drawn.left, w->rect.left, dt, glideLag, glideSnap);
+        m = motion::Follow(w->drawn.top, w->rect.top, dt, glideLag, glideSnap) || m;
+        m = motion::Follow(w->drawn.right, w->rect.right, dt, glideLag, glideSnap) || m;
+        m = motion::Follow(w->drawn.bottom, w->rect.bottom, dt, glideLag, glideSnap) || m;
+        moving = moving || m;
+    }
+    return moving;
+}
+
+}  // namespace micula
