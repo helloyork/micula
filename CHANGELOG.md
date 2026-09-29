@@ -6,6 +6,16 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`glyph::kEthernet` (`E839`) and `glyph::kRemoteDevice` (`E836`).** The two ends of a connection to
+  a machine somewhere else: a device with its cable plugged in, and a device being added. The font has
+  no server glyph, so the second of these is the closest honest answer for "the machine at that
+  address". The names are Microsoft's own -- from the icon list Windows Terminal and the WinUI Gallery
+  both ship -- because the fonts have no glyph names at all (both carry an empty `post` table), and a
+  code point identified by looking at a rendered sheet is a code point that is eventually the wrong
+  picture.
+
 ## [0.8.1] - 2026-09-29
 
 ### Changed
