@@ -15,11 +15,33 @@
 #include <algorithm>
 #include <cmath>
 
+// Compile with -DMICULA_DEBUG_LAYOUT=1 and the window draws what the layouts worked out, over the
+// page: the rectangle each widget was arranged into (red), the clip it is painted under (blue), a
+// container's content box inside its own padding (orange), and the rectangle a widget is gliding
+// toward while it is not there yet (magenta). None of it exists in a build without the flag -- not
+// the code, not the colours -- and a build that has it can still turn it off:
+//
+//     micula::debug::layout = false;
+//
+// A page is mostly its layout, and a layout is arithmetic; this is the arithmetic drawn where it can
+// be disagreed with. Nothing here is a replace for a probe that prints the rectangles, which is what
+// a real fault wants -- it is a replace for taking a screenshot of a window to find out which box is
+// wrong.
+#ifndef MICULA_DEBUG_LAYOUT
+#define MICULA_DEBUG_LAYOUT 0
+#endif
+
 namespace micula {
 
 struct Fonts;
 struct Spec;
 struct Widget;
+
+namespace debug {
+#if MICULA_DEBUG_LAYOUT
+inline bool layout = true;
+#endif
+}  // namespace debug
 
 // How a control wants one axis of itself treated. Three answers, and they are the whole vocabulary:
 //
@@ -104,6 +126,12 @@ struct Layout {
     // The caller follows this with `Glide(0)`, which is what places a child that has never been
     // placed: nothing glides on the first arrangement.
     virtual void Arrange(const Room &room, const D2D1_RECT_F &box) = 0;
+
+    // The part of the host's box this layout places children in: its padding is off. The default is
+    // the whole box, and a layout with padding says so here -- which is what lets the debug pass
+    // draw the content box, and a hit test ask what the room really is, without every layout having
+    // to answer the question twice.
+    virtual D2D1_RECT_F ContentBox(const D2D1_RECT_F &box) const { return box; }
 
     // The animations this layout owns. Its default body glides each child from where it was drawn
     // toward the rectangle this layout arranged for it, which is what makes a re-arrangement move

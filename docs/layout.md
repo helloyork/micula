@@ -186,6 +186,28 @@ already keeps for everything else: to the destination, not frozen halfway.
 For v1: the glide, the page switch, and a re-arrange that tweens. Enter and exit transitions after
 that.
 
+## Debugging a layout
+
+A page is mostly its layout, and a layout is arithmetic, so the fault is usually a box that is not
+where somebody thought it was. There are two ways to look at it and they answer different questions.
+
+**Print the rectangles.** Arrange the tree and write out what each widget came out as -- a test, or a
+`--dump` switch on an example. This is what a fault in the arithmetic wants: no window, no GPU, no
+screenshot, and a diffable answer. The layouts in this file were built against it.
+
+**Draw the rectangles.** Built with `-DMICULA_DEBUG_LAYOUT=1`, the window draws over the page:
+
+| | |
+|---|---|
+| red | the rectangle the layout arranged the widget into (`rect`) |
+| blue | the clip the widget is painted under |
+| orange | a container's content box: its own rectangle less its padding (`Layout::ContentBox`) |
+| magenta | `rect` while the widget is drawn somewhere else -- a position in flight |
+
+The whole pass is compiled out without the flag: no code, no colours. A build that has it can still
+turn it off at run time with `micula::debug::layout = false`. It draws unclipped on purpose, because
+a box that overflows its clip is the one thing worth seeing.
+
 ## Input, focus, and the tree
 
 - Hit testing descends from the root, skipping invisible subtrees and anything outside its parent's
@@ -275,10 +297,9 @@ one: a page stops computing rectangles and starts adding children, and a control
    a question about how much moves at once, not about the model.
 2. **What the v1 animation set is.** The glide, the page switch and a re-arrange that tweens are in
    this file; enter and exit transitions are not.
-3. **`CustomLayout`.** Keep it, or let a page subclass `Layout` and be done? This file keeps it: it is
-   the cheap path for a page with one odd row, and it is what today's `Layout()` becomes.
 
 Answered on 2026-09-29, and the answers are in the sections above: `Window` is the root and holds the
 root widget; a rectangle is in the parent's space, with an opt-out for a widget that would rather do
 all of it itself; `Want` has three states per axis; a container that overflows scrolls without being
-asked.
+asked. `CustomLayout` stays, and is written: it is the escape hatch for a page with one odd row, and
+the shape `Window::Layout()` becomes for a page that keeps its own arithmetic.

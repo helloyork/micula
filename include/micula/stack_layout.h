@@ -25,6 +25,9 @@ struct StackLayout : Layout {
 
     Want Measure(const Room &room) const override;
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
+    D2D1_RECT_F ContentBox(const D2D1_RECT_F &box) const override {
+        return { box.left + pad, box.top + pad, box.right - pad, box.bottom - pad };
+    }
 };
 
 // The children as they asked to be, stacked. A child that asked to fill on the way down contributes
