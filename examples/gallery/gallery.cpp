@@ -117,15 +117,31 @@ void Print(const Widget *w, int depth, float ox, float oy) {
     }
 }
 
-// The page, arranged into a window's worth of space and printed, with no window anywhere.
+// The page in a window that is never created: what `--dump` and `--hit` both need, since the fonts
+// and the tree are the whole of what a layout is measured against and a window is the one thing
+// neither of them has.
 //
-// The fonts are the only thing a window was really providing: every measurement a layout makes is a
-// DirectWrite one, and that needs a factory and ten formats rather than a device.
-int Dump(float w, float h) {
-    // Wide rather than in the console's code page: the labels are Chinese, and a stream left alone
-    // narrows every one of them through the CRT's default encoding on the way out.
-    _setmode(_fileno(stdout), _O_U16TEXT);
+// The window object is still the right thing to build in. It is what owns the root widget, it is
+// what the hit test is a method of, and it is what a page adds to -- so a program that lays its page
+// out without showing it runs the same code the shown one does, which is the point.
+struct Gallery : Window {
+    Page *page;
+    explicit Gallery(Page *p) : page(p) {}
 
+    const wchar_t *ClassName() const override { return L"MiculaGallery"; }
+    const wchar_t *Title() const override { return L"Micula"; }
+
+    // The tree, and the box a window of this size would give it.
+    View *Build(float w, float h) {
+        page->Build(EnsureContent());
+        content->rect = { 0.0f, kCaptionH, w, h };
+        return static_cast<View *>(content.get());
+    }
+};
+
+// The fonts, and the two things that need them. Every measurement a layout makes is a DirectWrite
+// one, so a factory and ten formats are the whole of what a window was providing.
+int WithFonts(void (*body)(Fonts &)) {
     IDWriteFactory *dw = nullptr;
     if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                    reinterpret_cast<IUnknown **>(&dw))) || !dw) {
@@ -135,39 +151,74 @@ int Dump(float w, float h) {
     Fonts fonts;
     if (!fonts.Create(dw)) {
         std::fwprintf(stderr, L"the font formats could not be made.\n");
+        fonts.Release();
+        dw->Release();
         return 1;
     }
-
-    Page page;
-    View root;
-    page.Build(&root);
-
-    // The box the window gives its content: the client area below the caption.
-    root.rect = { 0.0f, kCaptionH, w, h };
-    ArrangeSubtree(&root, fonts);
-    Print(&root, 0, 0.0f, 0.0f);
-
+    body(fonts);
     fonts.Release();
     dw->Release();
     return 0;
 }
 
+// The page, arranged into a window's worth of space and printed, with no window anywhere.
+void Dump(Fonts &fonts) {
+    Gallery gallery(nullptr);
+    Page page;
+    gallery.page = &page;
+    View *root = gallery.Build(700.0f, 620.0f);
+    ArrangeSubtree(root, fonts);
+    Print(root, 0, 0.0f, 0.0f);
+}
+
+// Every widget's own centre, asked of the hit test. What should come back at a widget's centre is
+// that widget, or something inside it -- the middle of a card is over the control on the card, not
+// over the card. Anything else is a click that would land on the wrong control, and it is the one
+// fault in this area that looking at the window cannot find: a page whose controls are all in the
+// right place and none of which can be pressed looks exactly like a page.
+void Hit(Fonts &fonts, Widget *w, int depth, float ox, float oy) {
+    if (!w->visible) return;
+    const D2D1_RECT_F r = w->rect;
+    const float cx = ox + (r.left + r.right) / 2;
+    const float cy = oy + (r.top + r.bottom) / 2;
+    Widget *found = w->window()->HitTest(cx, cy);
+    const wchar_t *verdict = L"other";
+    if (!found) verdict = L"nothing";
+    else if (found == w) verdict = L"itself";
+    else if (w->Holds(found)) verdict = L"inside";
+
+    std::wprintf(L"%*s#%-3d centre %7.1f %7.1f -> #%-3d %ls", depth * 2, L"", w->uid, cx, cy,
+                 found ? found->uid : 0, verdict);
+    if (const wchar_t *name = w->AccessibleLabel()) std::wprintf(L"  %ls", name);
+    std::wprintf(L"\n");
+
+    for (const auto &child : w->children) Hit(fonts, child.get(), depth + 1, ox + r.left, oy + r.top);
+}
+
+void Hits(Fonts &fonts) {
+    Gallery gallery(nullptr);
+    Page page;
+    gallery.page = &page;
+    View *root = gallery.Build(700.0f, 620.0f);
+    ArrangeSubtree(root, fonts);
+    Hit(fonts, root, 0, 0.0f, 0.0f);
+}
+
 }  // namespace
 
-// The window, and the page inside it. Nothing here but the two things a window has always had to
-// say -- what it is called, and that it is a window -- and the tree its page built.
-struct Gallery : Window {
-    Page *page;
-    explicit Gallery(Page *p) : page(p) {}
-
-    const wchar_t *ClassName() const override { return L"MiculaGallery"; }
-    const wchar_t *Title() const override { return L"Micula"; }
-};
-
 int wmain(int argc, wchar_t **argv) {
+    bool dump = false, hit = false;
     for (int i = 1; i < argc; i++) {
-        if (std::wcscmp(argv[i], L"--dump") == 0) return Dump(700.0f, 620.0f);
+        if (std::wcscmp(argv[i], L"--dump") == 0) dump = true;
+        if (std::wcscmp(argv[i], L"--hit") == 0) hit = true;
     }
+    if (dump || hit) {
+        // Wide rather than in the console's code page: the labels are Chinese, and a stream left
+        // alone narrows every one of them through the CRT's default encoding on the way out.
+        _setmode(_fileno(stdout), _O_U16TEXT);
+        return WithFonts(dump ? Dump : Hits);
+    }
+
     // A console program so that --dump has somewhere to print. Launched from Explorer that console
     // is one nobody asked for, so it is dropped when it is ours and left alone when it is a
     // terminal's.
@@ -180,8 +231,9 @@ int wmain(int argc, wchar_t **argv) {
     {
         Page page;
         Gallery gallery(&page);
-        page.Build(gallery.EnsureContent());
+        gallery.Build(700.0f, 620.0f);
         if (gallery.Create(700, 620, true, nullptr)) code = gallery.Run();
     }
     return code;
 }
+

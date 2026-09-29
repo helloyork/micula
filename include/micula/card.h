@@ -100,7 +100,9 @@ struct Card : Widget {
             p.Text(text, { left, rect.top, right, rect.bottom }, p.font->body, c.textPrimary);
         } else {
             p.Text(text, { left, mid - line, right, mid }, p.font->body, c.textPrimary);
-            p.Text(detail, { left, mid, right, mid + line }, p.font->caption, c.textSecondary);
+            // The third step of the ramp rather than the second: this line is under the title and
+            // beside a control, and it is the one thing in the row nobody has to read.
+            p.Text(detail, { left, mid, right, mid + line }, p.font->caption, c.textTertiary);
         }
     }
 

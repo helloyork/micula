@@ -1637,7 +1637,17 @@ inline Widget *Window::HitTest(float x, float y) {
 // whatever is drawn on top is whatever the click reaches. A modul layer covers the page by
 // construction, so a click that misses its contents finds the layer itself and stops there -- there
 // is no "under it" to reach, which is the whole of what modal means here.
+//
+// `x, y` arrive in the space `w`'s *rect* is measured in, and the first thing this does is take the
+// point into `w`'s own space -- the space its children's rectangles are in -- by our own origin.
+// Painting does the same thing from the other end, adding each widget's origin as it goes down, and
+// the two walks agreeing about it is the whole of what makes a click land on what is under the
+// pointer. Leaving it out is what made every click read as thirty-two DIPs below where it was made:
+// the page's own origin is the caption bar, and nothing was taking it off.
 inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
+    const D2D1_RECT_F self = w->placed ? w->drawn : w->rect;
+    x -= self.left;
+    y -= self.top;
     for (auto it = w->children.rbegin(); it != w->children.rend(); ++it) {
         Widget *child = it->get();
         if (!child->visible || !child->enabled) continue;
@@ -1647,7 +1657,7 @@ inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
         const D2D1_RECT_F where = child->placed ? child->drawn : child->rect;
         if (!child->Covers(x - (where.left - child->rect.left), y - (where.top - child->rect.top)))
             continue;
-        if (Widget *deep = HitTestIn(child, x - where.left, y - where.top)) return deep;
+        if (Widget *deep = HitTestIn(child, x, y)) return deep;
         return child;
     }
     return nullptr;
@@ -1805,7 +1815,15 @@ inline bool Window::SetHover(Widget *w, Widget *over) {
 // pointer crosses the page it scrolls is what that exists for. Nobody else hears about it: being
 // told about every move in the window is not the same offer, it is a coordinate space each control
 // would then have to correct by hand.
+//
+// The same walk as HitTestIn, and it has to be: what a control is offered a point *by* has to be
+// what the hit test would have chosen at that point, or a control is told about moves that are not
+// over it. `x, y` are in the space `w`'s rect is measured in; the point goes into `w`'s own space
+// here, once, and the children are then handed points in theirs.
 inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
+    const D2D1_RECT_F self = w->placed ? w->drawn : w->rect;
+    x -= self.left;
+    y -= self.top;
     bool tracks = false;
     for (const auto &child : w->children) {
         Widget *c = child.get();
@@ -1817,7 +1835,7 @@ inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
             c->OnPointerMove(px, py);
             if (c->TracksPointer()) tracks = true;
         }
-        if (SendMove(c, x - where.left, y - where.top, over)) tracks = true;
+        if (SendMove(c, x, y, over)) tracks = true;
     }
     return tracks;
 }
