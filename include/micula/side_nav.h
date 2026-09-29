@@ -51,6 +51,20 @@ struct NavItem {
 // are unreachable without deciding to. Off by default, like everything else here.
 enum class PaneStyle { Fixed, Toggle, Peek, Minimal };
 
+// The pane's own layout, and it places one thing: the bar.
+//
+// A pane's rows are not children -- forty rows is one control drawing forty rows, the way a
+// drop-down's list is one widget -- so what is left for a layout here is the bar, and the numbers the
+// bar is told, which are the pane's own geometry.
+//
+// It is also where the pane's *want* is answered, because `Widget::Measure` asks the layout of a
+// widget that has one: what a pane asks the page for is the room its state needs, which is
+// `Reserved`.
+struct NavLayout : Layout {
+    Want Measure(const Room &room) const override;
+    void Arrange(const Room &room, const D2D1_RECT_F &box) override;
+};
+
 // The list of pages down the left of a window, the way Windows 11's own settings window has
 // it. WinUI calls the whole thing NavigationView and what is here is its pane: the content
 // stays the page's business, and switching to another one is what the callback is for.
@@ -60,17 +74,26 @@ enum class PaneStyle { Fixed, Toggle, Peek, Minimal };
 // the same pane, and the four styles above are four answers to one question rather than four
 // controls.
 //
-// **Make it persistent.** A pane is the one control a page really is laid out *while it is
-// being operated*: choosing a page rebuilds the page, and a rebuild would take the open
-// state, the width half way through its animation, the hover and the accent bar's travel
-// with it. The page makes it once, marks it persistent, and hands it a fresh `rect` in every
-// Layout() -- the pane owns its own right edge and grows from the left one it is given.
-// Whether the page makes room for the pane is not a setting: it follows from what the pane
-// *is*, and from who asked for it. A pane that stays -- `Fixed`, `Toggle`, and a `Peek` the
-// button pinned -- is part of the layout, and a page laid out around it is the whole point of
-// it; a pane that comes and goes covers what it is over, and pushing the page around under a
-// pointer that is only passing through would be worse than covering it. That is the whole of
-// what a peek is: the same pane, with the room only for the shape a person asked for.
+// **It is a node, not a thing a layout is handed.** In the flat list a page had to mark it
+// persistent, because choosing a page rebuilt the page and the rebuild would have taken the open
+// state, the width half way through its animation, the hover and the accent bar's travel with it. A
+// widget under a page that hides one child and shows another is not rebuilt at all, and nothing about
+// the pane is the page's to keep in step.
+//
+// **What it asks for is the room its state needs** -- `Reserved`, which is what its own layout answers
+// `Measure` with -- and whether the page makes room for it is not a setting: it follows from what the
+// pane *is*, and from who asked for it. A pane that stays -- `Fixed`, `Toggle`, and a `Peek` the
+// button pinned -- is part of the layout, and a page laid out around it is the whole point of it; a
+// pane that comes and goes covers what it is over, and pushing the page around under a pointer that
+// is only passing through would be worse than covering it. That is the whole of what a peek is: the
+// same pane, with the room only for the shape a person asked for.
+//
+// **A pane that covers draws wider than the box it was arranged into**, and it is the one control
+// here that does. Painting is never clipped, so it is drawn over the page; and `Covers` answers with
+// the same box the drawing uses, so it is reached over the page as well -- a click on a pane hanging
+// over the page belongs to the pane. What stands in for `z` is order: a page that wants the pane over
+// its content puts the pane after the content, because children are painted in order and hit-tested
+// in the reverse of it.
 //
 // WinUI's own pane is `Toggle` over a rail, which is `LeftCompact`, and it was here as a third
 // axis for a while. It came out: a pane the user asked to open and which then covers the
@@ -149,6 +172,17 @@ struct SideNav : Widget {
     // two directions are different shapes -- a pane arriving settles, a pane leaving gets out
     // of the way. Same pair as the drop-down's lid, for the same reason.
     motion::Track wide;
+    // The dim over the page, on its own clock. Its strength used to be a function of how far the pane
+    // had grown past the rail -- full at 48 DIP of a 212-DIP move, which the pane's own 167 ms curve
+    // covers in five milliseconds: the dim arrived in one frame and left in one, so there was nothing
+    // to see. It is a smoke layer, and a smoke layer fades. See Tick.
+    motion::Track dim;
+    // Whether the pane is *over* the page: it is not pushing the page aside and it is asking to be
+    // open. **The state, and not the width** -- the width is still on its way back to the rail when
+    // the pointer has already left, and a dim that waited for that would be a dim outliving the pane
+    // it is a dim of. The pane's paint asks the geometric question separately, because a surface and
+    // its shadow must wait for the pane to be past the rail: see Paint.
+    bool OverPage() const { return !Pushes() && Expanded(); }
     // The accent bar, which travels between rows rather than appearing under the new one. The
     // two edges a row apart while it moves is what makes it stretch across the gap and close
     // up on arrival, which is what examples/settings used to do by hand. Its edges are DIPs and
@@ -200,11 +234,12 @@ struct SideNav : Widget {
     // How long the scroll takes to close most of its gap, in seconds.
     static constexpr float kGlide = 0.05f;
     // The pane's own scroll bar, for the wide pane: WinUI's NavigationView keeps its rows in a
-    // ScrollViewer, and this is the bar every ScrollViewer has -- the same control the page uses
-    // and the drop-down puts in its list. Not made until there is something to scroll, because a
-    // bar for a pane that will never need one is two timers and a frame's work for nothing. The
-    // rail has the arrows instead, which is what Windows' own compact pane does.
-    std::unique_ptr<ScrollBar> scrollBar;
+    // ScrollViewer, and this is the bar every ScrollViewer has -- the same control the page uses and
+    // the drop-down puts in its list. A *child* of the pane, so the tree paints it, hit-tests it and
+    // ticks it, and last of the children, because it is painted over the rows it belongs to. Never
+    // shown in the rail: there the arrows at the ends of the band are what moves the list, which is
+    // what Windows' own compact pane has down its middle.
+    ScrollBar *scrollBar = nullptr;
     // In from the pane's own edge, about where the rows' own pills stop: the bar is over the rows,
     // and one hanging off the edge would be over the page beside the pane.
     static constexpr float kBarPad = 4.0f;
@@ -222,6 +257,28 @@ struct SideNav : Widget {
     // often as it chooses through Select, so which row the view owes a look at is remembered
     // rather than assumed.
     int seenSelected = -1;
+
+    // The first look at itself, and there is nothing to animate *from* on it: a pane that comes up
+    // open is open, not a pane growing out of the rail. Both the width and the mark are *set* rather
+    // than moved, which is what this remembers.
+    //
+    // It is the placement that runs it and not a tick, because the first thing anything asks of a pane
+    // is where it goes: a window's first arrangement, a `--dump` that has no ticks at all, and a frame
+    // then all see the same pane instead of three widths.
+    void Prime() {
+        if (primed) return;
+        wide.Set(Expanded() ? 1.0f : 0.0f);
+        // And the mark with it: a pane that comes up with a choice already made comes up with its mark
+        // on that choice, rather than one gliding down to it from the top of the list -- that move
+        // belongs to somebody having chosen the row, and nobody has.
+        aimed = selected;
+        barFrom = selected;
+        barWant = TopOf((float)selected);
+        bar.Set(barWant);
+        primed = true;
+    }
+
+    SideNav();
 
     // --- geometry ------------------------------------------------------------------
     struct Row {
@@ -279,62 +336,80 @@ struct SideNav : Widget {
     // Worked out from the width as it is drawn rather than from the state being asked for, like
     // everything else here, so that a pane half way open is not a pane with a band in the wrong
     // place.
-    D2D1_RECT_F Band() const {
+    D2D1_RECT_F BandIn(const D2D1_RECT_F &r) const {
         // From the button's bottom to the footer's top, and nothing taken out of it: the arrows sit
         // *over* the rows at either end (see ArrowBox) rather than in a strip of their own, because
         // a strip is space taken from the rows at both ends all the time and needed only when
         // something is hidden in that direction -- and the ends of the list are exactly where
         // nothing is.
-        float top = rect.top + (ShowsToggle() ? kTogglePad + kToggle + kTogglePad : kTogglePad);
-        float bottom = rect.bottom - kBottomPad;
+        float top = r.top + (ShowsToggle() ? kTogglePad + kToggle + kTogglePad : kTogglePad);
+        float bottom = r.bottom - kBottomPad;
         if (!footer.empty()) bottom -= (float)footer.size() * (rowH + kRowGap);
-        return { rect.left, top, rect.left + Width(), (std::max)(top, bottom) };
+        return { r.left, top, r.left + Width(), (std::max)(top, bottom) };
     }
+    // The pane's own rectangle. The version above takes a box instead, because a layout arranges its
+    // children in the host's own space -- where the same band starts at zero -- and the bar is a
+    // child that has to be arranged in it. See NavLayout::Arrange.
+    D2D1_RECT_F Band() const { return BandIn(rect); }
     // The bar's place: the pane's own right edge, over the rows and no taller than they are. Worked
     // out from the width as it is drawn, like everything else here, so that a pane on its way out
     // takes its bar with it rather than leaving one behind at the width it used to be.
-    D2D1_RECT_F BarBox() const {
-        const D2D1_RECT_F band = Band();
-        const float right = rect.left + Width() - kBarPad;
+    D2D1_RECT_F BarBoxIn(const D2D1_RECT_F &r) const {
+        const D2D1_RECT_F band = BandIn(r);
+        const float right = r.left + Width() - kBarPad;
         return { right - ScrollBar::kSize, band.top, right, band.bottom };
     }
-    // Whether there is a bar to draw or to click: the wide pane's, and only where the rows do not
-    // all fit. The rail's own ends are where the arrows are.
-    bool HasBar() const { return scrollBar && wide.value > 0.0f && ScrollMax() > 0.0f; }
-    // The bar itself, made on demand and shown: `Wake` is the bar's own -- see ScrollBar -- and a
-    // scroll, or a move over the rows, is what asks for it. A pane with nothing to scroll is left
-    // with no bar at all rather than one armed for a range that has gone.
+    D2D1_RECT_F BarBox() const { return BarBoxIn(rect); }
+    // Waking the bar, for the things the pane does to its own rows: a scroll it asked for, a choice
+    // it followed, a band that moved under them. The pointer's own moves are the bar's -- it watches
+    // the band from outside itself (ExternalRegion) and is woken by them without the pane in the
+    // middle, which is what the old flat list needed a hand-written forward for.
     void WakeBar() {
-        if (!scrollBar && ScrollMax() > 0.0f) {
-            scrollBar = std::make_unique<ScrollBar>(
-                [this](float to, bool glide) { BarScrolled(to, glide); });
-            scrollBar->visible = true;
-        }
         if (!scrollBar) return;
-        scrollBar->owner = owner;
         scrollBar->Wake();
+        scrollBar->Poll();
     }
-    // Everything the bar is told, in one place: every number it works from is the pane's own
-    // geometry, and the width, the band and the range all move under an animation.
-    void SyncScrollBar(float frac) {
+    // Everything the bar is told, from the box the pane was arranged into: its rectangle, the strip
+    // of rows it watches, and the range it is showing. In the pane's own space, which is also the
+    // space a layout arranges a child in -- see NavLayout::Arrange, and Tick, which is the other
+    // caller and the reason this is a method of the pane's own.
+    void PlaceBar(const D2D1_RECT_F &box) {
         if (!scrollBar) return;
+        // A pane that is being placed is a pane that has been arranged, and the first arrangement is
+        // the first thing anything asks of it: see Prime, which is what makes a dump, a measurement and
+        // a frame agree about a pane that comes up open.
+        Prime();
         Build();
-        const D2D1_RECT_F band = Band();
-        scrollBar->rect = BarBox();
-        // The rows' own strip. A move anywhere over them is a move over a scrolling area, which is
-        // what an overlay bar is shown for -- so the bar is woken by the pointer the pane hears and
-        // not only by the one on its own twelve DIPs.
-        scrollBar->area = band;
+        const D2D1_RECT_F band = BandIn(box);
+        scrollBar->rect = BarBoxIn(box);
+        // The rows' own strip, in the bar's own space: a move anywhere over them is a move over a
+        // scrolling area, which is what an overlay bar is shown for. Not a hit-test area -- a click
+        // out there is a click on the rows, which is what the click on a row is for.
+        scrollBar->area = { box.left - scrollBar->rect.left, band.top - scrollBar->rect.top,
+                            box.right - scrollBar->rect.left, band.bottom - scrollBar->rect.top };
         scrollBar->viewport = band.bottom - band.top;
         scrollBar->extent = contentH;
         scrollBar->value = scrollTo;
         // The thumb goes where the rows are *drawn*, through the same glide they are: a thumb that
-        // went straight to the new place while the rows were still on their way is the one thing on
-        // a pane that is not moving with its own scroll.
+        // went straight to the new place while the rows were still on their way would be the one
+        // thing on a pane that is not moving with its own scroll.
         scrollBar->drawn = scrolled;
-        // And the pane's own width is the bar's fade. A pane on its way back to the rail takes its
-        // bar with it, rather than leaving one standing over the icons it ends as.
-        scrollBar->alpha = frac;
+        // The pane's own width is the bar's fade, so a pane on its way back to the rail takes its bar
+        // with it rather than leaving one standing over the icons it ends as. A pane that has not
+        // started moving yet is at the width its state asks for -- see Prime, which has already run.
+        scrollBar->alpha = wide.value;
+        scrollBar->visible = wide.value > 0.0f && ScrollMax() > 0.0f;
+        // Placed exactly where it was arranged: the bar's edge *is* the pane's edge, so a bar gliding
+        // toward it would be one seen arriving after the pane it belongs to. Every other child of
+        // every other layout is the glide's; this one is not. Qualified, because `ScrollBar::drawn` is
+        // the offset the thumb follows and `Widget::drawn` is where the bar itself is -- two things a
+        // bar has, with the one name.
+        scrollBar->Widget::drawn = scrollBar->rect;
+        scrollBar->placed = true;
+        // The last thing any of those numbers is told to, since they are all read by the bar's own
+        // clock: a bar that is out is being tweened and one that is not out yet is not animating
+        // yet, so without this nothing would ever come out.
+        scrollBar->Poll();
     }
     // How much of the rows is hidden at each end of the band. Nothing to hide is zero or negative
     // -- a list shorter than the band is not cut at all -- and the two marks are drawn only when
@@ -512,7 +587,7 @@ struct SideNav : Widget {
         selected = i;
         ringRow = i;
         if (onSelect) onSelect(selected);
-        if (owner) owner->Invalidate();
+        Invalidate();
         return true;
     }
     // Nothing at all in `Minimal`, which never expands: a page can wire a button to this, or to
@@ -530,29 +605,19 @@ struct SideNav : Widget {
         // pane is in the same place either way.
         if (!o && style == PaneStyle::Peek && hover) peekHeld = true;
         if (onToggle) onToggle(open);
-        if (owner) owner->Invalidate();
+        // The room the pane asks for has changed, so the tree is arranged again and the page makes
+        // it: the width slides into the room rather than over the page. See Reserved.
+        InvalidateLayout();
+        Invalidate();
     }
     void Toggle() { SetOpen(!open); }
 
     // --- the pointer and the keyboard ----------------------------------------------
     bool Focusable() const override { return true; }
-    // The rows' hover and the bar follow the pointer *inside* this control, which is the one
-    // thing the window cannot see: the same widget is hovered from the first row to the last.
+    // The rows' hover follows the pointer *inside* this control, which is the one thing the window
+    // cannot see: the same widget is hovered from the first row to the last. The bar's own hover is
+    // the bar's -- it is a widget now, and the window tells it.
     bool TracksPointer() const override { return true; }
-    void OnPointerMove(float x, float y) override {
-        // The bar is not one of the window's controls, so its own pointer arrives from here or not
-        // at all -- and a move over the rows is the one gesture an overlay bar is always out for.
-        // The rows' own strip only: the button above them and the footer below are not scrolled.
-        if (wide.value <= 0.0f || !Inside(Band(), x, y)) return;
-        WakeBar();
-        if (!HasBar()) return;
-        // And the bar's own twelve DIPs, from here rather than from a frame: a pointer going from a
-        // row onto the bar is a move that changes nothing about the rows, so nothing else will ask
-        // for the frame a bar waiting to be expanded would need. Tick keeps it right for the other
-        // direction -- see there -- because a pointer that leaves the pane is not delivered here.
-        scrollBar->hover = Inside(scrollBar->rect, x, y);
-        scrollBar->OnPointerMove(x, y);
-    }
 
     bool OnWheel(float /*x*/, float /*y*/, float notches) override {
         if (!enabled) return false;
@@ -565,7 +630,7 @@ struct SideNav : Widget {
         SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
         if (lines == WHEEL_PAGESCROLL) lines = 6;
         ScrollBy(-notches * (float)lines * (rowH + kRowGap));
-        if (owner) owner->Invalidate();
+        Invalidate();
         return true;
     }
 
@@ -591,36 +656,24 @@ struct SideNav : Widget {
     // The arrows are a scroll bar's arrows and are driven the way a scroll bar drives its own: the
     // first row on the press, then a repeat that starts after a pause and then runs fast, so that
     // a held arrow keeps going and a tapped one moves once. The two numbers are ScrollBar's own.
-    void OnPress(float x, float y) override {
-        // A press on the bar is the bar's: it scrolls the rows, it does not choose one, and it does
-        // not close the pane -- the same rule the drop-down's list follows for its own bar.
-        if (HasBar() && Inside(scrollBar->rect, x, y)) {
-            held = 0;
-            repeat.Stop();
-            scrollBar->OnPress(x, y);
-            if (owner) owner->Invalidate();
-            return;
-        }
+    void OnPress(float /*x*/, float y) override {
+        // A press on the bar never arrives here: the bar is a child, and the tree hands it the press
+        // before the pane -- which is also why the pane forwards no drag to it below.
         held = AtArrow(y, true) ? -1 : (AtArrow(y, false) ? 1 : 0);
-        if (held == 0 || !owner) return;
+        if (held == 0 || !window()) return;
         ScrollBy((rowH + kRowGap) * (float)held);
-        repeat.Start(owner, 250, [this] { RepeatTick(); });
-        owner->Invalidate();
-    }
-    void OnDrag(float x, float y) override {
-        // A drag is the bar's and nothing else's: a row is chosen by a click on it.
-        if (HasBar()) scrollBar->OnDrag(x, y);
+        repeat.Start(window(), 250, [this] { RepeatTick(); });
+        Invalidate();
     }
     void OnRelease() override {
         held = 0;
         repeat.Stop();
-        if (HasBar()) scrollBar->OnRelease();
     }
     void RepeatTick() {
-        if (held == 0 || !enabled || !owner) { held = 0; repeat.Stop(); return; }
+        if (held == 0 || !enabled || !window()) { held = 0; repeat.Stop(); return; }
         ScrollBy((rowH + kRowGap) * (float)held);
-        repeat.Start(owner, 50, [this] { RepeatTick(); });
-        owner->Invalidate();
+        repeat.Start(window(), 50, [this] { RepeatTick(); });
+        Invalidate();
     }
     // Space and Enter. With `followsFocus` the choice has already caught up with the ring, so
     // this is what the arrow keys have arrived at; without it, this is what picks it up.
@@ -632,7 +685,7 @@ struct SideNav : Widget {
         const int dir = vk == VK_DOWN ? 1 : -1;
         if (followsFocus) { Select(selected + dir); return true; }
         ringRow = (std::min)((std::max)(ringRow + dir, 0), n - 1);
-        if (owner) owner->Invalidate();
+        Invalidate();
         return true;
     }
     // A press somewhere else puts away the peek it was showing, and nothing else: a pinned pane
@@ -647,10 +700,13 @@ struct SideNav : Widget {
         if (wide.Wants(Expanded() ? 1.0f : 0.0f) || bar.Wants(MarkY())) return true;
         if (barGrow != 1.0f) return true;
         if (scrolled != scrollTo) return true;
-        // And the bar's own states are frames to keep running for -- the indicator going out at the
-        // end of its two seconds, the pointer arriving on it to expand it. Nobody else will run
-        // them: it is not one of the window's controls.
-        if (scrollBar && scrollBar->Animating()) return true;
+        // And the dim, which answers to the pane's state rather than to its geometry: a pane over the
+        // page dims it and one back at the rail does not, and the fade between the two is the dim's
+        // own. See Tick.
+        if (dim.Wants(OverPage() && scrim ? 1.0f : 0.0f)) return true;
+        // The bar's own states are frames to keep running for too -- the indicator going out at the
+        // end of its two seconds, the pointer arriving on it to expand it -- and they are the child
+        // walk's now: `Widget::Animating` asks the bar, because the bar is a child.
         // The peek's delay is a wait, and a wait nobody animates is a wait that never ends:
         // the frame loop has to keep running while the pointer rests on the rail.
         if (style == PaneStyle::Peek && hover && !Expanded() && !peekHeld) return true;
@@ -694,20 +750,20 @@ struct SideNav : Widget {
 
         const float target = Expanded() ? 1.0f : 0.0f;
         wide.To(target);
-        if (!primed) {
-            wide.Set(target);
-            // And the bar with it: a pane that comes up with a choice already made comes up with
-            // its mark on that choice, rather than one gliding down to it from the top of the
-            // list -- that move belongs to somebody having chosen the row, and nobody has.
-            aimed = selected;
-            barFrom = selected;
-            barWant = TopOf((float)selected);
-            bar.Set(barWant);
-            primed = true;
-        }
-        else if (!animate || style == PaneStyle::Fixed) wide.Set(target);
+        Prime();
+        if (!animate || style == PaneStyle::Fixed) wide.Set(target);
         else if (target > 0.0f) wide.Step(dt, motion::kFast, motion::Decel);
         else                    wide.Step(dt, motion::kFast, motion::Accel);
+        // The dim, on its own clock rather than on the pane's. It used to be `overlap / 48` -- a
+        // strength that reached full 48 DIP into a 212-DIP move, which the curve above covers in five
+        // milliseconds, so the smoke arrived in one frame and left in one. What the pane's state can say
+        // is *whether* it is over the page; how strong the dim is, is a fade, and a fade is a duration.
+        // The panel's, since this is a surface over another surface. See OverPage.
+        {
+            const bool over = OverPage();
+            dim.To(over && scrim ? 1.0f : 0.0f);
+            dim.Step(dt, motion::kNormal, over ? motion::Decel : motion::Accel);
+        }
         // The retraction is over when the width reaches the rail, and the page stops making room
         // in the same frame -- this runs while the width is still moving, so the frame that
         // settles is also the frame that clears it, and nothing is left behind for the next
@@ -739,33 +795,13 @@ struct SideNav : Widget {
         }
         if (scrolled != scrollTo) motion::Follow(scrolled, scrollTo, dt, kGlide, 0.5f);
 
-        // The bar, which is the wide pane's: over the rows, no taller than they are, and worked
-        // out again every frame because the width, the band and the range all move. It is not one
-        // of the window's controls -- it belongs to the pane the way the drop-down's belongs to its
-        // list -- so this is also the only place it is run.
-        if (scrollBar) {
-            if (ScrollMax() > 0.0f) {
-                scrollBar->owner = owner;
-                scrollBar->visible = true;
-                SyncScrollBar(wide.value);
-                // Its hover for the other direction, from the pane's own: a pointer that leaves the
-                // pane is not delivered to this control as a move, so the frame that runs while the
-                // rows' hover fades is what tells the bar the pointer has gone -- and the pane does
-                // run frames then, because the rows' own hovers are on their way out. Not while a
-                // drag of the bar's thumb is in flight: then the pointer is the drag's.
-                if (scrollBar->grab == ScrollBar::Part::None) {
-                    const D2D1_POINT_2F at = Cursor();
-                    scrollBar->hover = hover && Inside(scrollBar->rect, at.x, at.y);
-                }
-                scrollBar->Tick(dt);
-            } else {
-                // Nothing to scroll after all -- a window grown taller, a list cut down -- and the
-                // bar goes with it rather than being left armed for a range that has gone.
-                scrollBar->OnRelease();
-                scrollBar->visible = false;
-                scrollBar->Poll();
-            }
-        }
+        // The bar is a child, so the tree runs it -- but everything it is told is the pane's own
+        // geometry, and the pane's width and its scroll are what are moving. It is placed here,
+        // after the width has been stepped and before the frame paints, rather than left to the
+        // arrangement: an arrangement runs *before* the tick, so a bar placed there is a bar sitting
+        // at the width the pane had a frame ago -- and at the fast end of the opening that is tens of
+        // DIPs of daylight between the pane's edge and its own bar.
+        PlaceBar({ 0.0f, 0.0f, micula::Width(rect), Height(rect) });
 
         // The mark is aimed at where the row is *drawn* rather than at its place in the list. The
         // rows the scroll has carried away are laid out far below the pane -- the whole hidden end
@@ -841,17 +877,11 @@ struct SideNav : Widget {
         motion::Ramp(&toggleT, Want(hover && button), dt, motion::kFaster);
         motion::Ramp(&togglePressT, Want(pressed && button), dt, motion::kFaster);
 
-        // The pane owns its right edge, so that the pointer reaches exactly as far as the pane
-        // is drawn: a rectangle left at the open width would swallow the clicks that belong to
-        // the page beside a closed rail.
-        rect.right = rect.left + (std::max)(Width(), ButtonRoom());
-        if (owner) rect.right = (std::min)(rect.right, owner->ClientW());
-        // And it is raised over the page exactly while it is wider than the room the page left
-        // for it, which is the part of the animation where it is over the page at all -- and a
-        // pane that pushes is never over the page, however wide it is on the way past. A peek
-        // retracting to the rail is what makes that worth saying: for the whole animation it is
-        // wider than the room the page was given, and it is still the page's neighbour.
-        z = !Pushes() && Width() > (std::max)(RailW(), Reserved()) + 0.5f ? 2 : 0;
+        // The rectangle is the layout's now. What the pane is *drawn* at is `Width`, and a pane wider
+        // than the box it was arranged into is a pane over the page -- which is `Covers`'s answer and
+        // the paint's, and not something to write back into the arrangement. A pane that pushes is
+        // never over the page, however wide it is on the way past; a peek is, for the whole of its
+        // retraction, because `Pushes` follows what was asked for rather than how wide it came out.
     }
 
     void Paint(const Painter &p) override {
@@ -872,15 +902,28 @@ struct SideNav : Widget {
         // that pushes appearing as an overlay for as long as it takes to leave. None of it is
         // drawn for one that pushes, so both directions are the same pane on the same backdrop.
         const float overlap = Pushes() ? 0.0f : w - Reserved();
+        // The page behind the pane goes down, which is what makes the pane read as being over it rather
+        // than beside it. Drawn from the pane's edge to the page's own, and outside this control's
+        // rectangle on purpose: a click on it lands on the page, which is one of the things that
+        // Dismisses the pane.
+        //
+        // To the edge of the page the pane was added to, which is what a pane that covers is over.
+        // Asked of the tree rather than of the window: `VisibleArea` is the box this widget is really
+        // seen through, in the space it is drawn in -- so a pane inside something narrower than the
+        // window dims that and not the window.
+        //
+        // **Drawn whenever there is any of it left**, rather than only while the pane is still past the
+        // rail: the fade out is longer than the last few DIPs of a retraction, and a dim that vanished
+        // in the frame the pane came back inside would be the one-frame switch it used to be, backwards.
+        // The fade itself is the pane's state and its own clock -- see Tick.
+        if (dim.value > 0.0f) {
+            const float edge = VisibleArea().right;
+            if (edge > box.right)
+                p.Fill({ box.right, rect.top, edge, rect.bottom },
+                       Fade(Rgb(0x000000, 0.14f), dim.value));
+        }
         if (overlap > 0.5f) {
             const float solid = (std::min)(1.0f, overlap / 24.0f);
-            // The page behind it goes down, which is what makes the pane read as being over it
-            // rather than beside it. Drawn from the pane's edge to the window's, and outside
-            // this control's rectangle on purpose: a click on it lands on the page, which is one
-            // of the things that Dismisses the pane.
-            if (scrim && owner && owner->ClientW() > box.right)
-                p.Fill({ box.right, rect.top, owner->ClientW(), rect.bottom },
-                       Fade(Rgb(0x000000, 0.14f), (std::min)(1.0f, overlap / 48.0f)));
             // A pane is a straight edge over the page, and what makes it read as a panel rather
             // than as a stripe of paint is the falloff beside it: the same stacked-rectangles
             // shadow the flyout has, on the one edge that needs it.
@@ -956,8 +999,7 @@ struct SideNav : Widget {
                    p.font->body, Fade(label, frac));
             // The focus ring goes around the row the keyboard is on, which is the choice when
             // it follows the focus and the ring itself when it does not.
-            if (focus && owner && owner->showFocusRing &&
-                r.index == (followsFocus ? selected : ringRow))
+            if (ShowFocusRing() && r.index == (followsFocus ? selected : ringRow))
                 p.StrokeRound({ rect.left + 4, top + 2, box.right - 4, top + rowH - 2 },
                               metric::kRadiusControl, c.textPrimary, 2.0f);
         }
@@ -1006,10 +1048,8 @@ struct SideNav : Widget {
                 p.Fill({ x0, band.bottom - 1.0f, x1, band.bottom },
                        Fade(c.textSecondary, fillF * (std::min)(1.0f, cutBottom / 4.0f) * 0.5f));
         }
-        // The bar last of the things that scroll and over all of them: it belongs to the rows and
-        // follows the pane's edge as it goes. Its own fade is the pane's width -- see
-        // SyncScrollBar -- so there is nothing to ask here but whether there is one at all.
-        if (HasBar()) scrollBar->Paint(p);
+        // The bar is not drawn here: it is a child, and the tree paints it over the rows -- which is
+        // where this clip ends and what it is. Its fade is the pane's width; see NavLayout::Arrange.
         p.rt->PopAxisAlignedClip();
         const float arrowF = 1.0f - (std::min)(1.0f, frac);
         if (arrowF > 0.0f) {
@@ -1110,5 +1150,33 @@ private:
                p.font->icon, enabled ? c.textPrimary : c.textDisabled);
     }
 };
+
+inline SideNav::SideNav() {
+    // The pane's own layout: the bar, and what the pane asks a page for. See NavLayout.
+    SetLayout(new NavLayout());
+    // The bar is a child rather than something the pane draws, so the tree paints it, hit-tests it and
+    // ticks it, and the layout is what keeps it told. Nothing to scroll yet, and a bar that has never
+    // been arranged would otherwise flash at the pane's edge before the first arrangement -- `Poll`
+    // puts one away, but it has to be run first, and the arrangement is what runs it.
+    scrollBar = Add(new ScrollBar([this](float to, bool glide) { BarScrolled(to, glide); }));
+    scrollBar->visible = false;
+}
+
+inline Want NavLayout::Measure(const Room &room) const {
+    // The pane's own answer, and not its children's: how wide a pane is, is a question about the
+    // pane's state -- the rail, the open width, and the room the button needs when a page has made
+    // the rail narrower than it. A page's row of children asks this to find out what to leave.
+    (void)room;
+    return Want(Axis::Content(static_cast<SideNav *>(host_)->Reserved()), Axis::Fill());
+}
+
+inline void NavLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
+    (void)room;
+    // The pane's geometry is worked out from `rect`, which is the space it paints in; the bar is a
+    // child, so it is arranged in the box instead -- the same geometry, in a space that starts at the
+    // origin. The pane places it here for the first time and after any change of state, and again in
+    // every Tick where the width or the scroll is what moved. See SideNav::PlaceBar.
+    static_cast<SideNav *>(host_)->PlaceBar(box);
+}
 
 }  // namespace micula

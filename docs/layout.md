@@ -1,11 +1,11 @@
 # Layout
 
 **Status: being built.** This file describes the retained object tree, which is on the branch
-`layout-experimental` and is not in `master`. The core is written and `examples/gallery` is a page
-written against it; the scrolling container, the dialog and the drop-down are written too, and
-`SideNav` is the last control still on the flat list. The migration list at the end is where that
-stands. Everything below is a decision unless it is under [Open questions](#open-questions) at the
-end, which is working notes for the branch.
+`layout-experimental` and is not in `master`. The core is written, `examples/gallery` and
+`examples/nav` are pages written against it, and every control the library has is on it -- the last
+one, `SideNav`, was ported from the flat list, and `examples/settings` is the one page still written
+for the old model. The migration list at the end is where that stands. Everything below is a decision
+unless it is under [Open questions](#open-questions) at the end, which is working notes for the branch.
 
 ## Why the page is no longer rebuilt
 
@@ -313,11 +313,13 @@ On the branch, in this order. Each phase is something a person can look at and d
    with a `--dump` that prints the rectangles it came out as.
 2. **Scrolling and the rest of the controls.** `ScrollView` is written, with the clip, the wheel, the
    glide and its bar; so is `Dialog`, which is what made a layer's placement a rule of the tree rather
-   than a thing a dialog did for itself; and so is `DropDown`, on a `Flyout` that a menu and a
-   suggestion box will want too. What is left of this phase is `SideNav` -- the last control on the flat
-   list -- and `examples/settings` and `examples/nav` with it. *(you are here)*
-3. **Pages and the grid.** `SideNav` as a root widget holding pages and switching by visibility;
-   `Page` with its own layout; `GridLayout`.
+   than a thing a dialog did for itself; so is `DropDown`, on a `Flyout` that a menu and a suggestion
+   box will want too; and so is `SideNav`, the last control that was written against the flat list.
+   What is left of this phase is the one page still written for the old model with them --
+   `examples/settings`. *(you are here)*
+3. **Pages and the grid.** `Page` with its own layout; `GridLayout`. The shell that holds the pages and
+   switches between them is `NavigationView` already -- a row and the page it shows, switched by
+   visibility -- and what that leaves is what a page *is* rather than where it is.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the
    animation set beyond the glide; the docs rewritten (`window.md`, `controls.md`, `widget.md`,
    `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.

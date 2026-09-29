@@ -146,9 +146,84 @@ library can be: a minor version may break.
   drop-down while its list is open has the list unlinked from its parent -- but a *tree* coming down is
   destroying that parent's vector of children as it goes, and erasing from it is a write into memory it
   no longer owns. The removal is dropped instead, since everything under the root dies either way.
+- **`SideNav` is ported** (`side_nav.h`), the last control that was still written against the flat
+  list. Its rows are still one widget drawing all of them -- forty rows is not forty widgets -- and what
+  it has instead is a layout of its own, `NavLayout`, which answers what the pane asks a page for
+  (`Reserved`: the room the state wants) and arranges the one child a pane has. That child is its bar:
+  the tree paints it, hit-tests it and ticks it now, and the pane's own plumbing for it -- forwarding
+  presses, moves and drags, waking it by hand, running its frames -- is gone. Its mark, its rows, its
+  arrows, its refusal at the ends of the list and the whole peek/toggle business are what they were.
+- **A pane that covers draws outside the box it was arranged into**, and it is the only control here
+  that does. Painting is never clipped, so it is drawn over the page -- and `Covers` answers with the
+  same box, so it is *reached* over the page as well, which is what a click on a pane hanging over the
+  page means. The old model wrote a `z` back into the pane every frame to raise it; what stands in for
+  that is order, and a page that wants the pane over its content puts the pane after it. A pane that
+  pushes is never over the page, however wide it is on the way past: the page has made room for it.
+- The pane's dim stops at the edge of the page it was added to rather than at the window's, because
+  that is what a pane over a page is over. `VisibleArea` answers with that box in the pane's own space,
+  the same question a control inside a scrolling container asks, so a pane inside something narrower
+  than the window dims that and not the window.
+- **And the dim is a fade, rather than a strength worked out from the pane's width.** It used to be
+  `overlap / 48`: full 48 DIP into a 212-DIP move, which the pane's own 167 ms curve covers in five
+  milliseconds -- so the smoke arrived in one frame and left in one, and there was nothing to see. What
+  the pane's *state* can say is whether it is over the page; how strong the dim is, is a duration, and
+  a surface over another surface gets the panel's, `motion::kNormal`, Decel arriving and Accel leaving.
+  It is drawn while any of it is left rather than only while the pane is past the rail, because the fade
+  out is longer than the last few DIPs of a retraction -- and the pane's own state is what it answers
+  to, so the smoke clears as the pane leaves rather than after it has gone.
+- **`NavigationView`, the shell a navigation window is** (`navigation_view.h`), and `SideNav` stays a
+  control inside it: a column that selects, and says which row was chosen. What the shell adds is the
+  other half of that question, which is what a row *is*. `AddPage` adds a row and the page it shows in
+  one call -- a page nobody can reach is a page that is not there, and a row that leads nowhere is a
+  row with nothing to show -- and a row that is not a page, a heading or a name that is only a name, is
+  `AddRow`. Which page a row shows is found by walking the rows rather than counted from where the page
+  was added, because a footer row counts *after* the rows above it.
+- **And the page area is drawn as the layer a navigation window's content is**: the layer colour over
+  the backdrop, its top-left corner rounded and its other three square, and a border inside the two
+  edges that face the rest of the window -- the far ones being the window's own, where a line would
+  double a boundary that is already there. It is the shell that paints it, under the page's contents
+  and whichever page is up, because it is the same surface either way. `pageSurface` off is that shell
+  on a flat background, which is what a window that paints its own has nothing for a layer to be over.
+- **Switching a page is visibility**, and that is the whole of it: every page is in the tree and
+  arranged into the same box, and the one on screen is the visible one. An open drop-down, half a typed
+  field and an animation in flight are all still there when their page comes back -- nothing is
+  rebuilt, which is the reason a page is a page rather than a build.
+- **And a page that becomes visible is arranged for the room it has now -- and placed rather than
+  glided into it.** A hidden subtree is skipped by the arrangement, so a page nobody has shown is a
+  page of zero-sized widgets and nothing of it can be seen at all; a page coming back is laid out for
+  the room it had *then*, which after a window resize or a pane opening is not the room it has now. The
+  arrangement is what fixes the first of those, and it is asked for by the switch. The second needs the
+  page to be born again (`UnplaceSubtree`), because **a glide cannot carry a size**: what glides is a
+  translation, so a card whose right edge has to move is the whole card sliding, filling in a gap that
+  should never have been there.
+- A page whose pane pushes follows the pane's *drawn* edge -- both boxes are placed, and **the page
+  area's own contents are arranged again with them**, rather than left to the frame's arrangement. The
+  two are not the same thing: a card that fills the room it is in is a card whose width changed with
+  the room. An arrangement runs before the tick that moves the pane's width, so a page left to it is
+  laid out for the width the pane had a frame ago -- a margin that breathes while the pane moves, and
+  contents that never catch up at all until something else marks the tree dirty, which after a
+  retraction is a row of cards stopping two hundred DIPs short of the page's corner until it is
+  scrolled.
+- **And that page is placed rather than glided**, for as long as the pane is moving. A widget whose
+  rectangle has moved is drawn on its way there, which is what makes a card step down when something
+  above it opens -- but a page following a *moving* pane is not that: the glide closes a fraction of
+  the gap per frame, so a target that keeps moving leaves it permanently a few frames behind, with the
+  controls on its cards pushed out of place and then bouncing back as the animation ends. The page
+  tracks the pane exactly, which is what it did before there was a tree: the old page moved its cards
+  by hand, one frame at a time, and glided none of them. The placement is the shell's own method, which
+  the arrangement and the shell's tick both run; the pane's bar is placed the same way, its edge being
+  the pane's edge.
+- `examples/nav` is written against the tree: the pane's playground -- the four styles, the width, the
+  scrim, the key behaviour, the pane's own button and `nav=` rows -- as switches on the page the window
+  opens on, with the same state on the command line, a theme switch on the page in its footer, and a
+  `--dump` that prints the shell's own rectangles rather than a screenshot.
 
 ### Changed
 
+- **`Window::ReloadTheme` and `Window::ApplyThemeToFrame` are public**, which is what the theme mode's
+  own documentation already told a page to call: a palette is built when a window is made, so a
+  settings page that says `Theme(...)` while the window is up has said nothing until the window is told
+  to build it again. Nothing else about the two changed.
 - **`Animating()` is what a widget *draws*, not where it is.** A widget being carried somewhere by its
   container is not animating anything: that is the container's animation, and it is the container's
   *layout* that reports it, through `Layout::Gliding()`. A widget that is only being moved answers no.
@@ -165,6 +240,14 @@ library can be: a minor version may break.
   top layer; it is offered to that widget and to each thing it is inside of, in its own space, which is
   what lets a control in a scrolling container turn the container. The layer is still offered it after
   the walk.
+- **A window that changed size places the tree instead of gliding it.** The glide is what animates a
+  layout change -- a card stepping down when something above it opens -- but a subtree *tracking* a box
+  that keeps moving is not a layout change: the glide closes a fraction of the gap per frame, so the
+  target runs away from it, and at the speed somebody drags a window border that is hundreds of DIPs. A
+  window is being dragged by its border, every frame of it is the new size, and the arrangement that
+  follows one therefore places what it arranged (`PlaceSubtree`). Every other arrangement glides as it
+  did, and the navigation pane's page is placed the same way while its pane is moving, for the same
+  reason.
 - **Every control answers `Measure(const Room &) const` instead of being handed a rectangle**, and
   draws inside the one it was given. A button is as wide as its label, a field is as wide as the room
   it is in, a ring is as big as it says it is.

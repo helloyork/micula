@@ -390,4 +390,35 @@ inline void ArrangeSubtree(Widget *w, const Fonts &fonts) {
         if (child->visible) ArrangeSubtree(child.get(), fonts);
 }
 
+// Everything under `w`, placed where it was arranged rather than left to glide there.
+//
+// A layout change is animated by the glide, and that is what makes a card step down when something
+// above it opens. A subtree *tracking* something that is moving is not a layout change: the glide
+// closes a fraction of the gap per frame, so a target that keeps moving leaves it permanently behind
+// -- the faster the target, the further behind -- and the catch-up at the end of it is a jump. Two
+// things are that: a window being dragged by its border, which is `ArrangeTree`, and a navigation
+// pane animating its width, which is `NavigationView::Tick`.
+inline void PlaceSubtree(Widget *w) {
+    w->drawn = w->rect;
+    w->placed = true;
+    for (auto &child : w->children)
+        if (child->visible) PlaceSubtree(child.get());
+}
+
+// Everything under `w`, as if it had never been arranged: the next arrangement *places* it where it
+// goes rather than gliding it there.
+//
+// This is what a subtree coming back on screen wants. A hidden subtree is skipped by the arrangement,
+// so it is still laid out for the room it had last time -- and the room it has now is usually not that
+// one. **A glide cannot carry a size**: what glides is a translation, so a card whose right edge has to
+// move is the whole card sliding, leaving the room it should have filled empty behind it until it
+// catches up. Unplaced, it is placed exactly, which is what a widget being added to the tree gets.
+//
+// Every child, visible or not: an invisible one is skipped by the arrangement either way, and the day
+// it is shown it wants to be born again too.
+inline void UnplaceSubtree(Widget *w) {
+    w->placed = false;
+    for (auto &child : w->children) UnplaceSubtree(child.get());
+}
+
 }  // namespace micula

@@ -29,11 +29,10 @@
 // is the set of them: include it and you have every one, or include the single control a
 // page draws and parse nothing else.
 //
-// **One of them is not in the list yet.** side_nav.h is written against the flat list of widgets this
-// branch replaced: it builds the controls it shows into that list by hand, and reaches into the window
-// for the rectangles it places them in. Porting it is writing its own layout -- a side nav is a column
-// that selects -- and until then including it directly is a compile error rather than a silent
-// difference.
+// **Every control in the library is in the list.** The one that was still written against the flat
+// widget list this branch replaced -- side_nav.h, which built its rows by hand and reached into the
+// window for the rectangles it put them in -- has a layout of its own now, and a page that includes
+// this file has all of them.
 //
 // scroll_bar.h is included by scroll_view.h rather than listed here: a bar is not something a page
 // puts somewhere, it is the part of a scrolling container that shows where the page is.
@@ -47,10 +46,12 @@
 #include "check_box.h"
 #include "dialog.h"
 #include "drop_down.h"
+#include "navigation_view.h"
 #include "progress_bar.h"
 #include "progress_ring.h"
 #include "scroll_view.h"
 #include "segmented.h"
+#include "side_nav.h"
 #include "slider.h"
 #include "text.h"
 #include "text_box.h"

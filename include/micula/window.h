@@ -721,6 +721,12 @@ struct Window {
     // left, right and bottom. Read from the window rather than computed, because the
     // caption is client area here and no system metric describes that frame.
     SIZE frameExtra = {};
+    // Put a theme or a backdrop the program has asked for into effect. Both are read when the window
+    // is made -- `Theme(...)` says which, and `backdrop` above is the material -- so a page that
+    // changes either while the window is up is a page that has changed nothing until one of these
+    // runs. This is what a settings page does with a theme switch on it.
+    void ReloadTheme();
+    void ApplyThemeToFrame();
     void MeasureFrame() {
         if (!hwnd || IsIconic(hwnd) || IsZoomed(hwnd)) return;
         RECT wr, cr;
@@ -1015,8 +1021,6 @@ struct Window {
     };
 
     // --- internals --------------------------------------------------------------
-    void ApplyThemeToFrame();
-    void ReloadTheme();
     bool CreateDevice();
     // A layer that is on its way out, if there is one. The window takes no clicks while there is:
     // what is being dismissed is not a place to be pressed again, the controls on it are on their
@@ -1046,7 +1050,14 @@ struct Window {
     void ArrangeTree() {
         layoutDirty = false;
         if (!content) return;
-        content->rect = { 0.0f, kCaptionH, ClientW(), ClientH() };
+        const D2D1_RECT_F box = { 0.0f, kCaptionH, ClientW(), ClientH() };
+        // **A window that changed size is not a layout change worth animating.** The border is under the
+        // pointer, every frame of the drag is the new size, and a tree gliding toward a box that keeps
+        // moving trails it by however fast the pointer is going -- hundreds of DIPs, at the speed
+        // somebody drags a border. So the arrangement that follows a resize *places* what it arranged,
+        // and every other arrangement glides as usual. See PlaceSubtree.
+        const bool resized = !SameRect(box, content->rect);
+        content->rect = box;
         // Placed, and drawn where it is, every time. The root is not a child of any layout, so
         // nothing glides it and a window that was resized is not an animation -- and a drawn
         // rectangle left behind by the old size would say "something is moving" for the rest of the
@@ -1054,6 +1065,7 @@ struct Window {
         content->drawn = content->rect;
         content->placed = true;
         micula::ArrangeSubtree(content.get(), fonts);
+        if (resized) micula::PlaceSubtree(content.get());
     }
 
     // Paint the tree. `ox, oy` is where the space `w->rect` is measured in sits in the client area:
