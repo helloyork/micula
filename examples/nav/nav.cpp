@@ -6,7 +6,7 @@
 // The state can be asked for on the command line, so that a state worth looking at does not have to be
 // clicked into, and nothing is remembered between runs:
 //
-//     micula-nav style=2 open=0 scrim=1 nav=24 page=1 surface=0
+//     micula-nav style=2 open=0 scrim=1 nav=24 page=1 surface=0 transition=0
 //
 // `--dump` prints the rectangles the shell came out as, with no window anywhere: the same mode
 // examples/gallery has, and the one to reach for when the pane and the page disagree about where the
@@ -30,6 +30,7 @@ namespace {
 // --- the state: file scope, and deliberately not saved ------------------------------------------
 int   page       = 0;              // the row the window opens on
 int   paneStyle  = 1;              // PaneStyle: Fixed, Toggle, Peek, Minimal
+int   pageSwitch = 1;              // NavigationView::Transition: None, Entrance
 int   navRows    = 0;              // extra rows: `nav=24` for a pane taller than the window
 bool  paneSlides = true;           // whether the width animates
 bool  paneScrim  = false;          // whether an overlay pane dims the page
@@ -42,6 +43,7 @@ int   themeMode  = 0;              // ThemeMode: 0 follows Windows, 1 light, 2 d
 int   windowBackdrop = 2;          // DWM_SYSTEMBACKDROP_TYPE: 2 Mica, 3 Acrylic, 4 Mica Alt
 
 const wchar_t *const kStyles[] = { L"Fixed", L"Toggle", L"Peek", L"Minimal" };
+const wchar_t *const kTransitions[] = { L"None", L"Fade", L"Entrance" };
 
 struct PageInfo { const wchar_t *title, *detail; };
 const PageInfo kPages[] = {
@@ -64,6 +66,7 @@ void Apply() {
     nav->pane->followsFocus = paneFollow;
     nav->pane->ownToggle = paneOwn;
     nav->pane->openW = paneOpenW;
+    nav->transition = (NavigationView::Transition)pageSwitch;
     // The room the pane asks a page for has moved with the style and the width, so the shell is
     // arranged again -- and the page arrives at its new place rather than being built again there.
     nav->InvalidateLayout();
@@ -96,6 +99,7 @@ void ReadState(const wchar_t *cmd) {
     // Off is the same shell on a flat background -- which is what a window that paints its own has
     // nothing for a translucent layer to be over.
     pageSurface = number(L"surface=", pageSurface ? 1 : 0) != 0;
+    pageSwitch = (std::min)((std::max)(number(L"transition=", pageSwitch), 0), 2);
     paneOpenW  = (float)number(L"width=", (int)paneOpenW);
     windowBackdrop = (std::min)((std::max)(number(L"backdrop=", windowBackdrop), 0), 4);
     // The library's animation switch, which is not the pane's: `animate=` above is the pane's own.
@@ -151,6 +155,11 @@ void PanePage(ScrollView *sheet) {
     Setting(sheet, glyph::kInfo, L"Where the page goes",
             L"Read off the pane: one that pushes is part of the layout, one that covers is over it")
         ->value = [] { return nav && nav->pane->Pushes() ? L"pushes the page" : L"over the page"; };
+
+    Setting(sheet, glyph::kBusy, L"How a page arrives",
+            L"Fade comes up from nothing, Entrance rises the last 24 DIP into place while it does")
+        ->Set(new Segmented({ kTransitions[0], kTransitions[1], kTransitions[2] }, pageSwitch,
+                            [](int i) { pageSwitch = i; Apply(); }));
 
     sheet->Add(new Heading(L"Keys and the button"));
 

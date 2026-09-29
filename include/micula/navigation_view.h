@@ -27,6 +27,22 @@
 // open drop-down, half a field, an animation in flight) is still there when its row comes back.
 // Nothing is rebuilt, which is the whole reason a page is not.
 //
+// **A page arriving is drawn arriving.** The page area is one group at one opacity, so the page that
+// has just been chosen comes up from nothing over `motion::kNormal` -- the whole page at once rather
+// than each control on it, which is what a fade of a subtree has to be to show nothing through the
+// gaps between its widgets. It is the *page area* that fades rather than the page, which is why the
+// opacity is `content`'s: the surface the shell draws under it stays where it is, because the page
+// comes and goes and the page area does not. What was there is gone by the time the new one is drawn,
+// so there is nothing to cross-fade with and nothing to slide past -- and the first page of a
+// window's life arrives in one frame, because a page being put up for the first time has nothing to
+// arrive *from*. See `transition`.
+//
+// **And it arrives from below.** The page starts `kPageRise` DIP under where it was arranged and rises
+// into place while it fades, which is the shape this animation has wherever it is used: a page comes
+// *up* out of the page area, rather than in from the side, which would be saying the pages are laid
+// out in a line. The two parts are one track -- the same 0..1 is the distance and the opacity -- so a
+// page is never half up and fully solid, and there is no second animation to keep in step.
+//
 // The pane's own two questions -- does it push the page or cover it, and how wide is it -- are the
 // pane's, and this is the one place that acts on the answer: a pane that pushes is given the room it
 // is *drawn* at, so the page follows it while it moves; a pane that covers is given the rail, and the
@@ -43,6 +59,14 @@
 namespace micula {
 
 struct NavigationView;
+
+// How far below its place a page starts when it is arriving, in DIP. A page arriving rises *into* the
+// page area, so the strip that is not covered yet is the top one -- and the page area's bottom edge is
+// the window's own, so what the rise pushes off the other end is off the window rather than over
+// something else. That is why the entrance needs no clip: one would have to be the rounded shape of
+// the surface to be worth having, and the corner it would cut square is the corner the surface exists
+// for. The distance is the one this animation is used at, and a rise of nothing is `Transition::Fade`.
+constexpr float kPageRise = 24.0f;
 
 // The shell's own layout: the page's box, and the pane's beside it.
 //
@@ -114,6 +138,22 @@ struct NavigationView : View {
     // arrangement, and again by `Tick` -- see there for why the second one is needed.
     void Place(const D2D1_RECT_F &box);
     void Tick(float dt) override;
+    // The page arriving is an animation the shell keeps for itself, which the tree's own walk knows
+    // nothing about: without this the frame loop stops on the frame the page was chosen on, and what is
+    // left on screen is the page at whatever the opacity of that frame was -- nothing, for a page that
+    // has just been put up. See `SideNav::Animating` for the same shape one control down.
+    bool Animating() const override { return Widget::Animating() || arrival.Wants(1.0f); }
+
+    // How a page arrives, which is the two parts of the same thing:
+    //
+    //   `None`     --- in one frame, for a page change that is not worth a quarter of a second;
+    //   `Fade`     --- the page area coming up from nothing;
+    //   `Entrance` --- and the page rising into place while it does.
+    //
+    // All of them are put aside when animations are off, like every other track in the library --
+    // `Track::Step` is where that is decided, not here.
+    enum class Transition { None, Fade, Entrance };
+    Transition transition = Transition::Entrance;
 
     // **The page area is a surface rather than part of the window** -- WinUI's NavigationView content
     // is a layer over the backdrop: its top-left corner rounded and its other three square, tucked
@@ -143,6 +183,11 @@ private:
     void SyncRows();
     // The page the `i`-th row that can be chosen shows, or null.
     Widget *PageAt(int i) const;
+    // The page that is up, which is what tells a page being chosen from a page being put up for the
+    // first time -- only the first of those is arriving from somewhere.
+    Widget *up = nullptr;
+    // How far the page area has come up, 0 to 1. See `transition`.
+    motion::Track arrival{ 1.0f };
 };
 
 inline NavigationView::NavigationView() {
@@ -174,6 +219,10 @@ inline void NavigationView::Paint(const Painter &p) {
 
 inline void NavigationView::Show(int i) {
     Widget *page = PageAt(i);
+    // A page arriving is not the same as a page being put up: a window's first page is not arriving
+    // from anywhere, and neither is any `Show` that finds the page it was already showing.
+    const bool arriving = up != nullptr && page != up;
+    up = page;
     for (auto &child : content->children) {
         const bool shown = (child.get() == page);
         // **A page coming back is a page being born.** It is still laid out for the room it had when it
@@ -188,6 +237,18 @@ inline void NavigationView::Show(int i) {
     // that has just become visible has the rectangles it had when it was last on screen -- or none at
     // all, if it has never been shown, in which case it is a page of zero-sized widgets and nothing of
     // it can be seen. Asked for here rather than left to whoever happens to lay the tree out next.
+    //
+    // The page arrives as it is put up rather than on the frame after: `Set` before `To`, so that the
+    // paint this `Invalidate` asks for draws the page area at nothing -- the value of the track is what
+    // it was left at, and carrying it over from the last switch would be a page that starts a quarter
+    // of a second late and half drawn.
+    if (arriving && transition != Transition::None && Animations()) {
+        arrival.Set(0.0f);
+        arrival.To(1.0f);
+    } else {
+        arrival.Set(1.0f);
+    }
+    content->opacity = arrival.value;
     InvalidateLayout();
     Invalidate();
 }
@@ -275,6 +336,23 @@ inline void NavigationView::Tick(float dt) {
             // old page moved its cards by hand, one frame at a time, and glided none of them.
             micula::PlaceSubtree(content);
         }
+    }
+    // And the page arriving, which is the page area at one opacity -- the area and not the page, so
+    // that the surface under it stays where it is. See `transition`.
+    if (arrival.Moving()) arrival.Step(dt, motion::kNormal);
+    content->opacity = arrival.value;
+    // And the page on its way up, which only `Entrance` asks for -- the distance is the transition, and
+    // the fade is the same track either way. `drawn` is the one field both parts want, so nothing else
+    // may be gliding the page while this runs -- which is why a page whose area is moving is *placed*
+    // rather than glided above: the two would be writing this line against each other, and the glide
+    // losing that is a page settling into place a few frames after its own arrival has finished.
+    if (up) {
+        up->drawn = up->rect;
+        if (transition == Transition::Entrance && arrival.value < 1.0f)
+            up->drawn.top += (1.0f - arrival.value) * kPageRise;
+        // `placed` as well, because a page that is not placed is drawn where it was *arranged* and
+        // would rise by nothing at all.
+        up->placed = true;
     }
 }
 

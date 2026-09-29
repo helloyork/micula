@@ -1085,13 +1085,15 @@ struct Window {
         // parent's, which is where `where` lives -- and not in the client's. See Widget::Clips.
         const bool clips = w->Clips();
         if (clips) p.rt->PushAxisAlignedClip(where, D2D1_ANTIALIAS_MODE_ALIASED);
-        // A layer arriving or leaving is drawn as one group at one opacity, rather than each of its
-        // widgets at that opacity: fading them one by one shows the page through the gaps between
-        // them, and comes out darker where two of them overlap. Nothing is pushed for a layer at
-        // rest, which is every layer for all but a few frames. See Layer::Arrival.
+        // A subtree being faded is drawn as one group at one opacity, rather than each of its widgets
+        // at that opacity: fading them one by one shows the page through the gaps between them, and
+        // comes out darker where two of them overlap. Two things answer with one -- a layer arriving
+        // or leaving, and any widget whose own `opacity` is below 1, which is how a page arrives. See
+        // `Layer::Arrival` and `NavigationView::transition`. Nothing is pushed at 1, which is every
+        // widget for all but a few frames.
         Layer *layer = w->AsLayer();
-        const float op = layer ? layer->Arrival() : 1.0f;
-        const bool fading = layer && op < 1.0f;
+        const float op = w->opacity * (layer ? layer->Arrival() : 1.0f);
+        const bool fading = op < 1.0f;
         if (fading) {
             p.rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
                                                   D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,

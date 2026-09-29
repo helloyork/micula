@@ -319,7 +319,9 @@ On the branch, in this order. Each phase is something a person can look at and d
    `examples/settings`. *(you are here)*
 3. **Pages and the grid.** `Page` with its own layout; `GridLayout`. The shell that holds the pages and
    switches between them is `NavigationView` already -- a row and the page it shows, switched by
-   visibility -- and what that leaves is what a page *is* rather than where it is.
+   visibility -- and what that leaves is what a page *is* rather than where it is. The switch has its
+   entrance: the page area comes up from nothing while the page rises the last `kPageRise` DIP into
+   place, and `NavigationView::transition` chooses the shape or none.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the
    animation set beyond the glide; the docs rewritten (`window.md`, `controls.md`, `widget.md`,
    `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.
@@ -337,8 +339,8 @@ one: a page stops computing rectangles and starts adding children, and a control
 1. **How much of the window is a widget in v1.** The title bar, the pane and the window buttons are
    children of the root in this design; whether they become widgets in the first pass or the second is
    a question about how much moves at once, not about the model.
-2. **What the v1 animation set is.** The glide, the page switch and a re-arrange that tweens are in
-   this file; enter and exit transitions are not.
+2. **What the v1 animation set is.** The glide, the page switch -- with its entrance -- and a
+   re-arrange that tweens are in this file; transitions for anything else are not.
 
 Answered on 2026-09-29, and the answers are in the sections above: `Window` is the root and holds the
 root widget; a rectangle is in the parent's space, with an opt-out for a widget that would rather do

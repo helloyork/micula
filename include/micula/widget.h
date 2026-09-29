@@ -85,6 +85,13 @@ struct Widget {
 
     // ---- what it is --------------------------------------------------------------------------
     bool visible = true;
+    // How solid this widget and everything under it is drawn, 0 to 1. The paint walk draws anything
+    // below 1 as **one group at that opacity** rather than each widget in it at that opacity, because
+    // a subtree faded widget by widget shows what is behind it through the gaps between them, and
+    // comes out darker where two of them overlap. It is what a page arriving is drawn with -- see
+    // `NavigationView::transition` -- and a widget at 1, which is every widget for all but a few
+    // frames, costs nothing.
+    float opacity = 1.0f;
     bool enabled = true;
     bool hover = false;
     bool pressed = false;

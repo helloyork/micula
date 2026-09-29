@@ -184,6 +184,15 @@ library can be: a minor version may break.
   double a boundary that is already there. It is the shell that paints it, under the page's contents
   and whichever page is up, because it is the same surface either way. `pageSurface` off is that shell
   on a flat background, which is what a window that paints its own has nothing for a layer to be over.
+- **And a page that arrives is drawn arriving** (`NavigationView::transition`): the page area comes up
+  from nothing as one group -- the whole page at once rather than each control on it -- while the page
+  rises the last `kPageRise` DIP into place. `Fade` is the same without the distance, `None` is the
+  switch in one frame, and the first page of a window's life arrives in one frame whichever it is,
+  because a page being put up for the first time has nothing to arrive *from*.
+- **`Widget::opacity`**, drawn by the paint walk as **one group at that opacity** rather than each
+  widget in it at that opacity: a subtree faded widget by widget shows what is behind it through the
+  gaps between them, and comes out darker where two of them overlap. A layer arriving or leaving is
+  the same question, asked by a layer, and both are read in one place now.
 - **Switching a page is visibility**, and that is the whole of it: every page is in the tree and
   arranged into the same box, and the one on screen is the visible one. An open drop-down, half a typed
   field and an animation in flight are all still there when their page comes back -- nothing is
