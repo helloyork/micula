@@ -84,6 +84,25 @@ library can be: a minor version may break.
   bar that is out is being tweened and a bar that is not out yet is not animating yet, so without the
   first of those nothing would ever come out; without the second, a wheel or a keyboard scroll would
   move the page with no sign of where it went.
+- **A layer goes where it says.** A layer is the tree's modal child -- it floats over a page and takes
+  the input under it -- and in the flat list it was the exception that needed the most bookkeeping: its
+  contents were somewhere else in that list and had to be marked as leaving with it. Its contents are
+  its children now, which leaves one question for it to answer: where it goes. That is `Widget::Cover`,
+  asked by the tree of every child that answered `AsLayer`, and the default answer is the whole of the
+  widget it was added to -- which is what a dialog wants, since adding it to the page covers the page.
+  **A layer that is not a cover overrides it**, and one has to be able to: a drop-down's list covers
+  nothing at all -- it hangs under the field that opened it, as wide as the field, as tall as its list
+  came out -- and it would be in the wrong place wherever it was added.
+- A layout never arranges a layer. The tree hands it a rectangle and the host's layout leaves it alone,
+  in `Measure` as well as in `Arrange`: a column that measured one would have counted the height of a
+  page, and every rectangle below it on the page would have moved down by that much -- on a page where
+  nothing had changed. `PlatformSpec()` is there for the layer whose host has no layout of its own.
+- **`Dialog` is ported** (`dialog.h`). Its buttons are its children and `DialogLayout` is what places
+  them, so a page calls `AddButton` and stops; the panel, the footer band and the body's box are the
+  dialog's own answer (`Dialog::FrameOf`) and `Paint` draws exactly those, which is what keeps a drawn
+  panel and a hit-tested button from being able to disagree. `--dump` prints the three of them beside
+  the buttons, because they are the only geometry on the page with no widget behind them -- and `--hit`
+  asks one point twice, once with a question open, to show the click landing on the dialog instead.
 
 ### Changed
 

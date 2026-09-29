@@ -2,9 +2,9 @@
 
 **Status: being built.** This file describes the retained object tree, which is on the branch
 `layout-experimental` and is not in `master`. The core is written and `examples/gallery` is a page
-written against it; the scrolling container is written too, and the last three controls are not. The
-migration list at the end is where that stands. Everything below is a decision unless it is under
-[Open questions](#open-questions) at the end, which is working notes for the branch.
+written against it; the scrolling container and the dialog are written too, and the last two controls
+are not. The migration list at the end is where that stands. Everything below is a decision unless it
+is under [Open questions](#open-questions) at the end, which is working notes for the branch.
 
 ## Why the page is no longer rebuilt
 
@@ -245,9 +245,13 @@ a box that overflows its clip is the one thing worth seeing.
   creation order.
 - A pointer move reaches the control under the pointer, and a control that needs to hear about moves
   that leave its own subtree -- today's `ExternalRegion` -- keeps a way to say so.
-- A modal child is the old `Layer`: it takes the input under it, `CoverPage()` is the window's page,
-  and `modal`, `lightDismiss`, `smoke` and `onDismiss` keep their meaning. A layer is the last child
-  of the root, so it paints over everything and needs nothing like `z`.
+- A modal child is the old `Layer`: it takes the input under it, `modal`, `lightDismiss`, `smoke` and
+  `onDismiss` keep their meaning, and it is the last child of the root, so it paints over everything
+  and needs nothing like `z`. **Where it goes is the layer's own answer** -- `Widget::Cover`, asked by
+  the tree of a child that answered `AsLayer` -- and the default is the whole of the widget it was
+  added to, which is what a dialog is: add it to the page and it covers the page. A layer that is not
+  a cover at all, a drop-down's list hanging under its field, overrides it. A layout never arranges
+  one: a column that did would have given it a slot and pushed the page down by the height of it.
 
 ## Accessibility
 
@@ -305,8 +309,9 @@ On the branch, in this order. Each phase is something a person can look at and d
    `Heading`. *done* -- all of it compiles clean and `examples/gallery` is a page written against it,
    with a `--dump` that prints the rectangles it came out as.
 2. **Scrolling and the rest of the controls.** `ScrollView` is written, with the clip, the wheel, the
-   glide and its bar; what is left of this phase is the three controls still on the flat list --
-   `DropDown`, `SideNav`, `Dialog` -- and `examples/settings` and `examples/nav` with them.
+   glide and its bar, and so is `Dialog` -- which is what made the layer's placement a rule of the tree
+   rather than a thing a dialog did for itself. What is left of this phase is the two controls still on
+   the flat list -- `DropDown`, `SideNav` -- and `examples/settings` and `examples/nav` with them.
    *(you are here)*
 3. **Pages and the grid.** `SideNav` as a root widget holding pages and switching by visibility;
    `Page` with its own layout; `GridLayout`.

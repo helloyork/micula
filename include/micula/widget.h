@@ -186,7 +186,27 @@ struct Widget {
     bool ShowFocusRing() const;
     // The layer this widget is, when it is one. Asked by the window, which routes Esc, Enter and the
     // Tab ring through the top layer before the page sees them.
-    virtual Layer *AsLayer() { return nullptr; }    // Whether this widget is a **window onto its children** rather than a box they fit in: they are
+    virtual Layer *AsLayer() { return nullptr; }
+    // Where this widget goes when it is one of those: **the tree asks the layer**, and the answer
+    // below is the one most layers give -- the whole of the widget it was added to, in that widget's
+    // own space. A dialog is added to the page and says nothing here, because covering the page is
+    // covering the widget a page is.
+    //
+    // A layer that wants a rectangle of its own overrides this, and one has to be able to: a
+    // drop-down's list covers nothing at all -- it hangs under the field that opened it, as wide as
+    // the field, as tall as its list came out and the room allows -- and it would be in the wrong
+    // place wherever it was added. The room comes along because sizing itself is measuring, and
+    // measuring needs the fonts.
+    //
+    // It is on the node rather than on `Layer` because the walk is what asks it (see
+    // ArrangeSubtree), and the walk is here, where `Layer` is not yet a complete type. A widget that
+    // is not a layer is never asked, which is why the answer below is a whole box rather than an
+    // error.
+    virtual D2D1_RECT_F Cover(const Room &room, const Widget &host) const {
+        (void)host;
+        return { 0.0f, 0.0f, room.width, room.height };
+    }
+    // Whether this widget is a **window onto its children** rather than a box they fit in: they are
     // drawn only where they are inside it, which is what makes a page too long for the room it has
     // readable. The paint walk pushes it as a clip, and VisibleArea answers with it -- so a control
     // asking how much room it has is told about the container it is scrolling in rather than about
@@ -340,15 +360,26 @@ inline void ArrangeSubtree(Widget *w, const Fonts &fonts) {
     // A widget that has never been placed is placed without moving; the ones that have been keep the
     // rectangle they are drawn in until the glide catches up with the new one.
     if (!w->placed) { w->drawn = w->rect; w->placed = true; }
-    if (w->layout) {
-        Room room;
-        room.fonts = &fonts;
-        room.spec = &w->layout->spec;
-        room.width = Width(w->rect);
-        room.height = Height(w->rect);
-        w->layout->Arrange(room, { 0.0f, 0.0f, room.width, room.height });
-        w->layout->Glide(0.0f);
+    // The room the host is being arranged in, built before the layout because a layer is measured in
+    // it too -- a layer that sizes itself to its own content has to measure something. `spec` is the
+    // host's, and a host with no layout of its own is measured against the platform's, since a layer
+    // is still a control and still wants to know what one is tall.
+    Room room;
+    room.fonts = &fonts;
+    room.spec = w->layout ? &w->layout->spec : &PlatformSpec();
+    room.width = Width(w->rect);
+    room.height = Height(w->rect);
+    if (w->layout) w->layout->Arrange(room, { 0.0f, 0.0f, room.width, room.height });
+    // A layer takes no place in the layout of the host, so the host's layout does not place it -- one
+    // that did would have given it a slot in the column and pushed everything below down by the
+    // height of a page. Where it goes is the layer's own answer instead (Layer::Cover), and the
+    // default answer -- the whole of the host -- is what a dialog's is: it was added to the page, so
+    // it covers the page. Before the glide, because the glide's target is this rectangle.
+    for (auto &child : w->children) {
+        if (!child->visible) continue;
+        if (child->AsLayer()) child->rect = child->Cover(room, *w);
     }
+    if (w->layout) w->layout->Glide(0.0f);
     for (const auto &child : w->children)
         if (child->visible) ArrangeSubtree(child.get(), fonts);
 }

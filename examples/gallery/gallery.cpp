@@ -46,10 +46,18 @@ struct Page {
     std::wstring device = L"Pixel 8";
 
     // --- the tree -------------------------------------------------------------------
+    // The root the window gave the page -- the client area below the caption -- kept because that is
+    // what a dialog is added to. A dialog covers the widget it is added to, which is the default
+    // answer a layer gives to where it goes -- and the page is inside a view that clips and scrolls,
+    // so `page->Add(dialog)` would be a question that slid away with the answer.
+    Widget *root = nullptr;
+    // The one button that asks before it does anything, so that the answer can close the window.
+    Button *quit = nullptr;
     // The page, in a window. Two nodes: the root the window gave the page, and the scroll view
     // everything else is in -- so the page margin belongs to the view rather than to the window, and
     // a window shorter than the page scrolls instead of cutting it off.
-    ScrollView *Build(Widget *root) {
+    ScrollView *Build(Widget *host) {
+        root = host;
         // The root is a stack with no margin of its own, so its one child is the whole client area
         // below the caption.
         auto *whole = new StackLayout();
@@ -101,14 +109,29 @@ struct Page {
         verbs->Add(new Button(L"开始", ButtonStyle::Accent, [this] { notify = true; }));
         // A control reaches the window through the tree it is in, which is what lets this callback
         // close the window without the page holding a pointer to one.
-        Button *quit = verbs->Add(new Button(L"关闭", ButtonStyle::Standard, nullptr));
-        quit->onClick = [quit] {
-            if (Window *w = quit->window()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
-        };
+        quit = verbs->Add(new Button(L"关闭", ButtonStyle::Standard, nullptr));
+        quit->onClick = [this] { root->Add(AskClose()); };
 
         page->Add(new Label(L"这一页没有一处坐标：控件报告它们想要什么，布局决定它们在哪里。",
                             TextRole::Caption))->secondary = true;
         return page;
+    }
+
+    // The question the 关闭 button asks before it closes the window, and the one `--dump` opens.
+    //
+    // A dialog is a widget like any other, so this builds one and hands it back and the caller adds
+    // it where it belongs -- which is what makes the layer rule checkable by arithmetic: laying the
+    // tree out with a question open has to leave every rectangle on the page below it exactly as it
+    // was, and a layer that took a place in the column would have moved all of them.
+    Dialog *AskClose() {
+        auto *d = new Dialog(L"确实要关闭吗？", L"还没开始的任务会被中断。");
+        d->AddButton(L"取消", 0);
+        d->AddButton(L"关闭", 1, ButtonStyle::Accent);
+        d->onResult = [this](int r) {
+            if (r != 1) return;
+            if (Window *w = quit->window()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
+        };
+        return d;
     }
 };
 
@@ -135,6 +158,20 @@ void Print(const Fonts &fonts, const Widget *w, int depth, float ox, float oy) {
             const D2D1_RECT_F &b = boxes[i];
             // The card's own rectangles already are where they are drawn -- in the space the card's
             // `rect` is measured in, which is what `ox, oy` name -- so nothing is added to them.
+            std::wprintf(L"%*s %-5ls %7.1f %7.1f %7.1f %7.1f\n", (depth + 1) * 2, L"", names[i],
+                         ox + b.left, oy + b.top, ox + b.right, oy + b.bottom);
+        }
+    }
+
+    // A dialog's three rectangles are the same kind of thing: the panel, the footer band and the
+    // body's box are not widgets, and a program cannot read them out of the tree. Printed here it
+    // can be seen that the panel is centred in the page, that the footer is the last 80 DIPs of it,
+    // and that the buttons sit inside those 80.
+    if (const Dialog *d = dynamic_cast<const Dialog *>(w)) {
+        const D2D1_RECT_F boxes[3] = { d->frame.panel, d->frame.footer, d->frame.body };
+        const wchar_t *names[3] = { L"panel", L"footer", L"body" };
+        for (int i = 0; i < 3; i++) {
+            const D2D1_RECT_F &b = boxes[i];
             std::wprintf(L"%*s %-5ls %7.1f %7.1f %7.1f %7.1f\n", (depth + 1) * 2, L"", names[i],
                          ox + b.left, oy + b.top, ox + b.right, oy + b.bottom);
         }
@@ -205,6 +242,11 @@ void Dump(Fonts &fonts) {
     Page page;
     gallery.page = &page;
     ScrollView *view = gallery.Build(kWinW, kWinH);
+    // And the question the 关闭 button would ask, open, because that is the state worth printing. The
+    // layer is added to the page and covers it, and every rectangle below it has to come out exactly
+    // as it did in the run without one -- so a layer that took a place in the column shows up as the
+    // whole page having moved down by the height of it.
+    page.root->Add(page.AskClose());
     ArrangeSubtree(gallery.content.get(), fonts);
     std::wprintf(L"scroll   scroll=%.1f extent=%.1f most=%.1f\n",
                  view->scroll, view->extent, view->ScrollMax());
@@ -242,6 +284,9 @@ void Hit(Fonts &fonts, Widget *w, int depth, float ox, float oy) {
     for (const auto &child : w->children) Hit(fonts, child.get(), depth + 1, ox + r.left, oy + r.top);
 }
 
+// Defined below, after the walk: it builds two trees of its own to ask one point twice.
+void Modal(Fonts &fonts);
+
 void Hits(Fonts &fonts) {
     Gallery gallery(nullptr);
     Page page;
@@ -249,6 +294,42 @@ void Hits(Fonts &fonts) {
     gallery.Build(kWinW, kWinH);
     ArrangeSubtree(gallery.content.get(), fonts);
     Hit(fonts, gallery.content.get(), 0, 0.0f, 0.0f);
+    Modal(fonts);
+}
+
+// What a modal layer does to the page underneath it. The walk above cannot show it -- every line of
+// it would answer "the dialog" -- so two trees are built and one point is asked of each: the middle
+// of a card, which lands on the card with the page to itself and on the dialog with a question open.
+void Modal(Fonts &fonts) {
+    const float x = kWinW / 2.0f, y = kCaptionH + 100.0f;
+    {
+        Gallery gallery(nullptr);
+        Page page;
+        gallery.page = &page;
+        gallery.Build(kWinW, kWinH);
+        ArrangeSubtree(gallery.content.get(), fonts);
+        Widget *found = gallery.HitTest(x, y);
+        std::wprintf(L"page     %.0f,%.0f alone    -> #%-3d %ls\n", x, y, found ? found->uid : 0,
+                     found && found->AccessibleLabel() ? found->AccessibleLabel() : L"");
+    }
+    {
+        Gallery gallery(nullptr);
+        Page page;
+        gallery.page = &page;
+        gallery.Build(kWinW, kWinH);
+        Dialog *d = page.root->Add(page.AskClose());
+        ArrangeSubtree(gallery.content.get(), fonts);
+        Widget *found = gallery.HitTest(x, y);
+        std::wprintf(L"dialog   %.0f,%.0f with one -> #%-3d %ls  (%ls)\n", x, y, found ? found->uid : 0,
+                     found && found->AccessibleLabel() ? found->AccessibleLabel() : L"",
+                     found && found->Holds(d) ? L"the dialog's" : L"NOT the dialog's");
+        // The panel, in the dialog's own space, against the box the dialog was given: it covers the
+        // page because that is the widget it was added to, so the box is the page and the panel is
+        // centred in it.
+        std::wprintf(L"          panel %.1f %.1f %.1f %.1f  centred in a box of %.0f x %.0f\n",
+                     d->frame.panel.left, d->frame.panel.top, d->frame.panel.right,
+                     d->frame.panel.bottom, kWinW, kWinH - kCaptionH);
+    }
 }
 
 // The wheel, turned by hand: the same number `OnWheel` would move, through the same call. What it

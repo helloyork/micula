@@ -37,7 +37,7 @@ inline Want RowLayout::Measure(const Room &room) const {
     float width = 2 * pad, height = 0.0f;
     bool fillW = false, first = true;
     for (const auto &child : host_->children) {
-        if (!child->visible) continue;
+        if (!child->visible || child->AsLayer()) continue;   // a layer is the tree's, not the row's
         const Want want = child->Measure(inner);
         if (gaps && !first) width += spec.rowGap;
         first = false;
@@ -63,7 +63,7 @@ inline void RowLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     float filling = 0.0f;
     int count = 0;
     for (const auto &child : host_->children) {
-        if (!child->visible) continue;
+        if (!child->visible || child->AsLayer()) continue;
         if (gaps && count > 0) used += spec.rowGap;
         count++;
         const Want want = child->Measure(inner);
@@ -77,7 +77,7 @@ inline void RowLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     int i = 0;
     for (auto &child : host_->children) {
         Widget *w = child.get();
-        if (!w->visible) continue;
+        if (!w->visible || w->AsLayer()) continue;
         if (gaps && i > 0) x += spec.rowGap;
         i++;
 

@@ -111,6 +111,15 @@ struct Spec {
     float cardSlotW = 240.0f;
 };
 
+// The numbers a widget with no layout of its own is arranged against. A `Spec` belongs to a layout,
+// and a host that has none -- a `View` a page put a layer in and arranged nothing in -- still has to
+// answer a layer asking what a control is tall. The platform's own numbers are the only honest
+// answer there, and having one place to get them beats every layer checking for null.
+inline const Spec &PlatformSpec() {
+    static const Spec spec;
+    return spec;
+}
+
 // A layout: measure the host's children, then place them. It is asked for a measurement when the
 // host's own parent needs a size for the host, and for an arrangement when the host has a box.
 struct Layout {
@@ -127,6 +136,11 @@ struct Layout {
     // not the caller's: `box` is the whole host. The room comes along because arranging is also
     // where a child is measured against the width it is really being given -- a wrapping line has
     // to wrap at the width it ends up with, not at the one it was offered.
+    //
+    // **A layer is not a child to be placed.** `Widget::AsLayer` says it covers the host rather than
+    // taking a place in it, and the tree hands it the host's whole box instead -- so a layout that
+    // measured one has counted something that is not there, and a layout that placed one has pushed
+    // everything below it down by the height of a page. Skip them, by the same rule in `Measure`.
     //
     // The caller follows this with `Glide(0)`, which is what places a child that has never been
     // placed: nothing glides on the first arrangement.

@@ -648,13 +648,10 @@ struct Layer : Widget {
         if (smoke) p.Fill(rect, Rgb(0x000000, smokeAlpha));
     }
 
-    // What a layer covers: the whole of the widget it was added to, which for a page's dialog is
-    // the client area below the caption. That rectangle used to be arithmetic about the caption
-    // height; a page starts below the caption, so covering the page is covering its whole box.
-    D2D1_RECT_F CoverPage() const {
-        if (!parent) return {};
-        return { 0.0f, 0.0f, Width(parent->rect), Height(parent->rect) };
-    }
+    // Where this layer goes is `Widget::Cover`, which the tree asks of every child that answered
+    // `AsLayer` here: the default is the whole of the widget it was added to, and a layer that wants
+    // a rectangle of its own -- a drop-down's list under the field that opened it -- overrides it.
+    // Nothing in between: a layer takes no place in its host's layout, so nothing else arranges one.
 
     // What Tab walks while this is open, in order. Empty leaves the page's own order alone, which
     // is right for a layer that is only a picture.

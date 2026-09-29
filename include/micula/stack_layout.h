@@ -52,7 +52,7 @@ inline Want StackLayout::Measure(const Room &room) const {
     float width = 0.0f, height = 2 * padY;
     bool fillW = false, fillH = false, first = true;
     for (const auto &child : host_->children) {
-        if (!child->visible) continue;
+        if (!child->visible || child->AsLayer()) continue;   // a layer is the tree's, not the column's
         const Want want = child->Measure(inner);
         if (gaps && !first) height += spec.gap;
         first = false;
@@ -81,7 +81,7 @@ inline void StackLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     float filling = 0.0f;
     int count = 0;
     for (const auto &child : host_->children) {
-        if (!child->visible) continue;
+        if (!child->visible || child->AsLayer()) continue;
         if (gaps && count > 0) used += spec.gap;
         count++;
         const Want want = child->Measure(inner);
@@ -95,7 +95,7 @@ inline void StackLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     int i = 0;
     for (auto &child : host_->children) {
         Widget *w = child.get();
-        if (!w->visible) continue;
+        if (!w->visible || w->AsLayer()) continue;
         if (gaps && i > 0) y += spec.gap;
         i++;
 
