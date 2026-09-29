@@ -57,6 +57,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
 control on one scrolling page. `examples/nav` is the navigation pane with the switches
 that shape it on the page beside it, for trying them out.
 
+`tools/glyphpicker.ps1` is a window for choosing the icons in `glyphs.h`: it draws a
+range of code points in a Segoe font, dims the ones the font does not have, marks the
+ones that only one of the two icon fonts has, and copies the literal of the cell you
+click.
+
 ## Building
 
 The headers link the libraries they need through `#pragma comment`, so with MSVC this is

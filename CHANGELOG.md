@@ -15,6 +15,11 @@ library can be: a minor version may break.
   both ship -- because the fonts have no glyph names at all (both carry an empty `post` table), and a
   code point identified by looking at a rendered sheet is a code point that is eventually the wrong
   picture.
+- **`tools/glyphpicker.ps1`.** A window for choosing the icons in `glyphs.h`: it draws a range of code
+  points, dims the ones the font does not have, marks the ones that only one of the two icon fonts has,
+  and copies the literal of the cell that was clicked. Both rules about glyphs are cheap to check
+  there, and one of them is worth checking: `E963` was read as "a server" by eye, and is a smartcard.
+  `-SelfTest` copies a literal and reads it back; `-Shot` renders a page to a PNG without a window.
 
 ## [0.8.1] - 2026-09-29
 
