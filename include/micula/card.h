@@ -133,14 +133,16 @@ struct Card : Widget {
                            rect.bottom }, p.font->icon, c.textPrimary);
 
         const Text t = Wording(*p.font, sp);
-        if (t.hasValue)
-            p.Text(t.said, t.value, p.font->body, c.textPrimary);
-        p.Text(text, t.title, p.font->body, c.textPrimary);
-        if (t.hasUnder) {
-            // The third step of the ramp rather than the second: this line is under the title and
-            // beside a control, and it is the one thing in the row nobody has to read.
-            p.Text(detail, t.under, p.font->caption, c.textTertiary);
+        if (t.hasValue) {
+            // The second step of the ramp rather than the first. What the control is set to is worth
+            // reading, but it is not what the row is *about* -- the title is -- and at the top
+            // weight it competes with the title for the eye, which is the one thing a settings row
+            // must not do.
+            p.Text(t.said, t.value, p.font->body, c.textSecondary);
         }
+        p.Text(text, t.title, p.font->body, c.textPrimary);
+        if (t.hasUnder)
+            p.Text(detail, t.under, p.font->caption, c.textSecondary);
     }
 
     // A row of a page is a group of things: the words, the control, and what the control is set to.

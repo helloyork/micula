@@ -226,12 +226,6 @@ struct Palette {
 
     D2D1_COLOR_F textPrimary;
     D2D1_COLOR_F textSecondary;
-    // The third step of Fluent's text ramp, which is a real step and not a fudge of the second:
-    // WinUI names it TextFillColorTertiaryBrush, and it is what a line that is *under* another line
-    // is drawn in -- a card's description below its title, a unit beside a value. Windows Settings
-    // stops at secondary for those and they read heavier than they look in the design; one step
-    // further is where the words stop competing with the control they belong to.
-    D2D1_COLOR_F textTertiary;
     D2D1_COLOR_F textDisabled;
 
     D2D1_COLOR_F ok;
@@ -580,7 +574,6 @@ inline Palette MakePalette(bool dark) {
         p.acrylicInApp        = Rgb(0x2C2C2C);                 // AcrylicInAppFillColorDefault's fallback
         p.textPrimary         = Rgb(0xFFFFFF);
         p.textSecondary       = Rgb(0xFFFFFF, 0.786f);         // TextFillColorSecondary
-        p.textTertiary        = Rgb(0xFFFFFF, 0.5412f);        // TextFillColorTertiary
         p.textDisabled        = Rgb(0xFFFFFF, 0.3628f);        // TextFillColorDisabled
         p.ok                  = Rgb(0x6CCB5F);
         p.warn                = Rgb(0xFCE100);
@@ -607,7 +600,6 @@ inline Palette MakePalette(bool dark) {
         p.acrylicInApp        = Rgb(0xF9F9F9);                 // AcrylicInAppFillColorDefault's fallback
         p.textPrimary         = Rgb(0x000000, 0.8956f);        // TextFillColorPrimary
         p.textSecondary       = Rgb(0x000000, 0.6063f);
-        p.textTertiary        = Rgb(0x000000, 0.4470f);
         p.textDisabled        = Rgb(0x000000, 0.3614f);
         p.ok                  = Rgb(0x0F7B0F);
         p.warn                = Rgb(0x9D5D00);
