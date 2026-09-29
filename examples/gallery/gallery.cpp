@@ -105,15 +105,34 @@ struct Page {
 // One widget a line: the number Add gave it, the rectangle it came out as, and what a screen reader
 // would call it. Indented by depth, because the tree is the thing being read -- a rectangle is only
 // wrong relative to the one it should be inside of.
-void Print(const Widget *w, int depth, float ox, float oy) {
+//
+// A card gets three more lines under it, because its words are not widgets and their rectangles are
+// the only geometry on the page that the tree cannot answer for.
+void Print(const Fonts &fonts, const Widget *w, int depth, float ox, float oy) {
     const D2D1_RECT_F &r = w->rect;
     std::wprintf(L"%*s#%-3d %7.1f %7.1f %7.1f %7.1f", depth * 2, L"", w->uid,
                  ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
     if (const wchar_t *name = w->AccessibleLabel()) std::wprintf(L"  %ls", name);
     std::wprintf(L"\n");
+
+    if (const Card *card = dynamic_cast<const Card *>(w)) {
+        const Card::Text t = card->Wording(fonts, card->layout->spec);
+        const D2D1_RECT_F boxes[3] = { t.title, t.under, t.value };
+        const wchar_t *names[3] = { L"title", L"under", L"value" };
+        const bool shown[3] = { true, t.hasUnder, t.hasValue };
+        for (int i = 0; i < 3; i++) {
+            if (!shown[i]) continue;
+            const D2D1_RECT_F &b = boxes[i];
+            // The card's own rectangles already are where they are drawn -- in the space the card's
+            // `rect` is measured in, which is what `ox, oy` name -- so nothing is added to them.
+            std::wprintf(L"%*s %-5ls %7.1f %7.1f %7.1f %7.1f\n", (depth + 1) * 2, L"", names[i],
+                         ox + b.left, oy + b.top, ox + b.right, oy + b.bottom);
+        }
+    }
+
     for (const auto &child : w->children) {
         if (!child->visible) continue;
-        Print(child.get(), depth + 1, ox + r.left, oy + r.top);
+        Print(fonts, child.get(), depth + 1, ox + r.left, oy + r.top);
     }
 }
 
@@ -168,7 +187,7 @@ void Dump(Fonts &fonts) {
     gallery.page = &page;
     View *root = gallery.Build(700.0f, 620.0f);
     ArrangeSubtree(root, fonts);
-    Print(root, 0, 0.0f, 0.0f);
+    Print(fonts, root, 0, 0.0f, 0.0f);
 }
 
 // Every widget's own centre, asked of the hit test. What should come back at a widget's centre is

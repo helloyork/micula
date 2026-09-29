@@ -67,42 +67,79 @@ struct Card : Widget {
         return Add(w);
     }
 
+    // Where this card's own words go, in the card's own space.
+    //
+    // Paint draws into these and a program can ask for them, from the fonts alone -- the width of a
+    // string is a measurement, not something that needs a device context. That matters because a
+    // card's title, the line under it and the value beside the control are the only geometry on a
+    // page with no widget behind it: everything else can be read out of the tree, and these three
+    // could only be worked out by reading Paint.
+    struct Text {
+        D2D1_RECT_F title = {};    // the card's own line, and the room it may use
+        D2D1_RECT_F under = {};    // the line below it, when there is one
+        D2D1_RECT_F value = {};    // the value, when there is one
+        std::wstring said;         // what `value` answered, kept so it is asked once
+        bool hasUnder = false;
+        bool hasValue = false;
+    };
+
+    Text Wording(const Fonts &fonts, const Spec &spec) const {
+        Text t;
+        const float line = spec.labelH;
+        const float mid = (rect.top + rect.bottom) / 2.0f;
+        const float left = rect.left + spec.cardPad + (icon.empty() ? 0.0f : 32.0f);
+
+        // Everything the words may not run into comes off the right: the value first, then the
+        // control. Both are known only after the arrangement, which is why this is not part of the
+        // layout.
+        //
+        // **The control's rectangle is in the card's space and this is in the card's parent's**, so
+        // the card's own origin goes on before the two are compared. Leaving it off is not a small
+        // error: `cardGap` was 16 and measured 40, because the difference is the card's own left
+        // edge -- 24 DIP at a page margin of 24 -- and nothing else on the page is drawn from a
+        // control's rectangle this way.
+        float right = content ? rect.left + content->rect.left - spec.cardGap
+                              : rect.right - spec.cardPad;
+        if (value) {
+            t.said = value();
+            if (!t.said.empty()) {
+                const float vw = fonts.Measure(fonts.body, t.said);
+                t.value = { right - vw, rect.top, right, rect.bottom };
+                t.hasValue = true;
+                right -= vw + spec.cardGap;
+            }
+        }
+        if (right < left) right = left;
+
+        t.hasUnder = !detail.empty();
+        if (t.hasUnder) {
+            t.title = { left, mid - line, right, mid };
+            t.under = { left, mid, right, mid + line };
+        } else {
+            // Nothing under the title, so it is centred in the card rather than sitting up.
+            t.title = { left, rect.top, right, rect.bottom };
+        }
+        return t;
+    }
+
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
         const Spec &sp = layout->spec;
         p.FillRound(rect, metric::kRadiusControl, c.cardBg);
         p.StrokeRound(rect, metric::kRadiusControl, c.cardStroke);
 
-        const float line = sp.labelH;
-        const float mid = (rect.top + rect.bottom) / 2.0f;
-        float left = rect.left + sp.cardPad;
-        if (!icon.empty()) {
-            p.Text(icon, { left, rect.top, left + 20, rect.bottom }, p.font->icon, c.textPrimary);
-            left += 32;
-        }
+        if (!icon.empty())
+            p.Text(icon, { rect.left + sp.cardPad, rect.top, rect.left + sp.cardPad + 20,
+                           rect.bottom }, p.font->icon, c.textPrimary);
 
-        // Where the text has to stop: the control, and the value beside it. Both come off the right,
-        // and both are only known once the arrangement has happened -- which is what Paint runs after.
-        float right = content ? content->rect.left - sp.cardGap : rect.right - sp.cardPad;
-        if (value) {
-            const std::wstring v = value();
-            if (!v.empty()) {
-                const float vw = p.MeasureWidth(v, p.font->body);
-                p.Text(v, { right - vw, rect.top, right, rect.bottom }, p.font->body,
-                       c.textPrimary);
-                right -= vw + sp.cardGap;
-            }
-        }
-        if (right < left) right = left;
-
-        if (detail.empty()) {
-            // Nothing under the text, so it is centred in the card rather than sitting up.
-            p.Text(text, { left, rect.top, right, rect.bottom }, p.font->body, c.textPrimary);
-        } else {
-            p.Text(text, { left, mid - line, right, mid }, p.font->body, c.textPrimary);
+        const Text t = Wording(*p.font, sp);
+        if (t.hasValue)
+            p.Text(t.said, t.value, p.font->body, c.textPrimary);
+        p.Text(text, t.title, p.font->body, c.textPrimary);
+        if (t.hasUnder) {
             // The third step of the ramp rather than the second: this line is under the title and
             // beside a control, and it is the one thing in the row nobody has to read.
-            p.Text(detail, { left, mid, right, mid + line }, p.font->caption, c.textTertiary);
+            p.Text(detail, t.under, p.font->caption, c.textTertiary);
         }
     }
 
