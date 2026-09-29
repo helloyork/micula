@@ -81,6 +81,7 @@ constexpr const wchar_t *kDrive    = L"\uEDA2";  // HardDrive
 constexpr const wchar_t *kDocument = L"\uE8A5";  // Document
 constexpr const wchar_t *kCloud    = L"\uE753";  // Cloud
 constexpr const wchar_t *kGlobe    = L"\uE774";  // Globe
+constexpr const wchar_t *kLanguage = L"\uF2B7";  // LocaleLanguage: a globe with a letter and a character on it
 // The two ends of a connection to a machine somewhere else. Named from Microsoft's own icon list
 // rather than picked by eye: the glyph font carries no names of its own (its `post` table is empty),
 // and a code point chosen by looking at a contact sheet is a code point that is eventually the wrong
@@ -117,6 +118,7 @@ constexpr const wchar_t *kView       = L"\uE890";  // View
 constexpr const wchar_t *kFullScreen = L"\uE740";  // FullScreen
 constexpr const wchar_t *kZoomIn     = L"\uE8A3";  // ZoomIn
 constexpr const wchar_t *kZoomOut    = L"\uE71F";  // ZoomOut
+
 
 }  // namespace glyph
 }  // namespace micula

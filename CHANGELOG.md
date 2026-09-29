@@ -15,6 +15,10 @@ library can be: a minor version may break.
   both ship -- because the fonts have no glyph names at all (both carry an empty `post` table), and a
   code point identified by looking at a rendered sheet is a code point that is eventually the wrong
   picture.
+- **`glyph::kLanguage` (`F2B7`).** `LocaleLanguage`, a globe with a letter and a character on it -- for
+  the setting that decides what language a page speaks. It sits past the `E7xx` block the rest of the
+  list comes from, and the only way to know Segoe MDL2 Assets has it is to draw it there: nothing marks
+  the icons Fluent Icons added, which is why that check is a drawing and not a lookup.
 - **`tools/glyphpicker.ps1`.** A window for choosing the icons in `glyphs.h`: it draws a page of code
   points, dims the ones the font does not have, marks the ones that only one of the two icon fonts has,
   and copies the literal of the cell that was clicked. The range is typed once, at the top, and the
