@@ -15,11 +15,15 @@ library can be: a minor version may break.
   both ship -- because the fonts have no glyph names at all (both carry an empty `post` table), and a
   code point identified by looking at a rendered sheet is a code point that is eventually the wrong
   picture.
-- **`tools/glyphpicker.ps1`.** A window for choosing the icons in `glyphs.h`: it draws a range of code
+- **`tools/glyphpicker.ps1`.** A window for choosing the icons in `glyphs.h`: it draws a page of code
   points, dims the ones the font does not have, marks the ones that only one of the two icon fonts has,
-  and copies the literal of the cell that was clicked. Both rules about glyphs are cheap to check
+  and copies the literal of the cell that was clicked. The range is typed once, at the top, and the
+  arrows beside it flip the page -- one page, or ten. Both rules about glyphs are cheap to check
   there, and one of them is worth checking: `E963` was read as "a server" by eye, and is a smartcard.
   `-SelfTest` copies a literal and reads it back; `-Shot` renders a page to a PNG without a window.
+  The window has to make the process DPI aware (and, since PowerShell starts unaware, before the first
+  control exists) or Windows stretches the whole thing to the real DPI and the text goes soft -- which
+  is what the first version did at 150%, and what looked like a GDI scaling bug.
 
 ## [0.8.1] - 2026-09-29
 

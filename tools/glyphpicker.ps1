@@ -4,10 +4,13 @@
     Browse an icon font by code point, and click a glyph to copy it.
 
 .DESCRIPTION
-    Draws a range of code points in a grid, dims the ones the font does not have, draws in the
-    warning colour the ones that are missing from one of the fonts named by -Both, and puts the
-    literal of the clicked cell on the clipboard. Clicking a cell again takes it back out of the list
-    at the bottom, which a button copies in one go.
+    Draws a page of code points, dims the ones the font does not have, draws in the warning colour the
+    ones that are missing from one of the fonts named by -Both, and puts the literal of the clicked
+    cell on the clipboard. Clicking a cell again takes it back out of the list at the bottom, which a
+    button copies in one go.
+
+    The arrows beside the range flip the page: one page, or ten at a time. PageUp and PageDown do the
+    same from the keyboard. The range is the sheet's bounds, so it is typed once and not per page.
 
     What a picture *means* is the part no tool can answer: both Segoe icon fonts have an empty `post`
     table, so they carry no glyph names, and Microsoft's own icon lists (Windows Terminal's
@@ -34,7 +37,7 @@
     pwsh -File tools/glyphpicker.ps1 -From 0xE700 -To 0xE7FF
 
 .EXAMPLE
-    pwsh -File tools/glyphpicker.ps1 -Shot icons.png -From 0xE836 -To 0xE839 -Cols 2
+    pwsh -File tools/glyphpicker.ps1 -Shot icons.png -From 0xE836 -To 0xE839 -Cols 2 -Cell 96
 #>
 [CmdletBinding()]
 param(
@@ -42,9 +45,9 @@ param(
     [int]      $To     = 0xF8FF,
     [string]   $Font   = 'Segoe Fluent Icons',
     [string[]] $Both   = @('Segoe Fluent Icons', 'Segoe MDL2 Assets'),
-    [int]      $Cols   = 10,
+    [int]      $Cols   = 14,
     [int]      $Rows   = 6,
-    [int]      $Cell   = 84,
+    [int]      $Cell   = 48,
     [string]   $Format = 'literal',
     [string]   $Shot,
     [switch]   $SelfTest
@@ -52,6 +55,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+
+# PowerShell starts DPI unaware, and the shell then stretches the whole window to the real DPI, which
+# is blurry text and coordinates that do not match the numbers in this script. This has to happen
+# before the first control exists; after that WinForms refuses to change it, and the process stays
+# unaware -- which is what the first version of this tool did, at 150%, to look like a GDI scaling bug.
+try { [void][System.Windows.Forms.Application]::SetHighDpiMode([System.Windows.Forms.HighDpiMode]::PerMonitorV2) }
+catch { Write-Warning "could not become DPI aware: $($_.Exception.Message)" }
 
 if (-not ('GlyphTools' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -127,7 +137,6 @@ public static class GlyphTools
 
 # ---------------------------------------------------------------- state
 
-$gap     = 3
 $perPage = $Cols * $Rows
 
 $script:page   = 0
@@ -141,7 +150,7 @@ $script:hfonts = @{}
 function Start-Measure {
     # One memory DC with each font selected into it is all GetGlyphIndices needs, and holding the
     # bitmap keeps that DC alive for the life of the window.
-    $script:surface = [System.Drawing.Bitmap]::new(4, 4)
+    $script:surface  = [System.Drawing.Bitmap]::new(4, 4)
     $script:surfaceG = [System.Drawing.Graphics]::FromImage($script:surface)
     $script:hdc = $script:surfaceG.GetHdc()
     foreach ($name in (@($Font) + $Both | Select-Object -Unique)) {
@@ -173,56 +182,26 @@ function Format-Cp([int]$cp) {
     }
 }
 
-function Start-Ink([double]$scale) {
-    $script:iconFont = [System.Drawing.Font]::new($Font, [float]($Cell * $scale * 0.52),
-                                                  [System.Drawing.FontStyle]::Regular,
-                                                  [System.Drawing.GraphicsUnit]::Pixel)
-    $script:codeFont = [System.Drawing.Font]::new('Consolas', [float](11 * $scale),
-                                                  [System.Drawing.FontStyle]::Regular,
-                                                  [System.Drawing.GraphicsUnit]::Pixel)
-    $script:bg       = [System.Drawing.Color]::FromArgb(32, 32, 32)
-    $script:ink      = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(238, 238, 238))
-    $script:inkMissing = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(85, 85, 85))
-    $script:inkPartial = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(228, 160, 60))
-    $script:inkCode  = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(150, 150, 150))
-    $script:hlFill   = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(70, 0, 120, 215))
-    $script:edge     = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(0, 120, 215), [float](2 * $scale))
-    $script:hoverPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(110, 255, 255, 255), 1)
-    $script:centre   = [System.Drawing.StringFormat]::new()
-    $script:centre.Alignment = [System.Drawing.StringAlignment]::Center
-    $script:centre.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $script:centre.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
-}
-
 function Draw-Page([System.Drawing.Graphics]$g, [int]$page) {
     $g.Clear($script:bg)
     for ($i = 0; $i -lt $perPage; $i++) {
         $cp = $From + $page * $perPage + $i
         if ($cp -gt $To) { break }
-        $x = ($i % $Cols) * ($Cell + $gap)
-        $y = [int][Math]::Floor($i / $Cols) * ($Cell + $gap)
-        $box = [System.Drawing.Rectangle]::new($x, $y, $Cell, $Cell)
+        $x = ($i % $Cols) * $script:pitch
+        $y = [int][Math]::Floor($i / $Cols) * $script:pitch
+        $box = [System.Drawing.Rectangle]::new($x, $y, $script:Cell, $script:Cell)
         if ($script:picked.Contains($cp)) { $g.FillRectangle($script:hlFill, $box) }
         if ($cp -eq $script:hover) { $g.DrawRectangle($script:hoverPen, $box) }
         $ink = if (-not (Test-Glyph $Font $cp)) { $script:inkMissing }
                elseif (-not (Test-Both $cp)) { $script:inkPartial }
                else { $script:ink }
         $g.DrawString([string][char]$cp, $script:iconFont, $ink,
-                      [System.Drawing.RectangleF]::new($x, $y, $Cell, [float]($Cell * 0.74)), $script:centre)
+                      [System.Drawing.RectangleF]::new($x, $y, $script:Cell, $script:Cell * 0.7), $script:centre)
         $g.DrawString(('{0:X4}' -f $cp), $script:codeFont, $script:inkCode,
-                      [System.Drawing.RectangleF]::new($x, [float]($y + $Cell * 0.72), $Cell, [float]($Cell * 0.28)),
-                      $script:centre)
+                      [System.Drawing.RectangleF]::new($x, $y + $script:Cell * 0.7, $script:Cell,
+                                                       $script:Cell * 0.3), $script:centre)
         if ($script:picked.Contains($cp)) { $g.DrawRectangle($script:edge, $box) }
     }
-}
-
-function Hit-Cp([int]$x, [int]$y) {
-    $c = [int][Math]::Floor($x / ($Cell + $gap))
-    $r = [int][Math]::Floor($y / ($Cell + $gap))
-    if ($c -lt 0 -or $c -ge $Cols -or $r -lt 0 -or $r -ge $Rows) { return -1 }
-    $cp = $From + $script:page * $perPage + $r * $Cols + $c
-    if ($cp -gt $To) { return -1 }
-    return $cp
 }
 
 # ---------------------------------------------------------------- off-screen sheet
@@ -243,9 +222,28 @@ if ($SelfTest) {
 
 if ($Shot) {
     Start-Measure
-    Start-Ink 1.0
+    $script:Cell   = $Cell
+    $script:pitch  = $Cell + 3
+    $script:bg     = [System.Drawing.Color]::FromArgb(32, 32, 32)
+    $script:ink        = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(238, 238, 238))
+    $script:inkMissing = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(85, 85, 85))
+    $script:inkPartial = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(228, 160, 60))
+    $script:inkCode    = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(150, 150, 150))
+    $script:hlFill     = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(70, 0, 120, 215))
+    $script:edge       = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(0, 120, 215), 2)
+    $script:hoverPen   = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(110, 255, 255, 255), 1)
+    $script:iconFont   = [System.Drawing.Font]::new($Font, $Cell * 0.54, [System.Drawing.FontStyle]::Regular,
+                                                    [System.Drawing.GraphicsUnit]::Pixel)
+    $script:codeFont   = [System.Drawing.Font]::new('Consolas', [Math]::Max(7.0, $Cell * 0.18),
+                                                    [System.Drawing.FontStyle]::Regular,
+                                                    [System.Drawing.GraphicsUnit]::Pixel)
+    $script:centre     = [System.Drawing.StringFormat]::new()
+    $script:centre.Alignment = [System.Drawing.StringAlignment]::Center
+    $script:centre.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $script:centre.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
+
     $rows  = [int][Math]::Min($Rows, [Math]::Ceiling(($To - $From + 1) / $Cols))
-    $sheet = [System.Drawing.Bitmap]::new($Cols * ($Cell + $gap), $rows * ($Cell + $gap))
+    $sheet = [System.Drawing.Bitmap]::new($Cols * $script:pitch, $rows * $script:pitch)
     $g = [System.Drawing.Graphics]::FromImage($sheet)
     $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
     Draw-Page $g 0
@@ -265,139 +263,149 @@ $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 
-try { [System.Windows.Forms.Application]::SetHighDpiMode([System.Windows.Forms.HighDpiMode]::PerMonitorV2) } catch { }
 $measure = $form.CreateGraphics()
 $s = $measure.DpiX / 96.0
 $measure.Dispose()
 
-$Cell  = [int][Math]::Round($Cell * $s)
-$gap   = [int](3 * $s)
-$pad   = [int](10 * $s)
-$line  = [int](28 * $s)
+function Sx([double]$v) { [int][Math]::Round($v * $s) }   # a layout number, for the monitor's DPI
 
-# -Cell is a maximum: a sheet taller or wider than the working area could not be browsed at all, so
-# the cells give way instead.
-$mins = [int](20 * $s)
-$work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$fitW = [int][Math]::Floor(($work.Width - 2 * $pad) / $Cols) - $gap
-$fitH = [int][Math]::Floor(($work.Height - 6 * $line - 3 * $pad) / $Rows) - $gap
-$Cell = [Math]::Max([Math]::Min($Cell, [Math]::Min($fitW, $fitH)), $mins)
+# Everything above is in 96 dpi units: -Cell is the cell size, and it is a maximum, so a page that
+# would not fit the working area gets smaller cells rather than a window that hangs off the screen.
+$gap   = Sx 2
+$pad   = Sx 8
+$line  = Sx 26
+$script:Cell  = [int][Math]::Min((Sx $Cell), [Math]::Min(
+                    [Math]::Floor(([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Width - 4 * $pad) / $Cols) - $gap,
+                    [Math]::Floor(([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 6 * $line - 6 * $pad) / $Rows) - $gap))
+$script:Cell  = [Math]::Max($script:Cell, (Sx 20))
+$script:pitch = $script:Cell + $gap
 
-$gridW = $Cols * ($Cell + $gap)
-$gridH = $Rows * ($Cell + $gap)
-$form.ClientSize = [System.Drawing.Size]::new($gridW + 2 * $pad, $gridH + 6 * $line + $pad * 3)
+$gridW = $Cols * $script:pitch
+$gridH = $Rows * $script:pitch
+$wide  = [Math]::Max($gridW, (Sx 700))        # the bottom row of buttons is wider than a small grid
+$top   = $pad + $line + $pad
+
+$form.ClientSize = [System.Drawing.Size]::new($wide + 2 * $pad, $top + $gridH + $pad + $line + 4 + 2 * $line + $pad)
 
 Start-Measure
-Start-Ink 1.0
 
-function Sx([int]$v) { [int]($v * $s) }   # a layout number, scaled for this monitor
+# ---------------------------------------------------------------- the window's own drawing
+
+$script:bg         = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$script:ink        = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(238, 238, 238))
+$script:inkMissing = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(85, 85, 85))
+$script:inkPartial = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(228, 160, 60))
+$script:inkCode    = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(150, 150, 150))
+$script:hlFill     = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(70, 0, 120, 215))
+$script:edge       = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(0, 120, 215), [float](Sx 2))
+$script:hoverPen   = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(110, 255, 255, 255), 1)
+$script:iconFont   = [System.Drawing.Font]::new($Font, [float]($script:Cell * 0.54),
+                                                [System.Drawing.FontStyle]::Regular,
+                                                [System.Drawing.GraphicsUnit]::Pixel)
+$script:codeFont   = [System.Drawing.Font]::new('Consolas', [float][Math]::Max((Sx 8), $script:Cell * 0.18),
+                                                [System.Drawing.FontStyle]::Regular,
+                                                [System.Drawing.GraphicsUnit]::Pixel)
+$script:centre     = [System.Drawing.StringFormat]::new()
+$script:centre.Alignment = [System.Drawing.StringAlignment]::Center
+$script:centre.LineAlignment = [System.Drawing.StringAlignment]::Center
+$script:centre.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
 
 $panel = [System.Windows.Forms.Panel]::new()
-$panel.Location = [System.Drawing.Point]::new($pad, $line + $pad)
+$panel.Location = [System.Drawing.Point]::new($pad, $top)
 $panel.Size = [System.Drawing.Size]::new($gridW, $gridH)
 # A hand-painted panel flickers unless it is double buffered, and that property is protected.
 [System.Windows.Forms.Control].GetProperty('DoubleBuffered',
     [System.Reflection.BindingFlags]'Instance,NonPublic').SetValue($panel, $true)
 
+function New-Label([string]$text, [int]$x, [int]$y) {
+    $l = [System.Windows.Forms.Label]::new()
+    $l.Text = $text
+    $l.AutoSize = $true
+    $l.Location = [System.Drawing.Point]::new($x, $y)
+    $form.Controls.Add($l)
+    return $l
+}
+
+function New-Button([string]$text, [int]$x, [int]$y, [int]$w) {
+    $b = [System.Windows.Forms.Button]::new()
+    $b.Text = $text
+    $b.Location = [System.Drawing.Point]::new($x, $y)
+    $b.Size = [System.Drawing.Size]::new($w, $line)
+    $form.Controls.Add($b)
+    return $b
+}
+
+$ty = $pad + (Sx 4)
+
+[void](New-Label '范围' $pad $ty)
+[void](New-Label '–' (Sx 120) $ty)
+[void](New-Label '复制为' (Sx 8) ($top + $gridH + $pad + (Sx 6)))
+
 $tbFrom = [System.Windows.Forms.TextBox]::new()
 $tbFrom.Text = '{0:X4}' -f $From
-$tbFrom.Location = [System.Drawing.Point]::new($pad + (Sx 40), $pad)
-$tbFrom.Size = [System.Drawing.Size]::new((Sx 64), $line - (Sx 6))
-
-$lblFrom = [System.Windows.Forms.Label]::new()
-$lblFrom.Text = '范围'
-$lblFrom.AutoSize = $true
-$lblFrom.Location = [System.Drawing.Point]::new($pad, $pad + (Sx 5))
-
-$lblDash = [System.Windows.Forms.Label]::new()
-$lblDash.Text = '–'
-$lblDash.AutoSize = $true
-$lblDash.Location = [System.Drawing.Point]::new($pad + (Sx 108), $pad + (Sx 5))
+$tbFrom.Location = [System.Drawing.Point]::new((Sx 46), $pad)
+$tbFrom.Size = [System.Drawing.Size]::new((Sx 70), $line - (Sx 6))
+$form.Controls.Add($tbFrom)
 
 $tbTo = [System.Windows.Forms.TextBox]::new()
 $tbTo.Text = '{0:X4}' -f $To
-$tbTo.Location = [System.Drawing.Point]::new($pad + (Sx 122), $pad)
-$tbTo.Size = [System.Drawing.Size]::new((Sx 64), $line - (Sx 6))
+$tbTo.Location = [System.Drawing.Point]::new((Sx 136), $pad)
+$tbTo.Size = [System.Drawing.Size]::new((Sx 70), $line - (Sx 6))
+$form.Controls.Add($tbTo)
 
-$btnApply = [System.Windows.Forms.Button]::new()
-$btnApply.Text = '应用'
-$btnApply.Location = [System.Drawing.Point]::new($pad + (Sx 194), $pad - (Sx 1))
-$btnApply.Size = [System.Drawing.Size]::new((Sx 64), $line)
+$btnApply = New-Button '应用' (Sx 214) $pad (Sx 62)
+
+# The arrows are the point of the range being a range: the code is typed here, the pages are flipped
+# there, and nothing has to be typed again to move.
+$btnFirst = New-Button '«' (Sx 286) $pad (Sx 30)
+$btnPrev  = New-Button '‹' (Sx 320) $pad (Sx 30)
+$btnNext  = New-Button '›' (Sx 354) $pad (Sx 30)
+$btnLast  = New-Button '»' (Sx 388) $pad (Sx 30)
+
+$lblPage = New-Label '第 1/1 页' (Sx 430) $ty
+$lblWhere = New-Label '' (Sx 600) $ty
 
 $cbFmt = [System.Windows.Forms.ComboBox]::new()
 $cbFmt.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 [void]$cbFmt.Items.AddRange(@('L"\uXXXX"', 'E839', '字符'))
 $cbFmt.SelectedIndex = @('literal', 'hex', 'character').IndexOf($Format.ToLower())
-$cbFmt.Location = [System.Drawing.Point]::new($pad + (Sx 330), $pad)
+$cbFmt.Location = [System.Drawing.Point]::new((Sx 64), ($top + $gridH + $pad + (Sx 2)))
 $cbFmt.Size = [System.Drawing.Size]::new((Sx 110), $line)
+$form.Controls.Add($cbFmt)
 
-$lblFmt = [System.Windows.Forms.Label]::new()
-$lblFmt.Text = '复制为'
-$lblFmt.AutoSize = $true
-$lblFmt.Location = [System.Drawing.Point]::new($pad + (Sx 274), $pad + (Sx 5))
-
-$legend = [System.Windows.Forms.Label]::new()
-$legend.Text = '灰 = 字体没有    橙 = 只有其中一种字体有'
-$legend.AutoSize = $true
-
-foreach ($ctl in @($lblFrom, $lblDash, $lblFmt, $legend)) { $form.Controls.Add($ctl) }
-$legend.Location = [System.Drawing.Point]::new($form.ClientSize.Width - $legend.PreferredSize.Width - $pad, $pad + (Sx 5))
-
-$lblPage = [System.Windows.Forms.Label]::new()
-$lblPage.AutoSize = $true
-
-$btnPrev = [System.Windows.Forms.Button]::new()
-$btnPrev.Text = '‹'
-$btnPrev.Size = [System.Drawing.Size]::new($line, $line)
-
-$btnNext = [System.Windows.Forms.Button]::new()
-$btnNext.Text = '›'
-$btnNext.Size = [System.Drawing.Size]::new($line, $line)
-
-$btnCopy = [System.Windows.Forms.Button]::new()
-$btnCopy.Size = [System.Drawing.Size]::new((Sx 120), $line)
-
-$btnClear = [System.Windows.Forms.Button]::new()
-$btnClear.Text = '清空'
-$btnClear.Size = [System.Drawing.Size]::new((Sx 64), $line)
-
-$status = [System.Windows.Forms.Label]::new()
-$status.AutoSize = $true
+$btnCopy  = New-Button '复制已选 (0)' (Sx 184) ($top + $gridH + $pad) (Sx 130)
+$btnClear = New-Button '清空' (Sx 322) ($top + $gridH + $pad) (Sx 62)
+$status   = New-Label '' (Sx 396) ($top + $gridH + $pad + (Sx 6))
 
 $tbPicks = [System.Windows.Forms.TextBox]::new()
 $tbPicks.ReadOnly = $true
 $tbPicks.Multiline = $true
 $tbPicks.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-$tbPicks.Font = [System.Drawing.Font]::new('Consolas', [float]($script:codeFont.Size), [System.Drawing.FontStyle]::Regular,
-                                            [System.Drawing.GraphicsUnit]::Pixel)
-
-$navY  = $line * 2 + $pad + $gridH
-$pickY = $navY + $line + (Sx 4)
-
-foreach ($ctl in @($tbFrom, $tbTo, $btnApply, $cbFmt)) { $form.Controls.Add($ctl) }
-foreach ($ctl in @($btnPrev, $lblPage, $btnNext, $btnCopy, $btnClear, $status)) { $form.Controls.Add($ctl) }
-$form.Controls.Add($panel)
+$tbPicks.Font = [System.Drawing.Font]::new('Consolas', [float]($script:codeFont.Size),
+                                           [System.Drawing.FontStyle]::Regular,
+                                           [System.Drawing.GraphicsUnit]::Pixel)
+$tbPicks.Location = [System.Drawing.Point]::new($pad, ($top + $gridH + $pad + $line + (Sx 4)))
+$tbPicks.Size = [System.Drawing.Size]::new($wide, 2 * $line)
 $form.Controls.Add($tbPicks)
-
-$btnPrev.Location   = [System.Drawing.Point]::new($pad, $navY)
-$lblPage.Location   = [System.Drawing.Point]::new($pad + $line + (Sx 8), $navY + (Sx 5))
-$btnNext.Location   = [System.Drawing.Point]::new($pad + $line + (Sx 190), $navY)
-$btnCopy.Location   = [System.Drawing.Point]::new($pad + $line + (Sx 228), $navY)
-$btnClear.Location  = [System.Drawing.Point]::new($pad + $line + (Sx 356), $navY)
-$status.Location    = [System.Drawing.Point]::new($pad + $line + (Sx 428), $navY + (Sx 5))
-$tbPicks.Location   = [System.Drawing.Point]::new($pad, $pickY)
-$tbPicks.Size       = [System.Drawing.Size]::new($gridW, $line * 2 + (Sx 10))
+$form.Controls.Add($panel)
 
 $script:panel   = $panel
 $script:status  = $status
 $script:tbPicks = $tbPicks
 $script:btnCopy = $btnCopy
 $script:lblPage = $lblPage
+$script:lblWhere = $lblWhere
 $script:tbFrom  = $tbFrom
 $script:tbTo    = $tbTo
 $script:cbFmt   = $cbFmt
 
+$lblPage.Location  = [System.Drawing.Point]::new((Sx 430), $ty)
+$lblWhere.Location = [System.Drawing.Point]::new((Sx 600), $ty)
+
 $script:pages = [Math]::Max(1, [int][Math]::Ceiling(($To - $From + 1) / $perPage))
+
+# The hint is the legend: there is no room for one of its own, and this is where an eye goes anyway.
+$hint = '灰 = 没字形   橙 = 只有一种字体有   点格子复制'
 
 function Update-Picks {
     $items = @($script:picked | Sort-Object)
@@ -407,7 +415,7 @@ function Update-Picks {
 
 function Update-Status {
     if ($script:hover -lt 0) {
-        $script:status.Text = '点一下格子就复制；再点一次取消'
+        $script:status.Text = $hint
         return
     }
     $cp = $script:hover
@@ -420,7 +428,8 @@ function Show-Page([int]$p) {
     $script:page = [Math]::Max(0, [Math]::Min($p, $script:pages - 1))
     $lo = $From + $script:page * $perPage
     $hi = [Math]::Min($To, $lo + $perPage - 1)
-    $script:lblPage.Text = '第 {0}/{1} 页   U+{2:X4} – U+{3:X4}' -f ($script:page + 1), $script:pages, $lo, $hi
+    $script:lblPage.Text  = '第 {0}/{1} 页' -f ($script:page + 1), $script:pages
+    $script:lblWhere.Text = 'U+{0:X4} – U+{1:X4}' -f $lo, $hi
     $script:panel.Invalidate()
     Update-Status
 }
@@ -447,8 +456,8 @@ function Apply-Range {
         $script:status.Text = '范围写错了：给十六进制数，比如 E700'
         return
     }
-    $script:From = $f
-    $script:To   = $t
+    $script:From  = $f
+    $script:To    = $t
     $script:pages = [Math]::Max(1, [int][Math]::Ceiling(($t - $f + 1) / $perPage))
     Show-Page 0
 }
@@ -457,7 +466,11 @@ $panel.Add_Paint({ param($s, $e) Draw-Page $e.Graphics $script:page })
 
 $panel.Add_MouseMove({
     param($s, $e)
-    $cp = Hit-Cp $e.X $e.Y
+    $cp = if ($e.X -lt 0 -or $e.Y -lt 0) { -1 } else {
+        $i = [int][Math]::Floor($e.Y / $script:pitch) * $Cols + [int][Math]::Floor($e.X / $script:pitch)
+        $at = $From + $script:page * $perPage + $i
+        if ($i -ge $perPage -or $at -gt $To) { -1 } else { $at }
+    }
     if ($cp -ne $script:hover) { $script:hover = $cp; $s.Invalidate(); Update-Status }
 })
 
@@ -465,14 +478,18 @@ $panel.Add_MouseLeave({ param($s, $e) $script:hover = -1; $s.Invalidate(); Updat
 
 $panel.Add_MouseClick({
     param($s, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        $cp = Hit-Cp $e.X $e.Y
-        if ($cp -ge 0) { Pick-Cp $cp }
-    }
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    $i = [int][Math]::Floor($e.Y / $script:pitch) * $Cols + [int][Math]::Floor($e.X / $script:pitch)
+    $cp = $From + $script:page * $perPage + $i
+    if ($e.X -lt 0 -or $e.Y -lt 0 -or $i -ge $perPage -or $cp -gt $To) { return }
+    Pick-Cp $cp
 })
 
+$btnApply.Add_Click({ Apply-Range })
 $btnPrev.Add_Click({ Show-Page ($script:page - 1) })
 $btnNext.Add_Click({ Show-Page ($script:page + 1) })
+$btnFirst.Add_Click({ Show-Page ($script:page - 10) })
+$btnLast.Add_Click({ Show-Page ($script:page + 10) })
 
 $btnCopy.Add_Click({
     $items = @($script:picked | Sort-Object)
@@ -488,10 +505,9 @@ $btnClear.Add_Click({
     $script:status.Text = '清单清空了'
 })
 
-$btnApply.Add_Click({ Apply-Range })
-
-$tbFrom.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return) { Apply-Range; $e.SuppressKeyPress = $true } })
-$tbTo.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return) { Apply-Range; $e.SuppressKeyPress = $true } })
+foreach ($box in @($tbFrom, $tbTo)) {
+    $box.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return) { Apply-Range; $e.SuppressKeyPress = $true } })
+}
 
 $cbFmt.Add_SelectedIndexChanged({
     $script:format = @('literal', 'hex', 'character')[$script:cbFmt.SelectedIndex]
@@ -500,8 +516,12 @@ $cbFmt.Add_SelectedIndexChanged({
 
 $form.Add_KeyDown({
     param($s, $e)
-    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::PageDown) { Show-Page ($script:page + 1); $e.Handled = $true }
-    elseif ($e.KeyCode -eq [System.Windows.Forms.Keys]::PageUp) { Show-Page ($script:page - 1); $e.Handled = $true }
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::PageDown) {
+        Show-Page ($script:page + $(if ($e.Shift) { 10 } else { 1 })); $e.Handled = $true
+    }
+    elseif ($e.KeyCode -eq [System.Windows.Forms.Keys]::PageUp) {
+        Show-Page ($script:page - $(if ($e.Shift) { 10 } else { 1 })); $e.Handled = $true
+    }
 })
 
 Update-Picks
