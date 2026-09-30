@@ -193,6 +193,13 @@ library can be: a minor version may break.
   widget in it at that opacity: a subtree faded widget by widget shows what is behind it through the
   gaps between them, and comes out darker where two of them overlap. A layer arriving or leaving is
   the same question, asked by a layer, and both are read in one place now.
+- **`examples/settings` is ported**, the last page that was written against the flat widget list this
+  branch replaced: the same four pages of cards and the same system folder picker, on a
+  `NavigationView` with a rail that is always out -- this window has no room the page could have and
+  nothing that put the pane away -- and the `--dump` the other two examples have.
+- **And `examples/nav`'s pages have their own content back**: the forty-line list, the page of real
+  controls, the four switches, and the backdrop picker beside the theme switch, which between them are
+  what the pane is doing anything *to*.
 - **Switching a page is visibility**, and that is the whole of it: every page is in the tree and
   arranged into the same box, and the one on screen is the visible one. An open drop-down, half a typed
   field and an animation in flight are all still there when their page comes back -- nothing is

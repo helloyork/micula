@@ -93,8 +93,8 @@ still animates -- and nothing in the library has to be synchronised for it.
 means it is destroyed *first*. A window still in it clears its own pointer, and the App's destructor
 clears whatever is left, so the order the two die in does not matter.
 - **Owning a window a page made.** A window cannot be deleted inside its own message, so `OnClosed`
-is where a page hears about it, and the usual shape is a `Post` to the window that made it -- see the
-Debug page of `examples/nav`, which does exactly that with its "Open the probe" card.
+is where a page hears about it, and the usual shape is a `Post` to the window that made it -- see
+`Window::OnClosed` and `Window::Post`, and the `App` whose loop is what both windows are in.
 - **A window made while the loop is running** is brought up to it as it joins: its frame clock and
 its caret timer start there, and `WM_DESTROY` hands back its device and its fonts. The tail of
 `Run()` does that only for the windows still standing when the loop ends, which is the other way out

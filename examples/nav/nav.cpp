@@ -14,6 +14,10 @@
 //
 // The shell is the library's own (`NavigationView`), so what this file is left with is the pages and
 // the switches: a row and its page are added together, and switching a page is that page's `visible`.
+//
+// The pages are also what a navigation window has in it -- a long list, a page of real controls, four
+// switches -- because a page that is only a place for the shell to put something is not a page: what
+// the pane does to the page it is looking at is only visible when the page has something on it.
 
 #include <micula/micula.h>
 
@@ -42,8 +46,19 @@ bool  paneOpen   = true;
 int   themeMode  = 0;              // ThemeMode: 0 follows Windows, 1 light, 2 dark
 int   windowBackdrop = 2;          // DWM_SYSTEMBACKDROP_TYPE: 2 Mica, 3 Acrylic, 4 Mica Alt
 
+// The pages' own state, which is a page's business rather than the pane's -- and so is the same
+// whatever the pane is doing.
+int   listAt     = 3;              // the line the long list is on, not the text
+int   when       = 1;              // when a cleanup starts: at sign-in, daily, weekly
+int   hour       = 1;              // the line of the times, not the hour
+bool  onBattery  = false;
+bool  downloads = true, desktop = false, screenshots = true, hidden = false;
+
 const wchar_t *const kStyles[] = { L"Fixed", L"Toggle", L"Peek", L"Minimal" };
 const wchar_t *const kTransitions[] = { L"None", L"Fade", L"Entrance" };
+const wchar_t *const kWhen[] = { L"At sign-in", L"Daily", L"Weekly" };
+const wchar_t *const kTimes[] = { L"Midnight", L"2:00", L"4:00", L"6:00", L"Noon", L"18:00" };
+const wchar_t *const kBackdrops[] = { L"Mica", L"Acrylic", L"Mica Alt" };
 
 struct PageInfo { const wchar_t *title, *detail; };
 const PageInfo kPages[] = {
@@ -183,16 +198,69 @@ void PanePage(ScrollView *sheet) {
     width->value = [] { return Dip(paneOpenW); };
 }
 
-// A page of cards: what a page in a nav window is, and what the pane's scrolling and the page's have
-// in common -- both are the same gesture, one over the other.
-void FillerPage(ScrollView *sheet, const PageInfo &info, int cards) {
-    sheet->Add(new Heading(info.title));
-    sheet->Add(new Label(info.detail, TextRole::Caption))->secondary = true;
-    for (int i = 1; i <= cards; i++) {
+// A card whose control is a switch, with On or Off beside it: two lines, five times over, and the
+// state is what the card reads when it is painted rather than a copy of it.
+void ToggleCard(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, const wchar_t *detail,
+                bool *state) {
+    Card *card = Setting(sheet, icon, title, detail);
+    card->Set(new ToggleSwitch(L"", *state, [state](bool v) { *state = v; }));
+    card->value = [state] { return *state ? L"On" : L"Off"; };
+}
+
+// A page with forty lines on it. What it is for is the two scrolls side by side -- the pane's and the
+// page's -- so the list is taller than the window on purpose, and past either end of it the wheel
+// belongs to the page. See `DropDown` for the wheel and the search that go with a closed one.
+void LongListPage(ScrollView *sheet) {
+    sheet->Add(new Heading(kPages[1].title));
+    sheet->Add(new Label(kPages[1].detail, TextRole::Caption))->secondary = true;
+
+    std::vector<std::wstring> lines;
+    for (int i = 1; i <= 40; i++) lines.push_back(L"Row " + std::to_wstring(i));
+    Card *list = Setting(sheet, glyph::kMenu, L"A long list",
+                         L"Forty lines: the wheel over the list is the list's, and past either end "
+                         L"of it is the page's");
+    list->Set(new DropDown(lines, listAt, [](int i) { listAt = i; }));
+    list->value = [] { return L"Row " + std::to_wstring(listAt + 1); };
+
+    for (int i = 1; i <= 14; i++) {
         Setting(sheet, glyph::kView, (L"Card " + std::to_wstring(i)).c_str(),
                 L"Enough of these and the page scrolls, which is the pane's own wheel and the "
                 L"page's side by side");
     }
+}
+
+// A page of real controls rather than a list of cards, which is what a navigation window has in it:
+// the pane says which page, and the page says what is on it. A list of times of day is a ring -- the
+// step past 18:00 is after midnight -- which is `DropDown::wrapAround` and the wheel over the list.
+void SchedulePage(ScrollView *sheet) {
+    sheet->Add(new Heading(kPages[2].title));
+    sheet->Add(new Label(kPages[2].detail, TextRole::Caption))->secondary = true;
+
+    Setting(sheet, glyph::kCalendar, L"Run", L"When a cleanup starts")
+        ->Set(new Segmented({ kWhen[0], kWhen[1], kWhen[2] }, when, [](int i) { when = i; }));
+
+    Card *time = Setting(sheet, glyph::kRecent, L"Time of day", L"For daily and weekly cleanups");
+    DropDown *day = new DropDown({ kTimes[0], kTimes[1], kTimes[2], kTimes[3], kTimes[4],
+                                   kTimes[5] }, hour, [](int i) { hour = i; });
+    day->wrapAround = true;
+    time->Set(day);
+
+    ToggleCard(sheet, glyph::kBolt, L"Run on battery power", L"Off by default to save battery",
+               &onBattery);
+}
+
+// And the same shape four times, which is what most of a settings page is.
+void FoldersPage(ScrollView *sheet) {
+    sheet->Add(new Heading(kPages[3].title));
+    sheet->Add(new Label(kPages[3].detail, TextRole::Caption))->secondary = true;
+
+    ToggleCard(sheet, glyph::kFolder, L"Downloads", L"Files saved by browsers and other apps",
+               &downloads);
+    ToggleCard(sheet, glyph::kFolder, L"Desktop", L"Loose files on the desktop", &desktop);
+    ToggleCard(sheet, glyph::kCamera, L"Screenshots", L"Pictures\\Screenshots", &screenshots);
+    ToggleCard(sheet, glyph::kView, L"Skip hidden files", L"Dot files and files with the hidden "
+                                                                   L"attribute",
+               &hidden);
 }
 
 // The footer's page: a footer row is a row like any other, and the page under it is a page like any
@@ -208,6 +276,19 @@ void SettingsPage(ScrollView *sheet) {
             themeMode = i;
             Theme((ThemeMode)i);
             if (Window *w = sheet->window()) w->ReloadTheme();
+        }));
+
+    // The material is read when the window is made, like the theme, so asking for another one is the
+    // same two calls: the state, and the window that has to act on it.
+    Setting(sheet, glyph::kColor, L"Backdrop",
+            L"What the page area is a layer over: the material the window asks DWM for")
+        ->Set(new Segmented({ kBackdrops[0], kBackdrops[1], kBackdrops[2] }, windowBackdrop - 2,
+                            [sheet](int i) {
+            windowBackdrop = 2 + i;
+            if (Window *w = sheet->window()) {
+                w->backdrop = (DWORD)windowBackdrop;
+                w->ApplyThemeToFrame();
+            }
         }));
 }
 
@@ -226,12 +307,12 @@ NavigationView *BuildTree(Widget *root) {
 
     PanePage(nav->AddPage({ glyph::kSettings, kPages[0].title }, new ScrollView()));
 
-    FillerPage(nav->AddPage({ glyph::kRecent, kPages[1].title }, new ScrollView()), kPages[1], 14);
+    LongListPage(nav->AddPage({ glyph::kRecent, kPages[1].title }, new ScrollView()));
 
     // A group: a heading in the pane, and the two rows under it.
     nav->AddRow(NavItem::Heading(L"Group"));
-    FillerPage(nav->AddPage({ glyph::kCalendar, kPages[2].title }, new ScrollView()), kPages[2], 3);
-    FillerPage(nav->AddPage({ glyph::kHome, kPages[3].title }, new ScrollView()), kPages[3], 2);
+    SchedulePage(nav->AddPage({ glyph::kCalendar, kPages[2].title }, new ScrollView()));
+    FoldersPage(nav->AddPage({ glyph::kHome, kPages[3].title }, new ScrollView()));
 
     // `nav=` long, and each one a page of its own: a row that leads nowhere is a row with nothing to
     // show, so what these are for is the pane having more rows than the window has room for.

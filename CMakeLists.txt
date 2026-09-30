@@ -65,32 +65,36 @@ option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 # off at run time with `micula::debug::layout = false`, without a rebuild.
 option(MICULA_DEBUG_LAYOUT "Build the examples with the layout debug overlay" OFF)
 if(MICULA_BUILD_EXAMPLES)
-    # gallery and nav are the two examples that are ported to the tree. Both are *console* programs
-    # rather than WIN32 ones because of their `--dump`: the rectangles a layout came out as are printed
-    # instead of drawn, and that needs somewhere to print. Each drops the console it was given when it
-    # was launched from Explorer and keeps the one it was launched from a terminal with.
+    # All three examples are written against the tree. Each is a *console* program rather than a WIN32
+    # one because of its `--dump`: the rectangles a layout came out as are printed instead of drawn,
+    # and that needs somewhere to print. Each drops the console it was given when it was launched from
+    # Explorer and keeps the one it was launched from a terminal with.
     #
     # nav is the pane's playground: the style, the width, the scrim, the key behaviour and the pane's
     # own button are each a control on the page the window opens on, and the same state can be asked
-    # for on the command line.
-    #
-    # examples/settings is still written against the flat widget list this branch replaced -- it builds
-    # its controls by hand and places them itself -- so it is not in the build. It is kept as the last
-    # page to port, and `git show master:examples/settings/settings.cpp` is the version there.
+    # for on the command line. settings is the window in the README screenshot -- a rail, four pages of
+    # cards, and the system folder picker behind one of them.
     add_executable(micula-gallery examples/gallery/gallery.cpp)
     target_link_libraries(micula-gallery PRIVATE micula::micula)
     add_executable(micula-nav examples/nav/nav.cpp)
     target_link_libraries(micula-nav PRIVATE micula::micula)
+    add_executable(micula-settings examples/settings/settings.cpp)
+    target_link_libraries(micula-settings PRIVATE micula::micula)
     if(MICULA_DEBUG_LAYOUT)
         target_compile_definitions(micula-gallery PRIVATE MICULA_DEBUG_LAYOUT=1)
         target_compile_definitions(micula-nav PRIVATE MICULA_DEBUG_LAYOUT=1)
+        target_compile_definitions(micula-settings PRIVATE MICULA_DEBUG_LAYOUT=1)
     endif()
     # The entry point is wmain, which MSVC's linker finds on its own from the subsystem (and from
     # the startup code, for a console program) and MinGW's does not: without -municode it looks for
-    # WinMain and the link fails on the one symbol the program never mentions.
+    # WinMain and the link fails on the one symbol the program never mentions. The folder picker is
+    # a shell interface, which MSVC is told about by a `#pragma comment` in settings.cpp and MinGW by
+    # naming the library here.
     if(MINGW)
         target_link_options(micula-gallery PRIVATE -municode)
         target_link_options(micula-nav PRIVATE -municode)
+        target_link_options(micula-settings PRIVATE -municode)
+        target_link_libraries(micula-settings PRIVATE shell32)
     endif()
     if(MSVC)
         # /utf-8 because the examples' own strings are Chinese and MSVC reads a source file in the
@@ -100,6 +104,7 @@ if(MICULA_BUILD_EXAMPLES)
         # note over glyphs.h.
         target_compile_options(micula-gallery PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(micula-nav PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(micula-settings PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 
