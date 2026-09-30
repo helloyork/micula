@@ -317,14 +317,21 @@ On the branch, in this order. Each phase is something a person can look at and d
    *done* -- every control in the library is written against the tree, and so are the three examples:
    `examples/gallery` is the controls, `examples/nav` is the pane and the shell that switches pages in
    it, and `examples/settings` is the window in the README screenshot.
-3. **Pages and the grid.** `Page` with its own layout; `GridLayout`. The shell that holds the pages and
-   switches between them is `NavigationView` already -- a row and the page it shows, switched by
-   visibility -- and what that leaves is what a page *is* rather than where it is. The switch has its
-   entrance: the page area comes up from nothing while the page rises the last `kPageRise` DIP into
-   place, and `NavigationView::transition` chooses the shape or none. *(you are here)*
+3. **The grid.** `GridLayout`: columns as a template -- a `Sizing` each, so a column is fixed, as wide
+   as what is in it, or a share of what is left -- with the spans a child can ask for. The adaptive
+   case belongs beside it rather than inside it: a card grid whose column count comes from a minimum
+   card width and the room it has, which is what a gallery of cards wants, and what a page of two-part
+   rows wants once the two parts stop fitting side by side. **`Page` is not part of this**: a page is a
+   `Widget` with a layout of its own, and `ScrollView`'s is what pages are built with.
 4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the
-   animation set beyond the glide; the docs rewritten (`window.md`, `controls.md`, `widget.md`,
-   `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.
+   animation set beyond the glide; the input the library does not have at all -- **touch**, where one
+   finger scrolls a page, a drag moves a slider and a press held down opens a drop-down, all of which
+   is a gesture the window has no place for today; the docs rewritten (`window.md`, `controls.md`,
+   `widget.md`, `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.
+5. **The applications.** `AlasViewer` is the first, and it is the real test: a `Widget` of its own with
+   a `Paint` that draws a game screen, a page built by hand, and a source dependency on this checkout
+   rather than an installed package -- so it is the thing that says whether the model survives a
+   program that is not an example. *(you are here)*
 
 While the branch lives, `master` keeps shipping: merge `master` into the branch whenever it moves.
 The conflicts will be in `window.h`, and they will be real -- the branch replaces its middle. Nothing
