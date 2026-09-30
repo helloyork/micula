@@ -370,8 +370,12 @@ struct Widget {
         int type = UIA_ListItemControlTypeId;
         int index = -1;                  // the page's own number for it, when it has one
         bool selected = false;
-        // Where it is drawn, in this widget's own space, and whether it is on screen at all: a row the
-        // scroll has carried out of its panel is an item a client is told about and cannot reach.
+        // Where it is drawn **in the space this widget's `rect` is measured in** -- the space a pointer hook
+        // is handed and the space `Paint` draws in, *not* a box measured from its own top-left corner (see
+        // `TipAt` for the same rule about a tip) -- and whether it is on screen at all: a row the scroll has
+        // carried out of its panel is an item a client is told about and cannot reach. The element adds the
+        // accumulated origin of the widget's ancestors to this; the widget's own origin is already in it, and
+        // a widget that got that wrong reports a row somewhere the row is not.
         D2D1_RECT_F box = {};
         bool onscreen = false;
     };

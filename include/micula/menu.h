@@ -241,8 +241,9 @@ struct Menu : Popup {
     std::vector<Row> rows;
     int hot = -1;     // the row the hand or the keys are on
     int armed = -1;   // the row the button went down on, which is what a release picks
-    // Where the pointer was last seen, in the panel's own space, and whether it has been seen at all: a move
-    // to the same place as the last one is not the pointer choosing anything. See `MenuPanel::OnPointerMove`.
+    // Where the pointer was last seen, in the space the panel's `rect` is measured in, and whether it has
+    // been seen at all: a move to the same place as the last one is not the pointer choosing anything.
+    // See `MenuPanel::OnPointerMove`.
     bool moved = false;
     float moveX = 0.0f, moveY = 0.0f;
     float panelW = 0.0f, panelH = 0.0f;
@@ -348,9 +349,22 @@ struct Menu : Popup {
         return true;
     }
 
-    // The row at a point in the panel's own space, or -1 for the padding and the separators -- a line is
-    // not a thing a hand can be on.
+    // The row at a point **in the space the panel's `rect` is measured in**, or -1 for the padding and the
+    // separators -- a line is not a thing a hand can be on.
+    //
+    // **That space and not the panel's own**, which is the one thing about a menu that is easy to get wrong
+    // twice: `Row::top` is measured from the panel's top edge, while a pointer hook is handed the point in
+    // the space the widget's rectangle lives in -- see `Widget::Paint` and `SendMove` for the same rule about
+    // the same two spaces. `OnHitTest` and `UnderCursor` already subtract the margin to get from the client
+    // area to a row; this used to answer in the panel's own space, so every point the panel was handed was
+    // read as one `kMargin` further up the menu than it was -- a shift of more than half a row, which means
+    // the row under the hand was the row *above* it, and a row below a separator was the disabled one after
+    // the line (or nothing at all). The panel's origin comes off here, once, so that no caller can be told a
+    // row and no caller can forget it.
     int RowAt(float x, float y) const {
+        const float left = panel ? panel->rect.left : 0.0f, top = panel ? panel->rect.top : 0.0f;
+        x -= left;
+        y -= top;
         if (x < kPad || x >= panelW - kPad) return -1;
         for (size_t i = 0; i < rows.size(); i++) {
             const Row &r = rows[i];
@@ -429,16 +443,15 @@ private:
         panelH = y + kPad;
     }
 
-    // The row under the cursor, in the panel's own space: asked when the menu opens, because the menu
-    // opens at the hand and the hand does not move for it.
+    // The row under the cursor, asked when the menu opens, because the menu opens at the hand and the hand
+    // does not move for it. In the space `RowAt` takes, which is the client area's.
     void UnderCursor() {
         POINT p = {};
         if (!GetCursorPos(&p)) return;
         POINT origin = { 0, 0 };
         ClientToScreen(hwnd, &origin);
         const float s = scale();
-        hot = RowAt(((float)p.x - (float)origin.x) / s - kMargin,
-                    ((float)p.y - (float)origin.y) / s - kMargin);
+        hot = RowAt(((float)p.x - (float)origin.x) / s, ((float)p.y - (float)origin.y) / s);
     }
 };
 
@@ -607,7 +620,12 @@ inline bool MenuPanel::AccessibleItem(int i, Item &out) const {
     out.type = r.kind == Menu::Row::Kind::Separator ? UIA_SeparatorControlTypeId : UIA_MenuItemControlTypeId;
     out.index = i;
     out.selected = r.checked;
-    out.box = { Menu::kPad, r.top, menu->panelW - Menu::kPad, r.top + r.h };
+    // The row's box in the space the panel's own `rect` is in, which is the space a widget's items are
+    // written in and what the element adds the accumulated origin of the widget's ancestors to. The panel's
+    // own origin is part of that, so it is here -- a row reported a margin up the menu is a highlight on the
+    // wrong row for anybody reading the screen rather than looking at it.
+    out.box = { rect.left + Menu::kPad, rect.top + r.top, rect.left + menu->panelW - Menu::kPad,
+                rect.top + r.top + r.h };
     // A menu is on screen when it is up, and every row of it is: a menu is as tall as its rows, so there is
     // no row the scroll could have carried out of it.
     out.onscreen = true;

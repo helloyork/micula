@@ -455,6 +455,15 @@ library can be: a minor version may break.
   therefore waited for whatever else happened to paint: a scroll bar dragged on an open list that was
   already woken by the pointer moved the view *two seconds* later, when the bar's auto-hide timer
   happened to repaint the window.
+- **A menu reads the pointer in the space its rows are drawn in.** The panel kept its rows measured from
+  its own top edge while the window handed it points in the space its `rect` is measured in -- the client
+  area's, which has the margin for the shadow in it -- so every move and every press was read as one
+  `kMargin` (18 DIP) further up the menu than it was. That is more than half a row, so the row under the
+  hand was the row above it, and below a separator it was the disabled row after the line: clicking a
+  row under a line picked the row above the line, or nothing at all. The two are one space now, taken off
+  in `RowAt` so that no caller can hand it the wrong one, and the rows a screen reader is offered are
+  reported in it too -- an element's items are written in the space the widget's `rect` is in, so the
+  panel's own origin is part of them, and every row used to be reported a margin up the menu.
 
 ## [0.8.1] - 2026-09-29
 
