@@ -54,6 +54,50 @@ namespace micula {
 struct Popup : Surface {
     virtual ~Popup();
 
+    // --- arriving ----------------------------------------------------------------------------------
+    // **A popup arrives rather than appearing.** A menu or a tip that is simply *there* on the next frame
+    // reads as a drawing fault rather than as something opening, and both of Fluent's overlays fade -- which
+    // is also the cheapest half of what its overlays do. The ramp is the library's own, a `motion::Track`
+    // walked over `kFast`, exactly as a `Layer`'s arrival is.
+    //
+    // **And the animation switch has the last word.** With animations off `Arrival()` answers 1 from the
+    // first frame: a popup that faded in on a machine that asked for no animations would be a box that is
+    // invisible for a sixth of a second, which is the one thing "no animations" must not come to mean.
+    //
+    // What it is *for* is the whole popup at once: a subclass that has a tree leaves `Widget::opacity` on its
+    // root at this value, which is one group over everything in it -- see `Menu::Open` -- and one that draws
+    // its own furniture fades the colours it draws, because there is no tree to fade. **A per-element arrival
+    // is the other half of the same idea** -- every row with an offset and an opacity of its own rather than
+    // the group moving as one -- and it is a change in whoever draws the elements: the menu already works out
+    // each row's own box and colour, so it is that loop that would grow the second half.
+    float Arrival() const { return Animations() ? arrive.value : 1.0f; }
+    motion::Track arrive{};
+
+    Popup() { arrive.To(1.0f); }
+
+    // **Start the arrival over**, for whoever is about to show the popup: a menu opened a second time fades
+    // in again rather than appearing whole. It is the caller's to call rather than this class's, because
+    // `Place` is also how a popup is *moved*, and moving one must not make it fade.
+    //
+    // `Set` and then `To`, in that order and not the other way round: `Set` puts the value *and the target*
+    // where it is told to, so stopping there would leave the track walking to zero -- a popup that fades out
+    // on the frame it is shown, and an `Animating()` that stays true for as long as it is up, which is a
+    // frame loop that never sleeps.
+    void Arrive() {
+        arrive.Set(0.0f);
+        arrive.To(1.0f);
+        if (content) content->opacity = Arrival();
+    }
+
+    void OnTick(float dt) override {
+        arrive.Step(dt, motion::kFast);
+        // The tree is drawn through the root's own opacity, which `PaintTree` turns into one layer over the
+        // subtree -- so the panel, its shadow and every row fade as one group, rather than each of them
+        // showing the page through the gaps between the others. See `Widget::opacity`.
+        if (content) content->opacity = Arrival();
+    }
+    bool Animating() const override { return Surface::Animating() || arrive.Wants(1.0f); }
+
     // --- to implement ---------------------------------------------------------------------------
     // The window class this popup's window is made with, registered on demand. One per popup kind,
     // like a window's, and the same rule applies: the class name has to be the same string every time
@@ -63,6 +107,12 @@ struct Popup : Surface {
     // thing it *is* decides. Return true when it was answered; false hands it to DefWindowProc, which
     // is where a popup that answers nothing at all should be.
     virtual bool OnMessage(UINT /*m*/, WPARAM /*wp*/, LPARAM /*lp*/) { return false; }
+    // **A message whose answer is its return value rather than "I handled it".** `WM_NCHITTEST` is the
+    // one there is, and a menu needs it: its window is larger than its panel by the room its shadow
+    // takes, and a click in that room has to reach whatever is under the menu instead of the menu -- a
+    // click that landed on the shadow would both do nothing and leave the menu up over a page somebody
+    // is trying to use. False lets Windows answer, which is what every other popup wants.
+    virtual bool OnHitTest(POINT /*screen*/, LRESULT & /*out*/) { return false; }
     // Shown, moved or resized: where a menu puts its tree, and where a tip measures its words. The
     // arrangement has already been asked for by then -- see `Surface::Frame` -- so what this is for is
     // a change of *size*, which a layout that arranges by hand cannot see for itself.
@@ -219,6 +269,11 @@ inline LRESULT CALLBACK Popup::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     Surface::Dispatch frame(self);
 
     switch (m) {
+    case WM_NCHITTEST: {
+        LRESULT out = 0;
+        if (self->OnHitTest({ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }, out)) return out;
+        break;
+    }
     case WM_MOUSEACTIVATE:
         // A popup made not to activate has to say so here as well: the extended style keeps it out of
         // the foreground, and this keeps a click on it from trying to take it anyway.

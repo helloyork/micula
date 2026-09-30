@@ -1037,6 +1037,12 @@ struct Surface {
     // Where a widget's own space begins, in the surface's coordinates: the accumulated origins of its
     // ancestors. `LocalPoint` is a point taken into that space.
     D2D1_POINT_2F OriginOf(const Widget *w) const;
+    // **Where a widget is on the screen, in pixels**: its box where it is *drawn* -- a placement in flight
+    // is where the widget is -- carried into the client area by the origin of the space its rectangle is
+    // measured in, and then out to the screen. The two steps every hit test in the library is made of, in
+    // one place because two things ask it and the two must not be able to disagree: where a tip goes, and
+    // where a menu goes.
+    RECT ScreenBox(const Widget *w) const;
     D2D1_POINT_2F LocalPoint(const Widget *w, float x, float y) const {
         const D2D1_POINT_2F o = OriginOf(w);
         return D2D1::Point2F(x - o.x, y - o.y);
@@ -1070,6 +1076,23 @@ struct Surface {
     // **The one way the hover changes**, so that the tree, the record of it and whoever is listening
     // cannot come to disagree. Returns whether anything needs repainting, like `SetHover` below.
     bool HoverTo(Widget *over);
+    // **What a right-click asks for.** The surface is what hears the hand, so it is the surface that
+    // asks; the answer is a widget's `contextMenu` filled and shown, which is `Menus` in menu.h. `w` is
+    // the widget the hand was over, and `at` is where it was, in screen pixels -- the two things the menu
+    // is placed by. True when one was opened.
+    std::function<bool(Widget *w, POINT at)> onContextMenu;
+    // The menu of `w`, or of the nearest widget above it that has one, opened at `at` in screen pixels.
+    // False when nothing in that walk has a menu to show.
+    bool ContextMenu(Widget *w, POINT at) { return w && onContextMenu && onContextMenu(w, at); }
+    // **The input this surface is sent, before it looks at any of it.** A popup that is over this window
+    // can take its input while it is up, which is exactly what a menu is: the menu is a window of its own --
+    // it has to be able to leave this window's rectangle, and to exist with no window behind it at all --
+    // and it must not take the *activation*, because that is what would dim the caption of the window it
+    // hangs off while somebody is merely using it. So the clicks, the keys and the wheel it needs are the
+    // ones this window would have been sent, and this is the door they come through. True means the message
+    // was taken; false -- for a paint, a size, the activation -- leaves it to the window, which may still be
+    // told about it either way. See `Menu::TakeInput` in menu.h.
+    std::function<bool(UINT m, WPARAM wp, LPARAM lp)> onInput;
     // The pointer moved: the widget under it hears about it, and so does any widget whose watched region
     // outside itself contains it (see Widget::ExternalRegion). Returns true when something under the
     // pointer wants a repaint per move.
@@ -2124,6 +2147,21 @@ inline D2D1_POINT_2F Surface::OriginOf(const Widget *w) const {
     return D2D1::Point2F(x, y);
 }
 
+inline RECT Surface::ScreenBox(const Widget *w) const {
+    RECT r = {};
+    if (!w || !hwnd) return r;
+    const D2D1_RECT_F b = w->placed ? w->drawn : w->rect;
+    const D2D1_POINT_2F o = OriginOf(w);
+    POINT origin = { 0, 0 };
+    ClientToScreen(hwnd, &origin);
+    const float s = scale();
+    r.left = origin.x + (LONG)std::lround((b.left + o.x) * s);
+    r.top = origin.y + (LONG)std::lround((b.top + o.y) * s);
+    r.right = origin.x + (LONG)std::lround((b.right + o.x) * s);
+    r.bottom = origin.y + (LONG)std::lround((b.bottom + o.y) * s);
+    return r;
+}
+
 inline void Surface::DismissOthers(Widget *except, float x, float y) {
     std::vector<Layer *> layers;
     CollectLayers(content.get(), layers);
@@ -2369,6 +2407,15 @@ inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP:
         ReleaseAt(Hand::Mouse);
         return true;
+    case WM_RBUTTONUP: {
+        // **The context menu, and the only place a right-click is heard.** A right-press on its own is not
+        // a gesture -- nothing moves and nothing highlights -- so a menu opens on the release, which is also
+        // where Windows opens one. Answered where it was asked: the widget under the hand, whose menu may
+        // be one it inherited from the card it sits on. See `Menus` in menu.h.
+        POINT at = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        ClientToScreen(h, &at);
+        return ContextMenu(HitTest(mx, my), at);
+    }
     // ---- a finger, and a pen ----------------------------------------------------------------------
     //
     // The coordinates are the pointer's own: screen pixels, physical, which is a different space from
@@ -4536,6 +4583,11 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    // **And what a popup over this window has taken.** Asked before anything below sees the message: what
+    // it takes is the menu's, and what it only reads -- an activation, which it reacts to by closing -- is
+    // left for this window to go on handling. See `Surface::onInput`.
+    if (self->onInput && self->onInput(m, wp, lp)) return 0;
+
     switch (m) {
     case WM_NCCALCSIZE: {
         // The whole window becomes client area, which is what lets the backdrop reach
@@ -4697,6 +4749,11 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE:
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
+    // **The right button, for the one thing it does here**, which is a context menu on the release. A
+    // right-press on its own is not a gesture -- nothing moves and nothing highlights -- and the release
+    // is where Windows opens a menu too. See `Surface::HandMessage`.
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
     // ---- a finger, and a pen ----------------------------------------------------------------------
     //
     // Handled rather than handed on, and that is the whole of how the promotion is stopped: Windows
@@ -4784,6 +4841,18 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case VK_TAB:
             self->MoveFocus((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
             return 0;
+        case VK_APPS:
+        case VK_F10: {
+            // **The keyboard's right-click**, under the control the keyboard is on: the Menu key, and
+            // Shift+F10 which is the older half of the same pair. F10 on its own belongs to a menu bar,
+            // and this library has none -- so it is left to whatever else wants it.
+            if (wp == VK_F10 && !(GetKeyState(VK_SHIFT) & 0x8000)) break;
+            Widget *menu = self->focused ? self->focused->MenuTarget() : nullptr;
+            if (!menu) break;
+            const RECT box = self->ScreenBox(menu);
+            if (self->ContextMenu(menu, { box.left, box.bottom })) return 0;
+            break;
+        }
         case VK_SPACE:
             if (self->focused) { self->focused->OnActivate(); self->Invalidate(); }
             return 0;

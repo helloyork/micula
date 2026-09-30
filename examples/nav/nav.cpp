@@ -146,11 +146,38 @@ Card *Setting(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, cons
 void PanePage(ScrollView *sheet) {
     sheet->Add(new Heading(kPages[0].title));
 
-    Setting(sheet, glyph::kView, L"Style",
-            L"Room for the pane, or the pane over the page")
-        ->Set(new Segmented({ kStyles[0], kStyles[1], kStyles[2], kStyles[3] }, paneStyle,
-                            [](int i) { paneStyle = i; Apply(); }))
+    Card *style = Setting(sheet, glyph::kView, L"Style",
+                          L"Room for the pane, or the pane over the page");
+    style->Set(new Segmented({ kStyles[0], kStyles[1], kStyles[2], kStyles[3] }, paneStyle,
+                             [](int i) { paneStyle = i; Apply(); }))
         ->tips = L"Fixed keeps the pane in the layout; Peek slides it over the page";
+
+    // **A menu on the card**, which is a right-click anywhere on it -- on its label as much as on the
+    // switch, because a click on a card's label is a click on the card. The rows are the page's state read
+    // when the menu opens, which is why the tick is always the truth at the moment it is looked at, and
+    // why there is nothing to keep in step as the segmented control beside it changes.
+    style->contextMenu = [](micula::Menu &m) {
+        for (int i = 0; i < 4; i++)
+            m.Check(kStyles[i], paneStyle == i, [i](bool on) {
+                if (on) {
+                    paneStyle = i;
+                    Apply();
+                }
+            });
+        m.Separator();
+        m.Item(L"Show the pane", nullptr, L"", [] {
+            paneOpen = true;
+            Apply();
+        });
+        m.Item(L"Hide the pane", nullptr, L"", [] {
+            paneOpen = false;
+            Apply();
+        }, paneOpen);
+        // The container a submenu will be, drawn with the chevron that says there is more behind it.
+        m.Sub(L"Room for the pane", [](micula::Menu &s) {
+            s.Item(L"Narrow", nullptr, L"", nullptr, false);
+        });
+    };
 
     Setting(sheet, glyph::kMenu, L"Open",
             L"The pane's own state, driven from the page -- the same thing its button does")
@@ -198,6 +225,21 @@ void PanePage(ScrollView *sheet) {
     // The value the card shows is the state, read when it is painted: the slider's own `value` is the
     // number it holds, and a card's is a string to draw beside the control.
     width->value = [] { return Dip(paneOpenW); };
+
+    // **And a menu on the page itself**, for the room around the cards: the walk from whatever the hand is
+    // over ends here, so a page that answers for itself answers for all of it.
+    sheet->contextMenu = [](micula::Menu &m) {
+        m.Item(L"Open the pane", nullptr, L"", [] {
+            paneOpen = true;
+            Apply();
+        }, !paneOpen);
+        m.Item(L"Close the pane", nullptr, L"", [] {
+            paneOpen = false;
+            Apply();
+        }, paneOpen);
+        m.Separator();
+        m.Item(L"Nothing behind this one", nullptr, L"", nullptr, false);
+    };
 }
 
 // A card whose control is a switch, with On or Off beside it: two lines, five times over, and the
@@ -346,6 +388,9 @@ struct NavWindow : Window {
     // Every control on these pages with a `tips` says it when the pointer rests on it. One line is the
     // whole of what a window has to do about it -- see tip.h.
     Tips tips{ *this };
+    // And one line for the menus: a right-click on a control with a `contextMenu`, the Menu key or
+    // Shift+F10 under the focus, and Esc or a click outside to put it away. See menu.h.
+    Menus menus{ *this };
 
     const wchar_t *ClassName() const override { return L"MiculaNav"; }
     const wchar_t *Title() const override { return L"Micula - navigation"; }

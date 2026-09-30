@@ -118,6 +118,14 @@ shell tray menu is.
 It joins the app like anything else, so it is drawn and ticked by the same loop: the window under it
 keeps animating while it is up, and a menu that animates itself is possible.
 
+**And it arrives rather than appearing.** A popup fades in over `motion::kFast`, as one group -- the panel,
+its shadow and everything on it together -- because a box that is simply *there* on the next frame reads as a
+drawing fault rather than as something opening. `Popup::Arrival` is the ramp, and whoever shows the popup
+starts it (`Popup::Arrive`); with the animation switch off it answers 1 from the first frame, so a machine
+that asked for no animations gets a popup that is there at once rather than one that is invisible for a
+sixth of a second. A subclass that wants its own entrance has both halves of the same idea to hand: the group
+(the root's `Widget::opacity`, or the colours it draws) and, later, one per element.
+
 ```cpp
 struct SettingsMenu : micula::Popup {
     const wchar_t *ClassName() const override { return L"MiculaSettingsMenu"; }
@@ -169,7 +177,9 @@ struct MyWindow : micula::Window {
 Every control in that window with `tips` set now has a tooltip. The box is a `Popup`, so it may cross the
 edge of the window it belongs to; it is as big as its words and no bigger, and it takes neither the
 foreground nor the click. **A finger triggers no tip**, because a tip waits for a pointer to rest and a
-finger does not rest.
+finger does not rest. It fades in as it arrives -- see [Popups](#popups) -- and only *arrives* once: being asked
+for the same words in the same place again is not work, and being put somewhere else while it is up does not
+make it fade a second time.
 
 **It hangs off the control and not the pointer**: centred on the control and one small gap under it, so
 that the control stays readable while its own sentence is up, and so that the tip stays put while the hand
@@ -191,6 +201,54 @@ tips.Follow(micula::TipFollow::Pointer);
 | `void Follow(TipFollow f)` | What the box hangs off: `TipFollow::Control`, the default, or `TipFollow::Pointer`. |
 | `Tip *Box()` | The box, for a page that draws something else in it. |
 | `Tip` | The `Popup` itself: `std::wstring text`, and `For(text, anchor, at, follow)` to show it -- `anchor` is the control's box and `at` the hand, both in screen pixels. Subclass it and override `PaintFurniture` to draw something else. |
+
+## Menus
+
+A list of things to pick, in a window of its own: `menu.h`. A right-click on a control that has one opens it
+where the hand is, and so do the Menu key and Shift+F10 under the control the keyboard is on.
+
+```cpp
+struct MyWindow : micula::Window {
+    micula::Menus menus{ *this };     // one line, as a `Tips` is
+    ...
+};
+
+panel->contextMenu = [this](micula::Menu &m) {
+    m.Item(L"Copy", micula::glyph::kCopy, L"Ctrl+C", [this] { Copy(); });
+    m.Item(L"Paste", micula::glyph::kPaste, L"Ctrl+V", [this] { Paste(); }, CanPaste());
+    m.Separator();
+    m.Check(L"Show hidden", hidden, [this](bool on) { SetHidden(on); });
+    m.Sub(L"Sort by", [](micula::Menu &s) { ... });   // the container a submenu will be
+};
+```
+
+**The builder runs every time the menu opens**, so a row that is disabled *now*, a tick that is on *now* and a
+list that changed under it are the page's own state read at the moment it matters: there is no second copy of
+the truth to keep in step as the page changes.
+
+A menu is a `Popup`, so it may cross the edge of the window it belongs to; its corner goes at the point it was
+asked for and flips to the other side when the work area runs out, and it is kept inside the work area less the
+room its own shadow needs -- as a tip is, and for the same reason. It fades in as it opens, and fades in again
+every time it is opened -- see [Popups](#popups). It answers the arrows, Home/End, Enter and
+Esc, a click on a row picks it, and a click anywhere else closes the menu **and stops there**: what the menu
+was opened over is not also pressed by the click that put the menu away.
+
+**It takes neither the activation nor the focus.** A menu that activated would dim the caption of the window it
+hangs off for as long as somebody is merely using it, so the input the menu needs is the input that window was
+sent, handed to the menu first while it is up -- see `Surface::onInput`. The window keeps the foreground, its
+caption stays lit, and the same door is what closes the menu when the window goes away.
+
+| Member | Description |
+|---|---|
+| `std::function<void(Menu &)> contextMenu` | A widget's menu, filled in when it is opened. Null for a widget with none, and then a right-click goes up to the nearest widget above it that has one -- a click on a card's label is a click on the card. |
+| `Menus(Surface &s)` | The trigger, attached to a surface like `Tips`: a right-click, the Menu key, Shift+F10, and handing an open menu the surface's input. |
+| `bool Menus::Open(Widget *w, POINT at)` | Opens the menu `w` (or the nearest widget above it) has, at `at` in screen pixels. For a menu somewhere the hand is not: a button's `onClick`, a shortcut of the page's own. |
+| `Menu &Menus::Box()`, `bool Menus::Shown()`, `void Menus::Close()` | The box, and putting it away from the page. |
+| `Row &Menu::Item(text, icon, shortcut, onPick, enabled)` | A row that does something. The shortcut is drawn at the far end of the row, and the icon in the column at the near one. |
+| `Row &Menu::Check(text, checked, onCheck, icon)` | A row that is a switch. `onCheck` is handed what the state *becomes*, so the page writes `hidden = on` and nothing in the menu owns the state it is showing. |
+| `Row &Menu::Sub(text, build)` | The parent of another menu. **Structure only**: the row is drawn with the chevron that says there is more behind it, and nothing opens it yet. |
+| `Row &Menu::Separator()` | A line between rows -- 9 DIP of room and 1 of ink. |
+| `Menu::onClose` | Told when the menu has closed itself, which is where a page hears that it went. |
 
 ## Accessibility
 

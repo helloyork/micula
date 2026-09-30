@@ -79,6 +79,9 @@ struct Tip : Popup {
 
     std::wstring text;
     const wchar_t *ClassName() const override { return L"MiculaTip"; }
+    // The box it was last put in, in the DIPs `Place` takes, and the words that put it there: being asked for
+    // the same thing again is not work. See `For`.
+    int atX = 0, atY = 0, atW = 0, atH = 0;
 
     // What the box is placed by, in DIPs. The padding is the room a line of text is given in an overlay
     // in this library's other panels -- a dialog's body, a flyout's list. `kOffset` is how far the box is
@@ -111,7 +114,6 @@ struct Tip : Popup {
     // a screen is where the tip would otherwise be half off it, and that corner is where controls really
     // are -- and it is then kept inside the work area whatever happens.
     void For(const std::wstring &s, const RECT &anchor, POINT at, TipFollow follow) {
-        text = s;
         Fonts &f = CurrentFonts();
         // The size is the words and the padding around them, and the height is *measured* rather than
         // assumed: a line box is not the point size, and `Fonts` keeps the answer for anything that
@@ -170,6 +172,22 @@ struct Tip : Popup {
         const int wx = (int)std::lround(x - kMargin), wy = (int)std::lround(y - kMargin);
         const int ww = (int)std::lround(pw + kMargin * 2.0f);
         const int wh = (int)std::lround(ph + kMargin * 2.0f);
+        // **Being asked for the same thing again is not work.** A page, a hover that flaps, or a caller that
+        // asks every frame all arrive here with the same words and the box that came out of them, and
+        // re-placing the window is the least of what would happen: the entrance below is a fade, and one
+        // restarted on every ask is a tip that blinks. It is the words and the box that are compared, which is
+        // everything the drawn tip is.
+        if (hwnd && Shown() && s == text && wx == atX && wy == atY && ww == atW && wh == atH) return;
+        text = s;
+        atX = wx;
+        atY = wy;
+        atW = ww;
+        atH = wh;
+        // **And the entrance is for arriving.** A tip that is already up and is being put somewhere else --
+        // the hand has drifted, the page has moved -- keeps the opacity it has rather than fading again from
+        // nothing. Only a tip that is not on the screen is arriving.
+        // See `Popup::Arrival`.
+        if (!Shown()) Arrive();
         if (!hwnd) Show(wx, wy, ww, wh, mon);
         else {
             Place(wx, wy, ww, wh);
@@ -183,16 +201,21 @@ struct Tip : Popup {
     // lowest thing that floats there. See `Flyout::Paint` for the panel a control hangs off.
     void PaintFurniture(const Painter &p) override {
         if (text.empty()) return;
+        // **The whole tip, faded as one.** There is no tree here to leave an opacity on, so the fade is the
+        // colours themselves -- the shadow's own `opacity` is the parameter it takes for exactly this ("a
+        // surface that fades while its shadow stays is the one thing that gives a fade away"), and the fill,
+        // the contour and the words are faded with `Fade`. See `Popup::Arrival`.
+        const float t = Arrival();
         // The panel is the window less the room the shadow needs -- see `kMargin`. Drawn inset rather than
         // drawn whole, and that is the fix for the corners: the four gaps between a square window and a
         // round panel are the shadow's to fade into rather than a wedge of its own.
         const D2D1_RECT_F box = { kMargin, kMargin, ClientW() - kMargin, ClientH() - kMargin };
-        p.Shadow(box, metric::kRadiusControl, 1.0f, kShadowReach, kShadowDrop, 14, 0.18f);
-        p.FillRound(box, metric::kRadiusControl, p.pal->flyoutBg);
-        p.StrokeRound(box, metric::kRadiusControl, p.pal->flyoutStroke);
+        p.Shadow(box, metric::kRadiusControl, t, kShadowReach, kShadowDrop, 14, 0.18f);
+        p.FillRound(box, metric::kRadiusControl, Fade(p.pal->flyoutBg, t));
+        p.StrokeRound(box, metric::kRadiusControl, Fade(p.pal->flyoutStroke, t));
         p.TextWrapped(text, { box.left + kPadX, box.top + kPadY,
                               box.right - kPadX, box.bottom - kPadY },
-                     p.font->caption, p.pal->textPrimary);
+                     p.font->caption, Fade(p.pal->textPrimary, t));
     }
 };
 
@@ -241,26 +264,6 @@ struct Tips {
     void Follow(TipFollow f) { follow = f; }
 
 private:
-    // **Where a control is on the screen, in pixels.** Asked in one place because two things ask it --
-    // where the tip goes, and whether the pointer is still on the control -- and the two must not be able
-    // to disagree about where the control is, which is what two copies of this arithmetic would do
-    // eventually. The box is the one the control is *drawn* in, because a placement in flight is where
-    // the control is; it is carried into the client area by the origin of the space its rectangle is
-    // measured in -- the two steps every hit test in the library is made of -- and then out to the screen.
-    RECT ScreenBox(const Widget *w) const {
-        const D2D1_RECT_F b = w->placed ? w->drawn : w->rect;
-        const D2D1_POINT_2F o = surface.OriginOf(w);
-        POINT origin = { 0, 0 };
-        ClientToScreen(surface.hwnd, &origin);
-        const float s = surface.scale();
-        RECT r = {};
-        r.left = origin.x + (LONG)std::lround((b.left + o.x) * s);
-        r.top = origin.y + (LONG)std::lround((b.top + o.y) * s);
-        r.right = origin.x + (LONG)std::lround((b.right + o.x) * s);
-        r.bottom = origin.y + (LONG)std::lround((b.bottom + o.y) * s);
-        return r;
-    }
-
     void Moved(Widget * /*was*/, Widget *now) {
         // Whatever the pointer left, a tip about it is wrong now: the box goes at once rather than after
         // a fade, because the next tip is a different sentence about a different control and the two
@@ -280,9 +283,16 @@ private:
     }
 
     void Appear() {
+        // **The dwell is over, and it was a one-shot.** A Windows timer repeats until it is stopped -- see
+        // `Timer` -- so one left running calls this again every `dwell` milliseconds, which is a tip that is
+        // re-placed, and re-*faded* once it has an entrance, four times a second: a box that blinks on a
+        // regular beat while the pointer rests on the control it is about. It is the same call that the
+        // watchdog below is started by, and the two are the pair the tip runs on from here: nothing asks
+        // again whether it should appear, and the watch is what asks whether it should go.
+        timer.Stop();
         // The pointer may have moved off while the timer was running... the timer is stopped on the way
-        // out (see `Moved`), so this is the case where nothing told us -- a widget that went away with
-        // the pointer still nominally on it.
+        // out (see `Moved`), so this is the case where nothing told us -- a widget that went away with the
+        // pointer still nominally on it.
         if (!waiting || !waiting->hover) { waiting = nullptr; return; }
         // Where the hand is, in screen pixels. The surface's own memory of the pointer rather than the
         // cursor's position, for the reason `Surface::pointerX` exists: on a touchscreen the two are not
@@ -290,7 +300,7 @@ private:
         POINT p = { (LONG)(surface.pointerX * surface.scale()),
                     (LONG)(surface.pointerY * surface.scale()) };
         ClientToScreen(surface.hwnd, &p);
-        tip.For(waiting->tips, ScreenBox(waiting), p, follow);
+        tip.For(waiting->tips, surface.ScreenBox(waiting), p, follow);
         // **And the window the tip is has just taken the leave-tracking away.** Windows cancels a
         // window's WM_MOUSELEAVE ask when any window appears under the pointer, so a tip that shows
         // while the pointer is resting on a control is a tip that will never hear that the pointer has
@@ -320,7 +330,7 @@ private:
         // the pointer is over is this one, so it is not an intruder.
         const HWND over = WindowFromPoint(p);
         if (over != surface.hwnd && over != tip.hwnd) { Moved(waiting, nullptr); return; }
-        const RECT box = ScreenBox(waiting);
+        const RECT box = surface.ScreenBox(waiting);
         if (p.x < box.left || p.x >= box.right || p.y < box.top || p.y >= box.bottom)
             Moved(waiting, nullptr);
     }

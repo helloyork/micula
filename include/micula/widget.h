@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct Painter;
 struct Window;
 // The thing a tree is drawn into and handed to: a window, a menu, a tip. See window.h.
 struct Surface;
+struct Menu;
 struct Layer;
 
 // Where a widget's rectangle is measured from.
@@ -321,6 +323,19 @@ struct Widget {
     // point: what a control says in a tooltip and what it says to somebody who cannot see it are
     // the same thought.
     std::wstring tips;
+    // **What a right-click asks for**: a menu, filled by this function when it is opened. Null for a
+    // widget that has no menu of its own, and then the right-click goes up to the widget that holds
+    // one -- a click on a card's label is a click on the card. See `Menu` and `Menus` in menu.h, and
+    // `Menus` is what opens it.
+    std::function<void(Menu &)> contextMenu;
+    // The widget a context menu belongs to: this one, or the first one above it that has one. Null
+    // when nothing in the walk has one, which is the honest answer for a control in a page with no
+    // menus at all.
+    Widget *MenuTarget() {
+        for (Widget *at = this; at; at = at->parent)
+            if (at->contextMenu) return at;
+        return nullptr;
+    }
     // What the page calls this widget, for the times the page knows a name the widget does not. The
     // words beside a switch are page text and are not part of it. Set, and it wins over the virtual.
     std::wstring accessibleName;

@@ -333,6 +333,20 @@ library can be: a minor version may break.
   control it is about and centred on it -- `Follow(TipFollow::Pointer)` puts it beside the hand instead --
   and it goes when the pointer leaves, or when the pointer's window stops being ours. A finger triggers
   no tip, because a tip waits for a pointer to rest and a finger does not rest.
+- **`Menu`**: a list of things to pick, in a `Popup` of its own (`menu.h`). A widget's `contextMenu` is a
+  function that fills it in, run every time it opens, so a disabled row, a tick and a list that changed are
+  the page's state read at the moment it matters; a right-click opens it where the hand is, and so do the
+  Menu key and Shift+F10 under the control the keyboard is on. Rows are commands, switches, separators and
+  the container a submenu will be; the arrows, Home/End, Enter and Esc are answered, a click on a row picks
+  it, and a click anywhere else closes the menu and stops there. **It takes neither the activation nor the
+  focus** -- the caption of the window it hangs off stays lit -- which is what `Surface::onInput` is for:
+  the input of that window, handed to the menu first while it is up.
+- **And a popup arrives rather than appearing**: a menu and a tip fade in over `motion::kFast` as one group --
+  the panel, its shadow and every row together -- because a box that is simply *there* on the next frame
+  reads as a drawing fault. `Popup::Arrival` is the ramp, so any popup has the same entrance, and with the
+  animation switch off a popup is there at once instead of being invisible for a sixth of a second. It
+  happens once per showing: a tip that is only being put somewhere else does not fade again, and asking for
+  the same words in the same place does nothing at all.
 ### Changed
 
 - **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and
