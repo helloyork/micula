@@ -262,9 +262,12 @@ struct SettingsWindow : Window {
     }
 };
 
-// The window the example opens at, and the box `--dump` lays the tree out in.
-constexpr float kWinW = 700.0f;
-constexpr float kWinH = 630.0f;
+// The window the example opens at, and the box `--dump` lays the tree out in. Wider than the old hand
+// placed version was: a card gives its control the whole slot beside the text, and a control that asks
+// for the room it is in takes all of it -- so the text needs the room the old fixed-width controls left
+// behind them.
+constexpr float kWinW = 780.0f;
+constexpr float kWinH = 640.0f;
 
 // The fonts, which is the one thing a layout needs that a window was providing.
 int WithFonts(const std::function<void(Fonts &)> &body) {
@@ -314,10 +317,20 @@ void Dump(Fonts &fonts) {
 }  // namespace
 
 int wmain(int argc, wchar_t **argv) {
-    bool dump = false;
-    for (int i = 1; i < argc; i++)
+    bool dump = false, overlay = false;
+    for (int i = 1; i < argc; i++) {
         if (std::wcscmp(argv[i], L"--dump") == 0) dump = true;
+        if (std::wcscmp(argv[i], L"--keys") == 0) overlay = true;
+        if (std::wcscmp(argv[i], L"--layout") == 0) overlay = true;
+    }
     ReadState(GetCommandLineW());
+    // The boxes a layout worked out, which a debug build draws over every widget: off unless this run
+    // asked for it, because a page that is being looked at is not a page that is being measured.
+#if MICULA_DEBUG_LAYOUT
+    debug::layout = overlay;
+#else
+    (void)overlay;
+#endif
     if (dump) {
         // Wide rather than in the console's code page, like the other two examples.
         _setmode(_fileno(stdout), _O_U16TEXT);
