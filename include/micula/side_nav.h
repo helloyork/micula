@@ -220,6 +220,9 @@ struct SideNav : Widget {
     // The row the keyboard is on, when `followsFocus` is off: the ring moves on its own and
     // the choice waits for Enter.
     int ringRow = 0;
+    // The row the pointer was last *on*, for a tip: a rail is one widget and the window cannot tell the
+    // rows apart, so the pane says when the answer has changed -- see OnPointerMove.
+    int tipRow = -1;
     // The arrow a press is holding down, -1 up and 1 down, and the timer that repeats it. See
     // OnPress: the same shape as ScrollBar's own, because it is the same gesture.
     Timer repeat;
@@ -302,7 +305,11 @@ struct SideNav : Widget {
         out.type = r.item->header ? UIA_TextControlTypeId : UIA_ListItemControlTypeId;
         out.index = r.item->header ? -1 : r.index;
         out.selected = !r.item->header && r.index == selected;
-        out.box = { rect.left, r.top, rect.right, r.top + rowH };
+        // The row's box in this widget's own space, which is the space its `rect` is in and the space the
+        // element adds this widget's accumulated origin to. The right edge is the width the pane *draws* to
+        // rather than the one the page has arranged it in: on a rail a row is 48 DIPs wide whatever room the
+        // page made for the pane, and a row reported as wide as the room is a row over the page.
+        out.box = { rect.left, r.top, rect.left + Width(), r.top + rowH };
         // A row the scroll has taken out of the band is a row a client is told about and cannot reach;
         // a footer row is never out of it, because the footer is what the band stops above.
         const D2D1_RECT_F band = Band();
@@ -616,6 +623,52 @@ struct SideNav : Widget {
         if (!hover || !enabled) return -1;
         const D2D1_POINT_2F at = Cursor();
         return RowAt(at.x, at.y);
+    }
+    // Whether the words are beside the icons. Not a state of its own but the width, because a pane on
+    // its way open is a pane whose labels are arriving, and a label half drawn is one the eye is already
+    // reading -- a tip beside it would be answering a question nobody asked. The same threshold the
+    // arrows use, for the same reason: past half way the pane is the wide thing, on this side of it the
+    // rail.
+    bool LabelsShown() const { return wide.value > 0.5f; }
+
+    // **A rail of icons under a pointer.** The labels are not drawn while the pane *is* a rail -- that is
+    // what a rail is -- so a row's own name is what hovering it says, and hovering it is how a person
+    // reads a column of glyphs. A row is not a widget, so it cannot carry the string the way a control's
+    // `tips` does: the pane is the widget the tip belongs to, and the row is *where* the tip is about.
+    // Which is what `Widget::TipAt` is for -- asked of the point, because the point is the whole of the
+    // difference between one icon and the next.
+    //
+    // Nothing at all while the words are drawn. A tip that repeats the label already beside the cursor is
+    // noise, and that covers all four styles: `Minimal` never expands, and the two that do are a rail
+    // whenever they are closed.
+    Widget::Tip TipAt(float x, float y) const override {
+        if (LabelsShown()) return {};
+        const int i = RowAt(x, y);
+        if (i < 0) return {};
+        for (const Row &r : rows) {
+            if (r.index != i) continue;
+            // The row's box, in the space the pointer was handed -- which is the space `rows` are laid
+            // out in -- and **beside the row rather than under it**: a column of icons has the next one
+            // under every one of them, and words that land there hide the thing the hand is going to.
+            // The right edge is the one the pane *draws* to rather than the one it was arranged in: a
+            // rail is `Width()` wide whatever the page has made room for, and a tip hung off the room a
+            // closed pane was given would be a tip out in the page, beside nothing.
+            return { r.item->label, { rect.left, r.top, rect.left + Width(), r.top + rowH }, true };
+        }
+        return {};
+    }
+    // **And the pane has to say when the row under the pointer has changed**, because a tip's own hover
+    // hook fires when the *widget* does and a rail is one widget from the first icon to the last: moving
+    // from one row to the one under it is no change at all as far as the window is concerned, so nothing
+    // would ever ask the question twice. Said when the answer changes and not on every move, which is the
+    // rule Windows' own hover tracking uses: a pointer that has not left the row it was on has not asked a
+    // new question, and a dwell restarted on each of the hundred moves down one column is a tip that never
+    // arrives. See `Surface::TipChanged` and `Tips::Moved`, which is what hears it.
+    void OnPointerMove(float x, float y) override {
+        const int row = LabelsShown() ? -1 : RowAt(x, y);
+        if (row == tipRow) return;
+        tipRow = row;
+        if (surface()) surface()->TipChanged();
     }
     // The pane's own rectangle, and not `rect`: the page hands it a fresh one in every Layout
     // with the right edge at zero, because that edge is the pane's to derive -- and deriving it
@@ -1208,7 +1261,7 @@ private:
     // full width has none: there the line marks the cut and a click on it is a click on the row
     // behind it.
     bool AtArrow(float y, bool up) const {
-        if (wide.value > 0.5f) return false;
+        if (LabelsShown()) return false;
         if (up ? CutTop() <= 0.5f : CutBottom() <= 0.5f) return false;
         const D2D1_RECT_F b = ArrowBox(up);
         return y >= b.top && y < b.bottom;

@@ -1043,6 +1043,10 @@ struct Surface {
     // one place because two things ask it and the two must not be able to disagree: where a tip goes, and
     // where a menu goes.
     RECT ScreenBox(const Widget *w) const;
+    // And a box *inside* it, for a tip that is about one row of a widget that draws a set of them: `local`
+    // is in the same space the widget's own `rect` is -- the space a pointer hook is handed -- and travels
+    // with the widget, including a placement that is still gliding. See `Widget::TipAt`.
+    RECT ScreenBox(const Widget *w, const D2D1_RECT_F &local) const;
     D2D1_POINT_2F LocalPoint(const Widget *w, float x, float y) const {
         const D2D1_POINT_2F o = OriginOf(w);
         return D2D1::Point2F(x - o.x, y - o.y);
@@ -1073,6 +1077,13 @@ struct Surface {
     // One callback rather than a list of them, because a surface has one tip at most and the tip is
     // the page's -- see `Tips` in tip.h, which is what sets it.
     std::function<void(Widget *was, Widget *now)> onHoverMoved;
+    // **The tip's subject changed without the hover changing.** A widget that draws a set of things is one
+    // widget whose tip depends on *where* in it the pointer is -- the row of a rail -- so the question a tip
+    // asks is about the row rather than about the widget, and the row changing is not a hover change. Saying
+    // so is what this is for: the widget that knows says it, and whoever is listening asks again. Not once
+    // per move: a widget says it when the *answer* changes, which is the rule Windows' own hover tracking
+    // uses -- a pointer that has not left the row it was hovering has not asked a new question.
+    void TipChanged() { if (onHoverMoved) onHoverMoved(hovered, hovered); }
     // **The one way the hover changes**, so that the tree, the record of it and whoever is listening
     // cannot come to disagree. Returns whether anything needs repainting, like `SetHover` below.
     bool HoverTo(Widget *over);
@@ -2148,6 +2159,10 @@ inline D2D1_POINT_2F Surface::OriginOf(const Widget *w) const {
 }
 
 inline RECT Surface::ScreenBox(const Widget *w) const {
+    return ScreenBox(w, w ? w->rect : D2D1_RECT_F{});
+}
+
+inline RECT Surface::ScreenBox(const Widget *w, const D2D1_RECT_F &local) const {
     RECT r = {};
     if (!w || !hwnd) return r;
     const D2D1_RECT_F b = w->placed ? w->drawn : w->rect;
@@ -2155,10 +2170,14 @@ inline RECT Surface::ScreenBox(const Widget *w) const {
     POINT origin = { 0, 0 };
     ClientToScreen(hwnd, &origin);
     const float s = scale();
-    r.left = origin.x + (LONG)std::lround((b.left + o.x) * s);
-    r.top = origin.y + (LONG)std::lround((b.top + o.y) * s);
-    r.right = origin.x + (LONG)std::lround((b.right + o.x) * s);
-    r.bottom = origin.y + (LONG)std::lround((b.bottom + o.y) * s);
+    // The box is in the space the widget's `rect` is measured in, and the widget is *drawn* where its own
+    // placement has taken it: the difference travels, so a tip about a row of something still gliding goes
+    // with the row.
+    const float x = o.x + b.left - w->rect.left, y = o.y + b.top - w->rect.top;
+    r.left = origin.x + (LONG)std::lround((x + local.left) * s);
+    r.top = origin.y + (LONG)std::lround((y + local.top) * s);
+    r.right = origin.x + (LONG)std::lround((x + local.right) * s);
+    r.bottom = origin.y + (LONG)std::lround((y + local.bottom) * s);
     return r;
 }
 

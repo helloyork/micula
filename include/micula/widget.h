@@ -385,6 +385,26 @@ struct Widget {
     // What item `i` is. False for a widget that has no such item, which is the honest answer for an
     // element a client held on to while the list under it changed.
     virtual bool AccessibleItem(int /*i*/, Item & /*out*/) const { return false; }
+
+    // ---- and the tip, for the same reason ------------------------------------------------------
+    // **What a tip is about, for the point the pointer is on.** A control that is one thing says the same
+    // words wherever it is touched, and that is `tips`; a widget that draws a *set* of things has one tip
+    // per row -- a rail of icons is a column of names that are not drawn, and hovering one is how a person
+    // reads it -- and a row is not a widget that can carry the string. So the widget answers for the point:
+    // the words, the box they are about, and whether they go beside that box rather than under it.
+    //
+    // Both the point and the box are in the space the `rect` is measured in, which is the space every
+    // pointer hook is handed. Empty words mean there is nothing to say *here*, which is what a widget whose
+    // labels are already drawn answers: a tip that repeats the word beside the cursor is noise.
+    struct Tip {
+        std::wstring text;
+        D2D1_RECT_F box = {};
+        // **Beside rather than under**, for a tip about one thing in a column of them: a rail has the next
+        // icon under every row, and a box of words that lands on it hides the thing next to the one it is
+        // about. WinUI's own compact navigation pane asks for its tooltips on the right.
+        bool beside = false;
+    };
+    virtual Tip TipAt(float /*x*/, float /*y*/) const { return { tips, rect, false }; }
     // A number a client can compare two values of, for a control whose value is one: a slider, a
     // progress bar. False for a control that has no range, which is not the same as one whose value is
     // zero. See `IValueProvider` and `IRangeValueProvider` in the UIA section of window.h: the first is

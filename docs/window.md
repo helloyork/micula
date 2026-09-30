@@ -194,13 +194,30 @@ micula::Tips tips{ *this };
 tips.Follow(micula::TipFollow::Pointer);
 ```
 
+**And a widget that draws a set of things says something different about each of them.** A `SideNav` in
+its rail has a name for every icon and draws none of them -- hovering one is the only way to read it -- and
+a row is not a widget that can carry a string. So a tip is asked of the *point*: `Widget::TipAt(x, y)`
+answers with `Widget::Tip { std::wstring text; D2D1_RECT_F box; bool beside; }`, both the point and the box
+in the space the widget's own `rect` is in, which is the space every pointer hook is handed. The pane's
+answer is the row under the pointer, that row's own box, and `beside` -- a column of icons has the next one
+under every row, and words that land there hide the icon the hand is going to -- which puts the box against
+the pane's right edge, reading as a label for the row it names. Empty words mean nothing to say *here*: the
+same pane says nothing at all once its labels are drawn, which is what it does in `Minimal` and in the two
+styles that expand whenever they are open.
+
+A rail is one widget from the first icon to the last, so the window sees no hover change when the hand goes
+from one row to the next. The widget that knows says so -- `Surface::TipChanged` -- and the tip is put away
+and its dwell starts over, which is the rule Windows' own hover tracking uses: a pointer that has not left
+the row it was on has not asked a new question. The watchdog asks what the tip is about as well as where the
+pointer is, so a pane that peeks open under a still hand stops standing in for the labels it has just drawn.
+
 | Member | Description |
 |---|---|
 | `Tips(Surface &s, UINT dwellMs = 0)` | Attaches to a surface. The dwell is the machine's own `SPI_GETMOUSEHOVERTIME` -- 400 ms out of the box -- unless one is passed. |
 | `void Dwell(UINT ms)` | How long the pointer has to rest before the tip appears. |
 | `void Follow(TipFollow f)` | What the box hangs off: `TipFollow::Control`, the default, or `TipFollow::Pointer`. |
 | `Tip *Box()` | The box, for a page that draws something else in it. |
-| `Tip` | The `Popup` itself: `std::wstring text`, and `For(text, anchor, at, follow)` to show it -- `anchor` is the control's box and `at` the hand, both in screen pixels. Subclass it and override `PaintFurniture` to draw something else. |
+| `Tip` | The `Popup` itself: `std::wstring text`, and `For(text, anchor, at, follow, beside = false)` to show it -- `anchor` is the box the words are about and `at` the hand, both in screen pixels, and `beside` puts the box beside that box rather than under it. Subclass it and override `PaintFurniture` to draw something else. |
 
 ## Menus
 

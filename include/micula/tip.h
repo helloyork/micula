@@ -106,14 +106,15 @@ struct Tip : Popup {
     static constexpr float kShadowDrop = 2.0f;
     static constexpr float kMargin = kShadowReach + kShadowDrop;
 
-    // Show `s` about the control whose box is `anchor`, with the hand at `at` -- both in **screen
-    // pixels**, the same thing `ClientToScreen` answers with, and the only unambiguous points there are
-    // on a machine with two screens. Which of the two the box is placed by is `follow`: under the control
-    // and centred on it, or below and to the right of the hand. Either way it **flips to the other side
-    // when the work area runs out**, and that is not a nicety -- a control in the bottom right corner of
-    // a screen is where the tip would otherwise be half off it, and that corner is where controls really
-    // are -- and it is then kept inside the work area whatever happens.
-    void For(const std::wstring &s, const RECT &anchor, POINT at, TipFollow follow) {
+    // Show `s` about the box `anchor`, with the hand at `at` -- both in **screen pixels**, the same thing
+    // `ClientToScreen` answers with, and the only unambiguous points there are on a machine with two
+    // screens. Which of the two the box is placed by is `follow`: under the box and centred on it, or
+    // below and to the right of the hand. `beside` overrides the first of those for a tip about one row
+    // of a column of them -- see `Widget::Tip`. And it **flips to the other side when the work area runs
+    // out**, which is not a nicety -- a control in the bottom right corner of a screen is where the tip
+    // would otherwise be half off it, and that corner is where controls really are -- and it is then kept
+    // inside the work area whatever happens.
+    void For(const std::wstring &s, const RECT &anchor, POINT at, TipFollow follow, bool beside = false) {
         Fonts &f = CurrentFonts();
         // The size is the words and the padding around them, and the height is *measured* rather than
         // assumed: a line box is not the point size, and `Fonts` keeps the answer for anything that
@@ -156,6 +157,17 @@ struct Tip : Popup {
             y = hy + kOffset;
             if (x + pw > right) x = hx - kOffset - pw;
             if (y + ph > bottom) y = hy - kOffset - ph;
+        } else if (beside) {
+            // **Beside the box rather than under it.** A tip about one row of a column -- a rail of icons
+            // -- has the next row under every row, so a box hanging below the one being pointed at lands
+            // on the next one and hides the thing the hand is about to go to. Centred on the row and off
+            // to its right, and flipped to the left when the work area runs out, which is the same flip
+            // the other two placements make and the side WinUI's own compact pane puts its tips on.
+            const float aL = (float)anchor.left / scale, aT = (float)anchor.top / scale;
+            const float aR = (float)anchor.right / scale, aB = (float)anchor.bottom / scale;
+            y = (aT + aB - ph) * 0.5f;
+            x = aR + kGap;
+            if (x + pw > right) x = aL - kGap - pw;
         } else {
             const float aL = (float)anchor.left / scale, aT = (float)anchor.top / scale;
             const float aR = (float)anchor.right / scale, aB = (float)anchor.bottom / scale;
@@ -272,7 +284,16 @@ private:
         watch.Stop();
         waiting = nullptr;
         tip.Hide();
-        if (!now || now->tips.empty() || !surface.app) return;
+        if (!now || !surface.app) return;
+        // **Nothing to say *here* is not the same as nothing to say.** A widget whose tip depends on the
+        // point -- a rail of icons, whose words are a row's name -- says the same thing about itself
+        // everywhere and something different about each row, and nothing at all about a row whose name is
+        // already drawn beside it. This is the same hook that a row change comes through, see
+        // `Surface::TipChanged`: the answer was different, so the question is asked again and the dwell
+        // starts over, which is what makes moving from one icon to the next a fresh wait rather than the
+        // tail of the last one.
+        const D2D1_POINT_2F local = surface.LocalPoint(now, surface.pointerX, surface.pointerY);
+        if (now->TipAt(local.x, local.y).text.empty()) return;
         // A control that is not on the screen -- scrolled out of the container that shows it, or inside
         // a panel that has not arrived -- says nothing about itself: `VisibleArea` is what every other
         // question about a widget asks, and this is one of them.
@@ -300,7 +321,16 @@ private:
         POINT p = { (LONG)(surface.pointerX * surface.scale()),
                     (LONG)(surface.pointerY * surface.scale()) };
         ClientToScreen(surface.hwnd, &p);
-        tip.For(waiting->tips, surface.ScreenBox(waiting), p, follow);
+        // **What the tip says is asked of the point, not of the widget**, which is the same thing for a
+        // control that is one thing and a different row for one that draws a set of them. The box the tip
+        // is about comes back with it, in the space a pointer hook is handed, which is exactly what
+        // `ScreenBox` takes -- so a tip about the fourth row of a rail hangs off the fourth row and
+        // travels with it, placement and animation and all.
+        const D2D1_POINT_2F local = surface.LocalPoint(waiting, surface.pointerX, surface.pointerY);
+        const Widget::Tip what = waiting->TipAt(local.x, local.y);
+        if (what.text.empty()) { waiting = nullptr; return; }
+        anchor = surface.ScreenBox(waiting, what.box);
+        tip.For(what.text, anchor, p, follow, what.beside);
         // **And the window the tip is has just taken the leave-tracking away.** Windows cancels a
         // window's WM_MOUSELEAVE ask when any window appears under the pointer, so a tip that shows
         // while the pointer is resting on a control is a tip that will never hear that the pointer has
@@ -330,9 +360,21 @@ private:
         // the pointer is over is this one, so it is not an intruder.
         const HWND over = WindowFromPoint(p);
         if (over != surface.hwnd && over != tip.hwnd) { Moved(waiting, nullptr); return; }
-        const RECT box = surface.ScreenBox(waiting);
-        if (p.x < box.left || p.x >= box.right || p.y < box.top || p.y >= box.bottom)
+        // **And still on the box this tip is about**, which for a control that is one thing is the whole of
+        // it and for a rail is the one row the words name. A pane whose rows have scrolled under a resting
+        // pointer is a tip about a row that is no longer there, and this is what notices.
+        const RECT box = anchor;
+        if (p.x < box.left || p.x >= box.right || p.y < box.top || p.y >= box.bottom) {
             Moved(waiting, nullptr);
+            return;
+        }
+        // **And it is still about what it is about.** What a point answers with can change with nothing
+        // moving at all: a pane peeking open under a resting pointer draws the labels the tip was standing
+        // in for, and a box of words repeating the word now written beside the cursor is exactly what a tip
+        // must not be. Asked here because this is the only thing running while the pointer rests -- the
+        // pointer moving is `Moved`'s way in, and a wheel or a scroll under a still hand sends nothing.
+        const D2D1_POINT_2F local = surface.LocalPoint(waiting, surface.pointerX, surface.pointerY);
+        if (waiting->TipAt(local.x, local.y).text != tip.text) Moved(waiting, nullptr);
     }
 
     Surface &surface;
@@ -342,6 +384,9 @@ private:
     Timer watch;   // while a tip is up: is the pointer still there?
     Tip tip;
     Widget *waiting = nullptr;
+    // The box the tip on the screen is about, in screen pixels: what the watchdog checks the pointer is
+    // still inside, and it is the box the words were placed against rather than the widget's own.
+    RECT anchor = {};
 };
 
 }  // namespace micula

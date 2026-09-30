@@ -347,6 +347,17 @@ library can be: a minor version may break.
   animation switch off a popup is there at once instead of being invisible for a sixth of a second. It
   happens once per showing: a tip that is only being put somewhere else does not fade again, and asking for
   the same words in the same place does nothing at all.
+- **And a rail of icons says what each one is.** A widget that draws a *set* of things has one tip per row
+  and no widget per row to carry it, so a tip is asked of the point: `Widget::TipAt(x, y)` answers with
+  `Widget::Tip` -- the words, the box they are about, and whether they go beside that box rather than under
+  it -- and the box travels with the widget, placement and entrance included. `SideNav` answers with the row
+  under the pointer, its own box and `beside`, which reads as a label against the pane's right edge instead
+  of covering the icon below; and it says when the row under a *resting* pointer has changed
+  (`Surface::TipChanged`), because one widget from the first icon to the last is no hover change at all, so
+  moving down a rail would otherwise leave the first row's words up. Nothing is said while the labels *are*
+  drawn -- `Minimal`, and the two styles that expand whenever they are open -- and the watchdog now asks what
+  a tip is about as well as where the pointer is, so a pane that peeks open under a still hand stops standing
+  in for the labels it has just drawn.
 ### Changed
 
 - **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and
