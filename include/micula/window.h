@@ -895,6 +895,24 @@ struct Window {
     Widget *FindUid(Widget *w, int uid) const;
     // Told to a client that is listening that the keyboard focus moved. Called from SetFocusTo.
     void UiaFocusChanged();
+    // Told to a client that is listening what has changed since the frame before. Called from Paint,
+    // which is the one moment every change has to pass through. See the UIA section of this header.
+    void UiaAnnounce();
+    // **What a client is told about, and what the frame before said.** A comparison rather than a
+    // promise, because there is nowhere in a widget that knows it changed: a page changes a control
+    // through the control's own path or by writing a field, and either way the window finds out by
+    // looking. The handful below is the whole of what a change is -- a client can ask for the rest.
+    struct UiaSeen {
+        bool hasValue = false;
+        std::wstring value;
+        bool hasRange = false;
+        float range = 0.0f;
+        int expanded = -1;
+        bool hasScroll = false;
+        float scroll = 0.0f;        // 0 to 100, which is what a client is told in
+        std::vector<char> chosen;    // one per item, and whether it is the chosen one
+    };
+    std::unordered_map<int, UiaSeen> uiaSeen, uiaNow;
     // The provider reads the widget list, the focus, the hovered control and the page's own
     // transform, and calls a control's action: it is the window's own business said from outside,
     // and it is not worth twenty accessors.
@@ -1408,6 +1426,10 @@ inline void Window::Paint() {
     // normally does it and there is no loop here. Idempotent: a paint that follows a frame finds the
     // flag already clear.
     if (layoutDirty) ArrangeTree();
+    // And then said, before anything is drawn and after the tree is the tree that is about to be
+    // drawn: a change is a comparison between this frame's controls and the last frame's, so it is
+    // announced once and the drawing has nothing to do with it. See `UiaAnnounce`.
+    UiaAnnounce();
     Painter p;
     p.rt = dc; p.br = brush; p.font = &fonts; p.pal = &pal;
 
@@ -2563,9 +2585,15 @@ inline int App::Run() {
 // whole of what makes it safe to have. What a control cannot do, it refuses: `IsReadOnly` answers for
 // the control rather than for the pattern, and a write that was never going to be taken is answered
 // rather than dropped.
+//
+// **A change is a comparison, not a notification.** Nothing in a widget knows it changed: a page
+// changes a control through the control's own path or by writing a field, and the window finds out by
+// looking once per frame it draws. The events a screen reader needs are raised out of that bookkeeping
+// -- see `Window::UiaAnnounce` -- rather than out of anything a widget has to remember to call, which
+// is the same reason the reading half asks the control instead of being pushed at.
 // ============================================================================================
 
-// The four functions this needs out of UIAutomationCore.dll, looked up rather than linked -- and
+// The functions this needs out of UIAutomationCore.dll, looked up rather than linked -- and
 // here that is not only a matter of taste, which is why it is done rather than argued about:
 // MinGW-w64 ships no import library for UIAutomationCore at all, so a static call does not link
 // on that toolchain, and the SDK's own library binds these by ordinal in an import table, which is
@@ -2575,7 +2603,7 @@ inline int App::Run() {
 // the cost of being wrong is that the window has no UIA at all and answers WM_GETOBJECT the way
 // DefWindowProc would.
 //
-// By name first and by ordinal second. The DLL has both (62/80/94/102 as this was written), and
+// By name first and by ordinal second. The DLL has both (62/80/94/95/102 as this was written), and
 // the names are what the documentation is written in; the ordinal is there because an import
 // library that went by ordinal rather than by name is exactly how this was first noticed.
 namespace uiaapi {
@@ -2591,6 +2619,10 @@ struct Api {
     HRESULT(WINAPI *HostProviderFromHwnd)(HWND, IRawElementProviderSimple **);
     HRESULT(WINAPI *RaiseAutomationEvent)(IRawElementProviderSimple *, EVENTID);
     HRESULT(WINAPI *ClientsAreListening)();
+    // A change, said rather than drawn, and a fifth function rather than part of `Ready()`: a machine
+    // whose UIA can build this tree and hand it over can be read, which is worth having even if
+    // nothing arrives when what was read changes. Every use of this one checks it first.
+    HRESULT(WINAPI *RaisePropertyChanged)(IRawElementProviderSimple *, PROPERTYID, VARIANT, VARIANT);
 
     Api()
         : ReturnRawElementProvider((decltype(ReturnRawElementProvider))
@@ -2600,7 +2632,9 @@ struct Api {
           RaiseAutomationEvent((decltype(RaiseAutomationEvent))
               Lookup("UiaRaiseAutomationEvent", 0x5E)),
           ClientsAreListening((decltype(ClientsAreListening))
-              Lookup("UiaClientsAreListening", 0x3E)) {}
+              Lookup("UiaClientsAreListening", 0x3E)),
+          RaisePropertyChanged((decltype(RaisePropertyChanged))
+              Lookup("UiaRaiseAutomationPropertyChangedEvent", 0x5F)) {}
 
     // All four or none: a provider tree that can be built but not handed over is not worth the
     // three that did resolve.
@@ -2620,6 +2654,42 @@ inline const Api &Get() {
 // `ScrollPattern.NoScroll` and which the native headers have no name for at all. Not zero, which is "at
 // the top of it": a client reading that would think the page was as far up as it goes.
 constexpr double kUiaNoScroll = -1.0;
+
+// One VARIANT per kind of value an announcement carries. `UiaVarNone` -- empty -- is the old value
+// where there is nothing to compare against, which is what UIA documents for it.
+inline VARIANT UiaVarNone() {
+    VARIANT v;
+    VariantInit(&v);
+    return v;
+}
+inline VARIANT UiaVarText(const std::wstring &s) {
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_BSTR;
+    v.bstrVal = SysAllocString(s.c_str());
+    return v;
+}
+inline VARIANT UiaVarReal(double d) {
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_R8;
+    v.dblVal = d;
+    return v;
+}
+inline VARIANT UiaVarInt(int i) {
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_I4;
+    v.lVal = i;
+    return v;
+}
+inline VARIANT UiaVarBool(bool b) {
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_BOOL;
+    v.boolVal = b ? VARIANT_TRUE : VARIANT_FALSE;
+    return v;
+}
 
 struct UiaElement : IRawElementProviderSimple,
                     IRawElementProviderFragment,
@@ -3414,6 +3484,130 @@ inline void Window::UiaFocusChanged() {
     UiaElement *e = new UiaElement(this, focused ? focused->uid : 0);
     uia.RaiseAutomationEvent(e, UIA_AutomationFocusChangedEventId);
     e->Release();
+}
+
+// **Everything else a client has to be told, told by comparison.** A screen reader that has just read
+// a row needs to hear about the next one, and there is nowhere in a widget that knows it changed: a
+// page changes a control through the control's own path or by writing a field, and either way this is
+// the only place that can see both sides of it. So the window looks -- at the handful of things a
+// change *is* rather than at everything a client can ask for, since everything else it can ask the
+// control itself -- once per frame it draws. The table it compares against is the frame before, which
+// makes this a report of what happened rather than a promise about what will.
+//
+// **The table is kept whether or not anybody is listening**, which is the whole of why this works: a
+// client attaches between two frames, and if the table were built on the frame after that, the change
+// that made the client attach in the first place would be the one thing it never heard about -- the
+// table would have been filled with the answer instead of the question. Keeping it always costs a walk
+// of one page's controls on the frames a window is moving anyway, and buys the two things that matter:
+// nothing is said when a client arrives (what it can see has not changed since it looked), and a
+// change made while nobody was connected is answered by the state rather than by silence.
+inline void Window::UiaAnnounce() {
+    const uiaapi::Api &uia = uiaapi::Get();
+    if (!uia.Ready() || !content) return;
+
+    // One pass, and the only pass: what a control says is asked of the control, so there is nothing
+    // kept in step and nothing a page can forget to tell.
+    uiaNow.clear();
+    std::function<void(Widget *)> look = [&](Widget *w) {
+        UiaSeen &s = uiaNow[w->uid];
+        std::wstring text;
+        if (w->AccessibleValue(text)) {
+            s.hasValue = true;
+            s.value = std::move(text);
+        } else {
+            s.hasValue = false;
+            s.value.clear();
+        }
+        float lo = 0.0f, hi = 0.0f, step = 0.0f;
+        s.hasRange = w->AccessibleRange(s.range, lo, hi, step);
+        s.expanded = w->AccessibleExpanded();
+        float view = 0.0f;
+        bool can = false;
+        s.hasScroll = w->AccessibleScroll(s.scroll, view, can);
+        s.scroll *= 100.0f;
+        const int items = w->AccessibleItems();
+        s.chosen.resize((size_t)items);
+        for (int i = 0; i < items; i++) {
+            Widget::Item it;
+            s.chosen[(size_t)i] = (w->AccessibleItem(i, it) && it.selected) ? 1 : 0;
+        }
+        for (const auto &child : w->children)
+            if (child->visible) look(child.get());
+    };
+    look(content.get());
+
+    // The old value and the new one are handed over as they are made, and cleared here: a VARIANT
+    // passed by value is the same string, so exactly one side of each of these frees it.
+    const bool listening = uia.ClientsAreListening();
+    auto tell = [&](int uid, int item, PROPERTYID id, VARIANT was, VARIANT now) {
+        if (!listening || !uia.RaisePropertyChanged) return;
+        UiaElement *e = new UiaElement(this, uid, item);
+        uia.RaisePropertyChanged(e, id, was, now);
+        e->Release();
+    };
+    auto shout = [&](int uid, int item, EVENTID id) {
+        if (!listening) return;
+        UiaElement *e = new UiaElement(this, uid, item);
+        uia.RaiseAutomationEvent(e, id);
+        e->Release();
+    };
+
+    for (const auto &kv : uiaNow) {
+        auto before = uiaSeen.find(kv.first);
+        if (before == uiaSeen.end()) continue;      // nobody has been told this one exists yet
+        const UiaSeen &a = before->second, &b = kv.second;
+        const int uid = kv.first;
+        if (a.hasValue != b.hasValue || a.value != b.value) {
+            VARIANT was = a.hasValue ? UiaVarText(a.value) : UiaVarNone();
+            VARIANT now = b.hasValue ? UiaVarText(b.value) : UiaVarNone();
+            tell(uid, -1, UIA_ValueValuePropertyId, was, now);
+            VariantClear(&was);
+            VariantClear(&now);
+        }
+        if (a.hasRange && b.hasRange && a.range != b.range) {
+            VARIANT was = UiaVarReal(a.range);
+            VARIANT now = UiaVarReal(b.range);
+            tell(uid, -1, UIA_RangeValueValuePropertyId, was, now);
+            VariantClear(&was);
+            VariantClear(&now);
+        }
+        if (a.expanded >= 0 && b.expanded >= 0 && a.expanded != b.expanded) {
+            VARIANT was = UiaVarInt(a.expanded ? ExpandCollapseState_Expanded
+                                               : ExpandCollapseState_Collapsed);
+            VARIANT now = UiaVarInt(b.expanded ? ExpandCollapseState_Expanded
+                                               : ExpandCollapseState_Collapsed);
+            tell(uid, -1, UIA_ExpandCollapseExpandCollapseStatePropertyId, was, now);
+            VariantClear(&was);
+            VariantClear(&now);
+        }
+        // A page being scrolled moves every frame, and a client that heard about each of those would
+        // hear about nothing else: half a percent is less than a scroll bar can show.
+        if (a.hasScroll && b.hasScroll && std::fabs(a.scroll - b.scroll) >= 0.5f) {
+            VARIANT was = UiaVarReal(a.scroll);
+            VARIANT now = UiaVarReal(b.scroll);
+            tell(uid, -1, UIA_ScrollVerticalScrollPercentPropertyId, was, now);
+            VariantClear(&was);
+            VariantClear(&now);
+        }
+        const size_t count = a.chosen.size() < b.chosen.size() ? a.chosen.size() : b.chosen.size();
+        bool moved = false;
+        for (size_t i = 0; i < count; i++) {
+            if (a.chosen[i] == b.chosen[i]) continue;
+            VARIANT was = UiaVarBool(a.chosen[i] != 0);
+            VARIANT now = UiaVarBool(b.chosen[i] != 0);
+            tell(uid, (int)i, UIA_SelectionItemIsSelectedPropertyId, was, now);
+            VariantClear(&was);
+            VariantClear(&now);
+            // The event for the arriving half of it: a client that reads "4 of 6, selected" off the
+            // item's own properties wants to be told which item, and this is the one that says it.
+            if (b.chosen[i]) shout(uid, (int)i, UIA_SelectionItem_ElementSelectedEventId);
+            moved = true;
+        }
+        // And once for the set: which of them is chosen is not what it was, which is a sentence
+        // about the container and not about either row.
+        if (moved) shout(uid, -1, UIA_Selection_InvalidatedEventId);
+    }
+    uiaSeen.swap(uiaNow);
 }
 
 // Both are defined at the end of this header beside Post, and both are wanted here: the

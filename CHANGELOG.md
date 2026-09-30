@@ -8,6 +8,15 @@ library can be: a minor version may break.
 
 ### Added
 
+- **A change is told, not only drawn.** `UIA_PropertyChangedEventId` now carries the four things a
+  screen reader follows -- what a control says, a slider's number, whether something is open, where a
+  page is scrolled to -- and which of a set is chosen is told with `SelectionItem.IsSelected` on the
+  row that changed, `SelectionItem.ElementSelectedEvent` for the one that arrived and
+  `Selection.InvalidatedEvent` for the set it is one of. The window works it out by comparing each
+  frame it draws with the frame before, so a page that changes a control by writing its own field is
+  announced exactly like one that clicked it, and the table it compares against is kept whether or not
+  anybody is listening -- which is why a client is told about the change that made it attach rather
+  than having it swallowed, and hears nothing at all on the frame it arrives.
 - **The writing half of the same thing.** A client that can read a control can now change the ones
   that allow it: `IValueProvider::SetValue` on a field, `IRangeValueProvider::SetValue` on a slider or a
   progress bar, `ISelectionItemProvider::Select` on a row of a list, a cell of a segmented control or an

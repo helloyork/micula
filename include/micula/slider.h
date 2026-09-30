@@ -77,12 +77,12 @@ struct Slider : Widget {
     // And the number behind the percentage: what it is worth, what it runs between, and the step one
     // press of an arrow key takes. A client needs the number rather than the words -- it is what says
     // "five to a hundred" out loud -- and the percentage is what a reader says after it.
-    bool AccessibleRange(float &v, float &lo, float &hi, float &step) const override {
-        if (this->hi <= this->lo) return false;
-        v = value;
-        lo = this->lo;
-        hi = this->hi;
-        step = this->step;
+    bool AccessibleRange(float &number, float &least, float &most, float &each) const override {
+        if (hi <= lo) return false;
+        number = value;
+        least = lo;
+        most = hi;
+        each = step;
         return true;
     }
     bool AccessibleWritable() const override { return true; }
@@ -91,9 +91,9 @@ struct Slider : Widget {
     // a commit must not be able to tell the two apart. Out of range is refused rather than clamped: a
     // client that asked for 200 out of a 5..100 slider asked for something this control does not do.
     bool AccessibleSetRange(float v) override {
-        if (this->hi <= this->lo || v < this->lo || v > this->hi) return false;
+        if (hi <= lo || v < lo || v > hi) return false;
         const float raw = step > 0.0f ? std::round(v / step) * step : v;
-        const float snapped = std::clamp(raw, this->lo, this->hi);
+        const float snapped = std::clamp(raw, lo, hi);
         if (snapped == value) return true;
         value = snapped;
         moved = true;

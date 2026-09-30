@@ -149,6 +149,19 @@ already had the path, and the only new thing is that something other than a gest
   by the row it is on, and what a drop-down *is set to* is its value rather than its name.
 - **Focus is announced.** Every move of the keyboard focus raises
 `UIA_AutomationFocusChangedEventId`, which is the event a screen reader follows the Tab key by.
+- **And so is a change, by comparison.** A client that has read a row has to hear about the next one,
+and there is nowhere in a widget that knows it changed: a page changes a control through the control's
+own path or by writing a field, and either way the window is the only place that can see both sides.
+So once per frame it draws, it looks at the handful of things a change *is* -- what a control says,
+what a slider says, whether something is open, where a page is scrolled to, which of a set is chosen --
+and tells a client that is listening which of them differ from the frame before: `PropertyChanged` for
+the four, and for the fifth `SelectionItem.IsSelected` on each row that changed, `ElementSelected` for
+the row that arrived and `Selection.Invalidated` for the set it belongs to. The table it compares
+against is kept whether or not anybody is connected, which is what keeps it honest: a change made
+while nobody was listening is answered by the state rather than by silence, and the change that makes
+a client attach in the first place is not the one thing it never hears. A page being scrolled is
+announced in half-percent steps and not per frame, since a client that heard about every frame of it
+would hear about nothing else.
 - **Reading and writing, and a refusal is an answer.** A client reads what every control says and
 writes the ones that say they can be written -- a slider's value, a field's text, the choice in a
 list or a pane, whether something is open, where a page is scrolled to -- through
@@ -162,9 +175,8 @@ screen readers see the window as they did before -- the same reasoning as
 `DCompositionWaitForCompositorClock`, which is resolved for a different reason: that one is Windows
 11 only.
 - **Not there yet.** The scroll bar itself, which is drawn rather than published as a range of its
-own, and the events beyond focus: a client is told when the keyboard moves but not yet when a row
-is chosen or a list opens, so a screen reader is at present given the state of a page rather than
-its changes.
+own, and a change in the *shape* of a page: a control that arrives or leaves says nothing, so a
+client holding a tree of it has to find out for itself.
 
 ## Page callbacks
 
