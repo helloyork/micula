@@ -57,7 +57,9 @@ struct Slider : Widget {
     // caller's -- a slider whose `onChange` does not happen to invalidate the window is
     // still a slider, and its knob still has to move. `dragging` rather than `pressed`,
     // which the window clears the moment the pointer leaves the rectangle.
+
     bool TracksPointer() const override { return dragging; }
+    bool Dragging() const override { return dragging; }
     // A drag of a slider is mostly sideways, and a control row is 32 DIPs tall with a
     // 20-DIP thumb in the middle: six pixels of wander and the pointer is outside. The
     // thumb is the one thing on screen saying the gesture has not ended, so it stays held

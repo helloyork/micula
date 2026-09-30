@@ -118,6 +118,7 @@ struct ScrollBar : Widget {
 
     // --- input --------------------------------------------------------------------
     bool TracksPointer() const override { return hover; }   // the arrow under it lights
+    bool Dragging() const override { return grab != Part::None; }
     D2D1_RECT_F ExternalRegion() const override { return area; }
 
     void OnPointerMove(float x, float y) override {

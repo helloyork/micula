@@ -45,6 +45,7 @@ struct Segmented : Widget {
     // The hovered cell follows the pointer across the control, and a drag follows it out of
     // the control altogether, so the window has to keep repainting either way.
     bool TracksPointer() const override { return hover || dragging; }
+    bool Dragging() const override { return dragging; }
     float CellW() const { return Width(rect) / (float)(std::max)(size_t(1), options.size()); }
 
     // Every cell is the same width -- that is what makes the labels line up with the indicator --

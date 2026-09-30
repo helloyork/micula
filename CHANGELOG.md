@@ -8,6 +8,12 @@ library can be: a minor version may break.
 
 ### Added
 
+- **A finger scrolls a page.** Past the point where a tap turns into a drag, a control that is not
+  holding the gesture stops being asked about it and the first container above it that pans --
+  `ScrollView` -- takes it: the content follows the hand instead of gliding after it, a pull past the
+  end of the page comes a little way and springs back, and letting go throws it, since the hand's own
+  speed is handed over as the fling. `Widget::Pans`, `PanMove` and `PanRelease` are the hooks, and the
+  container is decided once per gesture so a page inside a page does not pass the same hand up.
 - **A finger and a pen are answered like a mouse.** Touch and pen arrive as `WM_POINTER` messages and
   go into the same press, move and release the mouse uses -- so a drop-down opens to a tap and a slider
   drags under a finger because they were written for a pointer -- and the window answers the pointer

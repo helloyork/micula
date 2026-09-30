@@ -285,6 +285,10 @@ constexpr float kResizeGrip  = 6.0f;
 // machine pointing at a pixel -- and a pen has a small one, but this is not it.
 constexpr float kTouchSlop   = 8.0f;
 
+// Defined beside the frame clock further down, and declared here because the input path is written
+// before it: a fling is a speed, and a speed is a distance over a time.
+inline double MonotonicSeconds();
+
 // ---------------------------------------------------------------- Painter
 
 // Everything drawn goes through one of these. It holds the device context, the fonts
@@ -811,9 +815,24 @@ struct Window {
     UINT32 finger = 0;
     // Where a press landed, in client DIPs: what a tap is measured against.
     float pressX = 0.0f, pressY = 0.0f;
+    // **Where the pointer last was, whoever moved it.** Every coordinate the input path is handed is
+    // kept here as it arrives, because a control that asks the pointer -- an open list's hovered row, a
+    // pane's -- has to be answered with the last thing that happened, and under a finger that is not the
+    // mouse: a touch does not move the mouse, so `GetCursorPos` answers with a place nobody is pointing
+    // at. See `Widget::Cursor`.
+    float pointerX = 0.0f, pointerY = 0.0f;
+    // **A drag no control has taken belongs to whatever above it scrolls.** See `Widget::Pans`. The
+    // widget is decided once, when the finger has wandered far enough to say it is not tapping, and it
+    // keeps the gesture until the hand lifts -- so a page that scrolled cannot leave the rest of the
+    // same movement to the container above it.
+    Widget *panning = nullptr;
+    float panLastY = 0.0f;
+    double panLastT = 0.0;
+    float panSpeedY = 0.0f;
     void PressAt(float x, float y, Hand hand);
     bool MoveTo(float x, float y, Hand hand, bool contact);
     void ReleaseAt(Hand hand);
+    Widget *PanTargetFor(Widget *w);
     // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
     // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
     // because an arrangement is one walk from the root -- a widget whose parent has not been
@@ -1880,6 +1899,9 @@ inline bool Window::RefreshHover() {
     // cursor as a panel began to fade would be the one thing in the picture moving that is not the
     // fade.
     if (LeavingLayer()) return false;
+    // **A finger is not hovering anything**, and the mouse's position is not where the finger is: while
+    // one is down the pointer is the finger, and what is under it is what it is holding. See `MoveTo`.
+    if (finger) return content ? SetHover(content.get(), nullptr) : false;
     // Whose window the pointer is actually over. A cursor resting on something else
     // must not leave a control lit: this is called from the tick, not from a mouse
     // message, so there is no WM_MOUSELEAVE to lean on.
@@ -1966,6 +1988,9 @@ inline void Window::DismissIn(Widget *w) {
 inline void Window::CancelCapture() {
     Widget *w = capture;
     finger = 0;
+    // The gesture is abandoned rather than finished, so nothing carries on from it: a page left to
+    // coast into its own end would be an animation nobody asked for, from a hand that is not there.
+    panning = nullptr;
     if (!w) return;
     capture = nullptr;
     w->pressed = false;
@@ -1984,7 +2009,10 @@ inline void Window::CancelCapture() {
 inline void Window::PressAt(float x, float y, Hand hand) {
     pressX = x;
     pressY = y;
+    pointerX = x;
+    pointerY = y;
     capturing = hand;
+    panning = nullptr;
     Widget *w = HitTest(x, y);
     // Everything else puts away whatever it was showing. This is what closes an open
     // drop-down when the click lands somewhere else -- including on nothing, which is
@@ -2039,6 +2067,14 @@ inline void Window::PressAt(float x, float y, Hand hand) {
 // Returns whether anything about what the pointer is over changed, which is the window's reason to
 // draw a frame -- the same contract the two walks it drives already have.
 inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
+    // **A mouse is not where a finger is.** While one is down, the pointer a page can ask about is the
+    // finger -- see `Widget::Cursor` -- so a mouse that happens to be somewhere else on the screen does
+    // not move it. This is not a corner case: it is the usual one, and a control reading the last thing
+    // that moved would be pointed at whatever the mouse was resting on.
+    if (!(finger && hand == Hand::Mouse)) {
+        pointerX = x;
+        pointerY = y;
+    }
     // **A finger has no hover.** Nothing is "over" a control that a hand is touching, and a control
     // that lit up as the hand went by would be lighting up for nothing, so a touch clears whatever was
     // hovering rather than putting something new there. A mouse always hovers and a pen hovers while it
@@ -2062,8 +2098,32 @@ inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
         if (down && hand == Hand::Finger &&
             (std::fabs(x - pressX) > kTouchSlop || std::fabs(y - pressY) > kTouchSlop))
             down = false;
+        // **And a drag that no control is using is the container's.** The control has just said it is
+        // not a click, so the question is who the gesture belongs to. A container that pans takes it
+        // itself; a control that is moving its own value keeps it, and one that only wants the pointer
+        // so its own highlight can follow -- a list's rows -- does not, because a list's rows following
+        // a finger and the list scrolling under it are the same gesture. Failing both, it is the first
+        // thing above that scrolls, found once and kept for the rest of the gesture.
+        if (hand == Hand::Finger && contact && !panning && !down) {
+            if (capture->Pans()) panning = capture;
+            else if (!capture->Dragging()) panning = PanTargetFor(capture);
+            panLastY = y;
+            panLastT = MonotonicSeconds();
+            panSpeedY = 0.0f;
+        }
         capture->pressed = down;
-        capture->OnDrag(at.x, at.y);
+        if (panning) {
+            const double now = MonotonicSeconds();
+            const float dt = (float)(now - panLastT);
+            panLastT = now;
+            // Smoothed rather than taken whole: one jittery frame at the end of a fling would be the
+            // whole of what the fling is worth.
+            if (dt > 0.001f) panSpeedY = panSpeedY * 0.6f + ((y - panLastY) / dt) * 0.4f;
+            panning->PanMove(0.0f, y - panLastY);
+            panLastY = y;
+        } else {
+            capture->OnDrag(at.x, at.y);
+        }
     }
 
     const bool tracks = content ? SendMove(content.get(), x, y, over) : false;
@@ -2080,8 +2140,20 @@ inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
 inline void Window::ReleaseAt(Hand hand) {
     if (hand != capturing) return;
     Widget *w = capture;
+    Widget *pan = panning;
+    const float speed = panSpeedY;
     capture = nullptr;
+    panning = nullptr;
     ReleaseCapture();
+    // A gesture that scrolled a page was over the moment it stopped being a tap: whatever it started on
+    // gets its own state put back, and the container is told how fast the hand was going, which is what
+    // the fling is made of. Nothing here is a click.
+    if (pan) {
+        if (w) w->pressed = false;
+        pan->PanRelease(0.0f, speed);
+        Invalidate();
+        return;
+    }
     if (w) {
         // A release that is a click: the pointer is still on the control, and the
         // control was not being dragged. `pressed` alone used to say both, and stops
@@ -2098,6 +2170,14 @@ inline void Window::ReleaseAt(Hand hand) {
         // reason -- by the time OnClick has returned, `w` may not exist.
         if (click && w->enabled) w->OnClick();
     }
+}
+
+// The first thing above `w` that scrolls, or null. `w` itself is not asked: a press that landed on it
+// has just said, by not tracking the pointer, that it does not want the drag.
+inline Widget *Window::PanTargetFor(Widget *w) {
+    for (Widget *up = w->parent; up; up = up->parent)
+        if (up->Pans()) return up;
+    return nullptr;
 }
 
 // ---- the three calls that belong to the window, which is what widget.h has only declared --------
@@ -2137,16 +2217,11 @@ inline void Widget::Remove(Widget *child) {
 }
 
 inline D2D1_POINT_2F Widget::Cursor() const {
-    POINT pt = {};
-    GetCursorPos(&pt);
     Window *w = window();
-    if (!w) return D2D1::Point2F((float)pt.x, (float)pt.y);
-    ScreenToClient(w->hwnd, &pt);
-    const float s = w->scale();
-    // The physical pointer, in this widget's own space: the space its rectangle is in, which is the
-    // one its input callbacks are handed points in.
+    if (!w) return D2D1::Point2F(0.0f, 0.0f);
+    // The window's own memory of the pointer rather than the cursor's position: see `Window::pointerX`.
     const D2D1_POINT_2F o = w->OriginOf(this);
-    return D2D1::Point2F(pt.x / s - o.x, pt.y / s - o.y);
+    return D2D1::Point2F(w->pointerX - o.x, w->pointerY - o.y);
 }
 
 inline D2D1_RECT_F Widget::VisibleArea() const {
@@ -4015,12 +4090,14 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
-    // The pointer's version of losing the capture, which is the same thing said in the other
-    // vocabulary: the gesture cannot finish, so it ends here rather than waiting for a release that
-    // belongs to somebody else now.
+    // **Not the end of a gesture.** The system moves a pointer's capture on its own account as soon as
+    // one is down, so this arrives at the beginning of every touch -- and treating it as "the capture
+    // is gone" cancels the press that was just made, which is a tap that does nothing and a list that
+    // cannot be dragged. A gesture that really loses the capture this window holds goes through
+    // `WM_CAPTURECHANGED` like any other, and that is where it ends. Answered rather than handed on,
+    // for the same reason as the three above: a message a window says it handles is a message the
+    // system does not promote.
     case WM_POINTERCAPTURECHANGED:
-        self->finger = 0;
-        self->CancelCapture();
         return 0;
     // The capture went away without a button-up: alt-tab, a system modal, another
     // application taking the mouse. Windows revokes it and no WM_LBUTTONUP is ever

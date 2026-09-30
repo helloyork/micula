@@ -199,6 +199,7 @@ struct TextBox : Widget {
     float lastPressX = -1.0e6f;
 
     bool TracksPointer() const override { return selecting; }
+    bool Dragging() const override { return selecting; }
 
     void OnPress(float x, float /*y*/) override {
         size_t under = 0;

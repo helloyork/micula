@@ -167,6 +167,28 @@ struct Widget {
     // hovered throughout -- so without this the highlight stays where it was and only catches up
     // when something else happens to repaint.
     virtual bool TracksPointer() const { return false; }
+    // **Whether this widget is the one using the drag.** Not the same question as `TracksPointer`, which
+    // says the widget wants the pointer so its own drawing can follow it: an open list's rows follow a
+    // finger and the list still scrolls under it, so a list answers that and not this. A control that is
+    // moving its own value with the hand -- a slider, a switch, the text of a field being selected, the
+    // thumb of a bar -- answers true, and keeps the gesture that would otherwise, past the slop, be
+    // handed to a container that scrolls.
+    virtual bool Dragging() const { return false; }
+    // **A drag that no control took, answered for by a container above it.** A finger on a page is not
+    // a finger on a control: once it has wandered past the slop, a control that is not holding a click
+    // has nothing left to say about it, and what is left is the gesture itself. The window -- the only
+    // side that sees a whole gesture -- asks the widget the press landed on and then each of its
+    // ancestors for the first one that says it pans, and gives it the rest of the movement. Asked once
+    // per gesture: a page that begins scrolling does not hand the same hand to the next container up
+    // when it reaches its end, which is what a page inside a page would otherwise feel like.
+    //
+    // `PanMove` is handed the movement of the hand since the last call, in client DIPs, and is expected
+    // to follow it rather than glide toward it: under a finger, the content is the finger's. `PanRelease`
+    // ends the gesture with the speed the hand had, in DIPs per second, which is what a fling is worth.
+    // See `ScrollView`, which is the one control that answers this today.
+    virtual bool Pans() const { return false; }
+    virtual void PanMove(float /*dx*/, float /*dy*/) {}
+    virtual void PanRelease(float /*vx*/, float /*vy*/) {}
     // Whether the press shadow should be showing. The window clears `pressed` the moment the pointer
     // leaves the rectangle, which is what makes a button cancellable by dragging off it; a control
     // whose gesture outlives its own rectangle -- a slider dragged out of its track -- says so here.
@@ -180,10 +202,12 @@ struct Widget {
     // property, `<ContentPresenter.BackgroundTransition>`, and leaves its border, its text and its
     // focus ring to change between two frames.
     float Want(bool on) const { return on && enabled ? 1.0f : 0.0f; }
-    // The pointer, in this widget's own space: the space its rectangle is in, which is the one its
-    // input callbacks are handed points in. It is the *physical* pointer, so a harness that posts
-    // mouse messages cannot drive a control that reads this -- take a drag's points from OnPress and
-    // OnDrag, and read this only for what genuinely means "where is the pointer now".
+    // **Where the pointer last was**, in this widget's own space: the space its rectangle is in, which
+    // is the one its input callbacks are handed points in. Asked by a control whose highlight follows
+    // the pointer rather than its own last callback -- an open list's row, a pane's -- and it is the
+    // window that answers, with the last place *any* hand went. A finger does not move the mouse, so a
+    // control reading the cursor itself would be pointing at a place nobody is pointing at: which is
+    // exactly what a pane's rows and a list's rows did, and why neither could be clicked with a finger.
     D2D1_POINT_2F Cursor() const;
     // How much room this widget really has: the page's box in its own space, and a container's clip
     // once containers clip. For a control deciding whether something it would show fits.

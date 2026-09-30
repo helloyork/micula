@@ -352,7 +352,7 @@ for it to know that this program had an opinion.
 | Drag of the border or the caption | `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE`. Windows runs a modal loop of its own, in which the frame loop cannot run, so the window paints from a 16 ms timer for the duration: the resize is live and animations keep running. |
 | Scroll | Nothing is laid out: the controls move through `ContentTransform()` and the frame loop repaints them. |
 | Settings change | `ReloadTheme()` when the machine switched between light and dark, and the animation switch is re-read -- see [Animations](drawing.md#animations). |
-| Touch, pen | `WM_POINTERDOWN`, `WM_POINTERUPDATE` and `WM_POINTERUP` -- handled rather than passed to `DefWindowProc`, which is what keeps Windows from also promoting each touch to a mouse button. What arrives is the same press, move and release a mouse gets, with the three differences a hand really has: a finger has no hover and no cursor, eight DIPs of travel (`kTouchSlop`) turns a tap into a drag, and a second finger takes the first one's click away. A pen hovers while it is in the air and presses when it is not. |
+| Touch, pen | `WM_POINTERDOWN`, `WM_POINTERUPDATE` and `WM_POINTERUP` -- handled rather than passed to `DefWindowProc`, which is what keeps Windows from also promoting each touch to a mouse button. What arrives is the same press, move and release a mouse gets, with the three differences a hand really has: a finger has no hover and no cursor, eight DIPs of travel (`kTouchSlop`) turns a tap into a drag, and a second finger takes the first one's click away. Past that slop a drag that no control is holding goes to the first container above it that pans, which is where a finger on a page scrolls it. A pen hovers while it is in the air and presses when it is not. |
 
 Messages not consumed reach `OnAppMessage` and then `DefWindowProc`: `WM_CLOSE`,
 `WM_COMMAND`, `WM_APP` messages, `WM_ACTIVATE`, right and middle mouse buttons, timers
@@ -365,8 +365,17 @@ mouse messages and the pointer messages both end there, so a control that answer
 all of them. A gesture belongs to the hand that began it, which is why a mouse moving while a finger is
 down neither un-presses the finger's tap nor drags what the finger is dragging.
 
-*Not yet: a finger cannot scroll a page -- dragging, inertia and the bounce at the ends of a list are
-the next step.*
+**A drag no control is using belongs to whatever scrolls.** Past the slop a finger is not tapping, so
+the control stops being asked about it: one that is moving its own value -- a slider, a switch, a bar's
+thumb, the words of a field being selected -- says so with `Dragging` and keeps the gesture for itself,
+and anything else lets it go. That is the difference between `Dragging` and `TracksPointer`, and it is
+not a subtle one: a list's rows follow the pointer so the row under it lights up, and the list still
+scrolls under them, so the two questions cannot be one. What is left goes to the first container above
+that answers `Pans` -- `ScrollView`, today -- and it follows the hand rather than gliding toward it,
+which is what makes the content the finger's; past the ends the page comes a third of the way and never
+more than forty DIPs (`kPanRubber`, `kPanOver`) and springs back when the hand lets go; and the speed
+the hand left it with is a fling, which dies by `kPanFriction` in about a second. The container is
+decided once, when the finger stops being a tap, so a page inside a page does not feel like two.
 
 ## Scrolling
 

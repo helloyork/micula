@@ -92,6 +92,7 @@ struct ToggleSwitch : Widget {
     float grabX = 0.0f;      // and where the pointer was, so it does not jump under the hand
 
     bool TracksPointer() const override { return dragging; }
+    bool Dragging() const override { return dragging; }
     bool PressedVisual() const override { return pressed || dragging; }
     float KnobX() const { return rect.right - kW + 10.0f + knob.value * kTravel; }
 

@@ -34,6 +34,18 @@ namespace micula {
 
 struct ScrollView;
 
+// A finger dragged past the end of a page gets a little way -- half of what the hand asked for, and
+// never more than forty DIPs -- and then it comes back. A page that stopped dead would read as a page
+// with nothing left in it rather than as the end of one. The half is Android's over-scroll damping.
+constexpr float kPanRubber   = 0.5f;
+constexpr float kPanOver     = 40.0f;
+// What is left of a fling's speed after a second. Not a number to argue with the eye: it is Apple's,
+// published as `UIScrollView.decelerationRate.normal` = 0.998 per millisecond, which is 0.135 a second
+// -- and the same 0.135 appears as `FrictionSimulation`'s coefficient in Flutter, so it is what most
+// scrollables on this platform ended up with. A fling has no duration; it has whatever the hand left it.
+constexpr float kPanFriction = 0.135f;
+constexpr float kPanSpring   = 0.01f;
+
 // The viewport's own layout: the column, where it is scrolled to, and the bar down the right-hand
 // edge. Not a StackLayout -- the column inside is one, and asking a stack to arrange a stack is how a
 // page's margin ends up applied twice.
@@ -52,6 +64,14 @@ struct ScrollView : View {
     // How tall the column came out. Written by the view's layout on every arrangement, read by the
     // wheel to know when to stop.
     float extent = 0.0f;
+    // ---- what a finger leaves behind -----------------------------------------------------------------
+    // Where the hand started, in DIPs from the top, and how far it has moved since: a pan is the
+    // difference between the two, which is why neither the page nor the bar has to know about the hand.
+    float panFrom = 0.0f;
+    float panHand = 0.0f;
+    bool  held = false;
+    // What the hand was worth when it let go, in DIPs per second, and what is left of it.
+    float velocity = 0.0f;
 
     // The column a page adds to. `Add` below is the whole of the interface to it.
     View *content = nullptr;
@@ -139,6 +159,71 @@ struct ScrollView : View {
     // and one move.
     void ScrollBy(float dip) { ScrollTo(scroll + dip, true); }
 
+    // ---- a finger on the page ------------------------------------------------------------------------
+    // **Under a finger the content is the finger's.** Followed rather than animated toward, which is
+    // what `ScrollTo(..., false)` has always been for -- and past the ends, the rubber band above, which
+    // is what a fling is thrown against. The offset is allowed out of its range while that is happening
+    // and the arrangement places the column at it either way: `over` is not a second offset to keep in
+    // step, it is the same one, and the tick below is what puts it back where it belongs.
+    bool Pans() const override { return ScrollMax() > 0.0f; }
+    void PanMove(float, float dy) override {
+        if (!held) {
+            held = true;
+            panHand = 0.0f;
+            panFrom = scroll;
+            velocity = 0.0f;
+        }
+        panHand += dy;
+        const float most = ScrollMax();
+        const float want = panFrom - panHand;
+        float at = want;
+        if (want < 0.0f)      at = -(std::min)(-want * kPanRubber, kPanOver);
+        else if (want > most) at = most + (std::min)((want - most) * kPanRubber, kPanOver);
+        if (at == scroll) return;
+        scroll = at;
+        instant = true;
+        InvalidateLayout();
+    }
+    void PanRelease(float, float vy) override {
+        held = false;
+        // The hand moving down walks the content back up, so the two are each other's negative.
+        velocity = -vy;
+    }
+    // The fling, and the rubber band coming back. One tick for both because they are the same question --
+    // is the page where it belongs -- and because the second must not run while the first is still going:
+    // a page bouncing at one end has already given up whatever the hand left it.
+    void Tick(float dt) override {
+        Widget::Tick(dt);
+        const float most = ScrollMax();
+        if (scroll < 0.0f || scroll > most) {
+            velocity = 0.0f;
+            const float edge = scroll < 0.0f ? 0.0f : most;
+            const float at = edge + (scroll - edge) * (float)std::pow(kPanSpring, dt);
+            scroll = std::fabs(at - edge) < 0.5f ? edge : at;
+            InvalidateLayout();
+            return;
+        }
+        if (std::fabs(velocity) <= 1.0f) {
+            velocity = 0.0f;
+            return;
+        }
+        float at = scroll + velocity * dt;
+        if (at < 0.0f || at > most) {
+            // The end of the page rather than a wall: the fling gets `kPanOver` of stretch out of it and
+            // gives the rest to the rubber band, which is what makes the bounce read as giving.
+            at = std::clamp(at, -kPanOver, most + kPanOver);
+            velocity = 0.0f;
+        } else {
+            velocity *= (float)std::pow(kPanFriction, dt);
+        }
+        scroll = at;
+        InvalidateLayout();
+    }
+    bool Animating() const override {
+        if (Widget::Animating()) return true;
+        return std::fabs(velocity) > 1.0f || scroll < 0.0f || scroll > ScrollMax();
+    }
+
     // A wheel turned over this, or over anything in it -- the window offers the notch to the widget
     // under the pointer and then to each thing it is inside of, which is what brings it here. One
     // notch is the system's own "lines per notch" times a control's height: a page whose rows are 32
@@ -191,9 +276,11 @@ inline void ScrollLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
 
     // A window that shrank, or a page that got shorter, leaves the view past the end of it. The
     // offset is pulled back rather than treated as a fault: the arrangement is the only place that
-    // knows both halves of it.
-    if (view->scroll > view->ScrollMax()) view->scroll = view->ScrollMax();
-    if (view->scroll < 0.0f) view->scroll = 0.0f;
+    // knows both halves of it. A finger is allowed its rubber band -- see `PanMove` -- so what is pulled
+    // back here is only what no hand could have asked for.
+    const float most = view->ScrollMax();
+    if (view->scroll > most + kPanOver) view->scroll = most + kPanOver;
+    if (view->scroll < -kPanOver) view->scroll = -kPanOver;
 
     // The column, in a box as tall as it is and moved up by the offset. This is the whole of
     // scrolling: from here down, nothing knows it happened.
