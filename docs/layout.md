@@ -328,10 +328,12 @@ On the branch, in this order. Each phase is something a person can look at and d
    card width and the room it has, which is what a gallery of cards wants, and what a page of two-part
    rows wants once the two parts stop fitting side by side. **`Page` is not part of this**: a page is a
    `Widget` with a layout of its own, and `ScrollView`'s is what pages are built with.
-4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; the
-   animation set beyond the glide; the input the library does not have at all -- **touch**, where one
-   finger scrolls a page, a drag moves a slider and a press held down opens a drop-down, all of which
-   is a gesture the window has no place for today; the docs rewritten (`window.md`, `controls.md`,
+4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; **arrivals
+   and departures** -- the glide is the only motion the tree has, and WinUI has a set of others, a card
+   growing into its page, a row leaving a list, a layer fading through a scale, all worth trying here;
+   the surfaces that are still missing -- a tooltip, and a context menu that a **held** press opens, both
+   of which are windows of their own rather than layers on the page, so that a menu can exist with no
+   window to hang off at all; the docs rewritten (`window.md`, `controls.md`,
    `widget.md`, `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.
 5. **The applications.** `AlasViewer` is the first, and it is the real test: a `Widget` of its own with
    a `Paint` that draws a game screen, a page built by hand, and a source dependency on this checkout
