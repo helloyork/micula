@@ -8,6 +8,18 @@ library can be: a minor version may break.
 
 ### Added
 
+- **A `Flyout` is uncovered from the row it hangs off.** The panel's two vertical edges travel from the
+  control's line outward over `motion::kFast` and back into it as the layer leaves, and the rows inside
+  the panel do not move: a list is *uncovered* rather than grown, because the chosen row is on the
+  control from the first frame and a panel that grew would carry it in late. One number drives it --
+  the layer's own `Arrival()`, which the layer's own painting now reads as well as the paint walk's
+  group opacity -- so the way in and the way out are one animation rather than a pair to keep in step.
+- **`Widget::ClipBox()`**: the box a container that clips cuts its children to, in the space its own
+  `rect` is in, and its own rectangle unless the container is showing only a part of itself. The paint
+  walk clips the children to it and paints the widget's own drawing *outside* that clip -- the clip is a
+  window onto the children, and a flyout's shadow belongs outside the reveal that is growing over it.
+  `Widget::VisibleArea()` and the two hit-test walks ask it as well, so what a container is not showing
+  is not room for a control to lay itself out in and not a click it can answer.
 - **`glyph::kEthernet` (`E839`) and `glyph::kRemoteDevice` (`E836`).** The two ends of a connection to
   a machine somewhere else: a device with its cable plugged in, and a device being added. The font has
   no server glyph, so the second of these is the closest honest answer for "the machine at that

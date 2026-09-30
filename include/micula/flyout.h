@@ -175,6 +175,43 @@ struct Flyout : Layer {
         return { box.left, box.top, box.right, anchor.top };
     }
 
+    // **The panel as it is being shown**, which is the whole of what arriving looks like here. The box the
+    // panel is drawn in, with each of its two vertical edges walking between the line the control is on and
+    // where the panel ends: a list opening is a list being *uncovered* rather than a box being grown, and
+    // the rows inside it do not move.
+    //
+    // That is not a detail of the animation, it is the reason there is one of this shape: where the chosen
+    // row is on screen is the one thing about an open list that is not the animation's to decide -- the
+    // chosen row is on the control from the first frame -- so growing the panel would carry the rows with
+    // it and the one row that matters would arrive late. The window onto them is what grows.
+    //
+    // Read by three things and it has to be one answer: the flyout's clip, which is what the rows are
+    // hidden by, the box the flyout's own surface is drawn at, so the rounded rectangle's edges and its
+    // shadow travel with the rows' window, and the hit test, which asks it before it will reach anything
+    // under a panel that is not showing it yet.
+    D2D1_RECT_F Reveal() const {
+        if (!panel) return {};
+        const D2D1_RECT_F box = panel->placed ? panel->drawn : panel->rect;
+        const float t = Arrival();
+        if (t >= 1.0f) return box;
+        const float at = EdgeLine();
+        return { box.left, at + (box.top - at) * t, box.right, at + (box.bottom - at) * t };
+    }
+
+    // The line the panel's edges travel from: the control's own row when the panel is lined up on it, and
+    // the edge the panel hangs off when it hangs off one -- which is what makes a menu look like it came
+    // out of the button rather than out of the middle of the window.
+    float EdgeLine() const {
+        if (linedUp) return anchorLine;
+        return (panel && panel->rect.top >= anchor.bottom) ? anchor.bottom : anchor.top;
+    }
+
+    // A flyout is a window onto its children -- the panel and the mark -- and that window is the reveal:
+    // the two are the same box the moment the panel has arrived, and the panel being uncovered is exactly
+    // the rows being clipped to a box that is still on its way. See `Reveal`.
+    bool Clips() const override { return true; }
+    D2D1_RECT_F ClipBox() const override { return Reveal(); }
+
     // The panel's own surface: a flyout is over the page rather than part of it, so it gets an opaque
     // fill of its own, a contour and a shadow -- a narrower shadow than a dialog's, because it hangs
     // off a control rather than sitting in the middle of the page.
@@ -185,12 +222,14 @@ struct Flyout : Layer {
     void Paint(const Painter &p) override {
         Layer::Paint(p);                       // the smoke, when there is one
         if (!panel) return;
-        // **The panel where it is drawn**, not where it was arranged. The surface is what the rows are
+        // **The panel where it is drawn, and how much of it there is.** The surface is what the rows are
         // read through, and one that jumped to where the panel is going while the rows slid there would
         // be a frame arriving before its contents -- which is exactly what it looked like. PaintTree
         // draws a widget's children at its `drawn` for the same reason; this is the widget that draws
-        // its child's surface, so it has to read it the same way.
-        const D2D1_RECT_F box = panel->placed ? panel->drawn : panel->rect;
+        // its child's surface, so it has to read it the same way -- and it draws it at the reach of the
+        // reveal, so that the surface and the window the rows are seen through are one box on every frame
+        // of a list opening or closing. See `Reveal`.
+        const D2D1_RECT_F box = Reveal();
         p.Shadow(box, 8.0f, 1.0f, 14.0f, 4.0f);
         p.FillRound(box, 8.0f, p.pal->flyoutBg);
         p.StrokeRound(box, 8.0f, p.pal->flyoutStroke);

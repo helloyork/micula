@@ -215,7 +215,10 @@ The list opens **over the control**, with the chosen row where the control's own
 what Windows 11's own combo boxes do, and what makes choosing read as swapping one name
 for another rather than as picking from a menu. It grows out of the control over
 `motion::kFast`, each edge travelling from the control's row outward, and collapses back
-into it.
+into it. **A panel is uncovered rather than grown**: the rows inside it do not move by a DIP,
+because where the chosen row is on screen is the one thing about an open list that is not the
+animation's to decide -- it is on the control from the first frame, and the two edges open outward
+from it.
 
 **The alignment is the premise, and the panel's edges are what serve it.** The panel is made
 of the whole rows that fit around the control's own line -- as many above the chosen row as

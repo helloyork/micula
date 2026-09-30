@@ -1080,16 +1080,6 @@ struct Window {
         // the two goes on as a translation for this widget alone.
         const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
         p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
-        // A widget that is a window onto its children clips them to itself. The clip is pushed
-        // *after* the transform, so its rectangle is read in the space that transform is in -- and
-        // that space is the parent's with this widget's own glide taken *out* of it, because the
-        // transform being `ox + (drawn - rect)` is exactly what carries a widget painting at `rect` to
-        // `drawn`. The rectangle that means "where this widget is drawn" in here is therefore `rect`,
-        // and pushing `where` puts the box a whole glide further along than the thing it clips: a row
-        // of a sliding list drawn past the panel's edge, and the row at the other edge cut off. See
-        // Widget::Clips.
-        const bool clips = w->Clips();
-        if (clips) p.rt->PushAxisAlignedClip(w->rect, D2D1_ANTIALIAS_MODE_ALIASED);
         // A subtree being faded is drawn as one group at one opacity, rather than each of its widgets
         // at that opacity: fading them one by one shows the page through the gaps between them, and
         // comes out darker where two of them overlap. Two things answer with one -- a layer arriving
@@ -1104,7 +1094,24 @@ struct Window {
                                                   D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                                   D2D1::IdentityMatrix(), op), nullptr);
         }
+        // **The widget's own drawing is not clipped by its own window.** `Clips` is a window onto a
+        // widget's *children* -- that is the sentence it is documented with -- and the two are only
+        // the same box while nothing is arriving: a flyout draws the panel's surface *and its shadow*,
+        // and a shadow cut off square at the reveal that is growing over it is the one edge in the
+        // picture that nothing else explains. So the clip goes on here, after this widget has drawn,
+        // and comes off before the children are done.
         w->Paint(p);
+        // A widget that is a window onto its children clips them to itself -- or to the part of itself
+        // it is showing, which is what a panel arriving is. The clip is pushed *after* the transform,
+        // so its rectangle is read in the space that transform is in -- and that space is the parent's
+        // with this widget's own glide taken *out* of it, because the transform being
+        // `ox + (drawn - rect)` is exactly what carries a widget painting at `rect` to `drawn`. The
+        // rectangle that means "where this widget is drawn" in here is therefore `rect` -- which is
+        // what `ClipBox` answers by default -- and pushing `where` would put the box a whole glide
+        // further along than the thing it clips: a row of a sliding list drawn past the panel's edge,
+        // and the row at the other edge cut off. See Widget::Clips.
+        const bool clips = w->Clips();
+        if (clips) p.rt->PushAxisAlignedClip(w->ClipBox(), D2D1_ANTIALIAS_MODE_ALIASED);
         const float cx = ox + where.left, cy = oy + where.top;
         for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
         if (clips) p.rt->PopAxisAlignedClip();
@@ -1689,6 +1696,16 @@ inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
         const D2D1_RECT_F where = child->placed ? child->drawn : child->rect;
         if (!child->Covers(x - (where.left - child->rect.left), y - (where.top - child->rect.top)))
             continue;
+        // **A container answers for itself where the point is outside its window, and for nothing under
+        // it.** What is not shown is not the reader's: a row a container is not showing -- one that is
+        // still under the reveal of a panel arriving here -- is not a row a click can choose. A layer is
+        // the other way round and the reason this returns the container rather than ignoring it: a flyout
+        // covers the page, so a click outside the panel it is holding is a click the flyout has to hear,
+        // and light dismissing is what it hears it as. See Widget::Clips.
+        if (child->Clips() &&
+            !Inside(child->ClipBox(), x - (where.left - child->rect.left),
+                    y - (where.top - child->rect.top)))
+            return child;
         if (Widget *deep = HitTestIn(child, x, y)) return deep;
         return child;
     }
@@ -1863,11 +1880,16 @@ inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
         const D2D1_RECT_F where = c->placed ? c->drawn : c->rect;
         const float px = x - (where.left - c->rect.left);
         const float py = y - (where.top - c->rect.top);
-        if (c == over || Inside(c->ExternalRegion(), px, py)) {
+        // The same walk the hit test makes, and it has to be: a container that is not showing the point
+        // is not offered it, or a row under a reveal would light up before there is anything to light.
+        // The container itself is still offered it, which is what a scroll bar at the edge of a page
+        // hears the pointer through.
+        const bool shown = !c->Clips() || Inside(c->ClipBox(), px, py);
+        if ((c == over && shown) || (shown && Inside(c->ExternalRegion(), px, py))) {
             c->OnPointerMove(px, py);
             if (c->TracksPointer()) tracks = true;
         }
-        if (SendMove(c, x, y, over)) tracks = true;
+        if (shown && SendMove(c, x, y, over)) tracks = true;
     }
     return tracks;
 }
@@ -1968,7 +1990,10 @@ inline D2D1_RECT_F Widget::VisibleArea() const {
     // *from* in the client, so the two origins are what carries one space's rectangle into another.
     const D2D1_POINT_2F mine = w->OriginOf(this);
     const D2D1_POINT_2F its = w->OriginOf(box);
-    const D2D1_RECT_F r = box->rect;
+    // The box is the one the window *shows*, which for a container that is showing only a part of itself
+    // is that part -- a control in a panel that is still arriving is told the room it can be reached in.
+    // See Widget::ClipBox.
+    const D2D1_RECT_F r = box->ClipBox();
     return { r.left + its.x - mine.x, r.top + its.y - mine.y,
              r.right + its.x - mine.x, r.bottom + its.y - mine.y };
 }

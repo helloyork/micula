@@ -225,7 +225,10 @@ second of dim creeping over the page is a quarter of a second of "not yet" for n
 is `Decel`, so it is 0.9 of the way there about 90 ms in. It is one fade for the whole group: the
 window paints everything over the page through a single opacity layer while it runs, because fading
 each widget on its own would show the page through the gaps between them and come out darker where
-two overlap. With animations off the layer is drawn whole on the first frame that asks for it and
+two overlap. **A layer may also paint its own arrival**, and one does: `Arrival()` is what the layer's
+own drawing reads as well as what the walk draws it through, so a shape of its own -- a `Flyout`'s
+panel being uncovered from the control's row outward -- comes in and goes out on the same clock, and
+there is one number behind both directions rather than a pair of animations to keep in step. With animations off the layer is drawn whole on the first frame that asks for it and
 gone on the next layout, with no fade and no invisible frame in between. **The controls the page put
 on it leave with it**: they keep their places while the fade runs, so a button does not vanish from
 under a panel that is still on screen, and none of them answers the pointer, the Tab ring, Enter or

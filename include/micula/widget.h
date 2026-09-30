@@ -227,6 +227,12 @@ struct Widget {
     // seen, and the hit test never reaches it because a click outside the container is not a click
     // on the container either. See ScrollView.
     virtual bool Clips() const { return false; }
+    // The box a container that clips cuts its children to, in the space its own `rect` is in. The
+    // widget's own rectangle unless the container is showing only a part of itself, and written where
+    // that part is *drawn* when the widget itself is on its way somewhere -- a clip is a box the eye
+    // sees, so it is the drawn box that has to hold. See `Clips`, `VisibleArea`, and `Flyout::Reveal`,
+    // which is a panel arriving: the window onto the rows is what grows, and the rows stand still.
+    virtual D2D1_RECT_F ClipBox() const { return rect; }
     // ---- animation --------------------------------------------------------------------------
     // Whether this widget is animating **what it draws**: the three pointer states it paints, and
     // whatever its own Tick advances.

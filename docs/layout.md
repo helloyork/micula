@@ -191,7 +191,11 @@ rectangle has moved is a child whose `drawn` rectangle is on its way there; the 
 because it reaches a widget where it *looks*; the clip is the view, and it is the only part of this
 that is about the container rather than about the children. There is no scroll offset for anything to
 remember and no second animation. `VisibleArea()` answers with the nearest container that clips, which
-is the one thing that did have to be taught about it.
+is the one thing that did have to be taught about it. **The box a container clips to is asked of it**
+(`Widget::ClipBox()`), and its own rectangle is only the default: a container that is showing a part of
+itself -- a panel being uncovered as it arrives, with the rows inside it standing still -- clips its
+children to that part, and the hit test asks the same question, so what is not shown is not answered
+for either.
 
 The bar came after, and it is the reason the view is two children rather than one: the column a page
 adds to, and the bar, in that order -- the bar is painted over the column, so it has to be last, and it
