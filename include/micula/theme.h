@@ -66,6 +66,8 @@
 #include <string>
 #include <unordered_map>
 
+#pragma comment(lib, "dwrite.lib")
+
 namespace micula {
 
 // ---------------------------------------------------------------- system state
@@ -616,6 +618,23 @@ inline Palette MakePalette(bool dark) {
 // Everything in DIPs. The render target is told the window's DPI, so these are the
 // numbers that reach Direct2D unchanged and the scale factor appears exactly once,
 // in window.h, rather than in every rectangle.
+// ---- what the theme is, as opposed to what it is set to -----------------------------------------
+//
+// **The palette and the fonts are the process's, not a window's.** They used to be members of
+// `Window`, which was right while a program had one window and is wrong now that a menu is a second
+// one: a menu needs the same colours and the same text formats, and it must be able to have them
+// without asking a window -- a menu can exist with no window to ask at all. What a *window* owns is
+// its own surface, its own focus and its own client area; the look of it belongs to the program.
+//
+// Both are made once and shared from then on. `RefreshPalette` is what `Window::ReloadTheme` calls
+// after Windows says the colours changed -- the palette is a handful of colours and could be remade
+// per call, but the *same* ones have to come back for every window, so there is one of them.
+inline Palette &CurrentPalette() {
+    static Palette pal = MakePalette(DarkTheme());
+    return pal;
+}
+inline void RefreshPalette() { CurrentPalette() = MakePalette(DarkTheme()); }
+
 namespace metric {
 constexpr float kRadiusControl = 4.0f;
 constexpr float kRadiusCard    = 8.0f;
@@ -765,12 +784,30 @@ inline bool Fonts::Create(IDWriteFactory *factory) {
            iconLarge && iconSmall && iconTiny;
 }
 
-inline void Fonts::Release() {
-    IDWriteTextFormat *all[] = { title, subtitle, bodyStrong, body, caption, mono, icon,
+inline void Fonts::Release() {    IDWriteTextFormat *all[] = { title, subtitle, bodyStrong, body, caption, mono, icon,
                                  iconLarge, iconSmall, iconTiny };
     for (IDWriteTextFormat *f : all) if (f) f->Release();
     title = subtitle = bodyStrong = body = caption = mono = nullptr;
     icon = iconLarge = iconSmall = iconTiny = nullptr;
+}
+
+// **The fonts, made once for the life of the process.** A window closing does not release them: the
+// next window -- or a menu, which may have no window at all -- would then have none. The DirectWrite
+// factory they are made from lives here too, and is the same story.
+//
+// **Not tied to the device**, either. An `IDWriteTextFormat` is not a Direct2D object and does not
+// depend on the D3D device or its swap chain, so the fonts outlive a device loss that the surface does
+// not -- and they are deliberately not released by `Window::EndPump`, which is where a window hands
+// back everything else it built.
+inline Fonts &CurrentFonts() {
+    static Fonts f;
+    if (!f.dw) {
+        IDWriteFactory *dw = nullptr;
+        if (SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                          reinterpret_cast<IUnknown **>(&dw))))
+            f.Create(dw);
+    }
+    return f;
 }
 
 inline float Fonts::Measure(IDWriteTextFormat *fmt, const std::wstring &s) const {

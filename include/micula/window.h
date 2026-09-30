@@ -68,6 +68,8 @@
 #include "widget.h"                 // the tree: Widget, Layout, Spec -- see docs/layout.md
 
 #include <d2d1_1.h>
+
+#include "graphics.h"
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <dcomp.h>
@@ -817,8 +819,12 @@ private:
 struct Window {
     HWND hwnd = nullptr;
     UINT dpi  = 96;
-    Palette pal;
-    Fonts   fonts;
+    // **The look is the process's, and this is a reference to it** -- see `CurrentPalette` and
+    // `CurrentFonts`. It used to be a value here, which was right for one window per process: a menu is
+    // a second window, it needs the same colours and the same text formats, and it must have them
+    // without asking a window that may not exist.
+    Palette &pal = CurrentPalette();
+    Fonts   &fonts = CurrentFonts();
     // False on Windows 11 before 22H2, and on anything that refuses the attribute.
     // The page paints an opaque background instead of letting the material through.
     bool micaActive = false;
@@ -851,17 +857,14 @@ struct Window {
         frameExtra = { (wr.right - wr.left) - cr.right, (wr.bottom - wr.top) - cr.bottom };
     }
 
-    // The composition stack, in the order it has to be built and the reverse of the
-    // order it has to be torn down.
-    IDWriteFactory       *dw    = nullptr;
-    ID3D11Device         *d3d   = nullptr;
-    IDXGIDevice          *dxgi  = nullptr;
-    ID2D1Factory1        *d2d   = nullptr;
-    ID2D1Device          *d2dDevice = nullptr;
+    // **The surface, which is this window's own half of the stack.** The device underneath it --
+    // Direct3D's, the DXGI device, both factories and the composition device -- belongs to the process
+    // and is shared, so that a second window (a menu, a tip) can be made at all: see `graphics.h`. What
+    // is per window is the swap chain and everything hanging off it, and it is torn down in the reverse
+    // of the order it is built in.
     ID2D1DeviceContext   *dc    = nullptr;
     IDXGISwapChain1      *swap  = nullptr;
     ID2D1Bitmap1         *target = nullptr;
-    IDCompositionDevice  *comp   = nullptr;
     IDCompositionTarget  *compTarget = nullptr;
     IDCompositionVisual  *compVisual = nullptr;
     ID2D1SolidColorBrush *brush = nullptr;
@@ -1293,56 +1296,12 @@ struct Window {
     }
 
     // Paint the tree. `ox, oy` is where the space `w->rect` is measured in sits in the client area:
-    // the accumulated offsets of its ancestors. Paint is called under that translation, which is what
-    // lets a control go on drawing at `rect` -- and why a widget that is gliding takes its children
-    // with it, the origin they are handed being the position it is drawn at rather than the one it
-    // was arranged into.
-    void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
-        if (!w->visible) return;
-        const D2D1_RECT_F where = w->placed ? w->drawn : w->rect;
-        // A widget that is not where it was arranged is drawn where it is: the difference between
-        // the two goes on as a translation for this widget alone.
-        const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
-        p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
-        // A subtree being faded is drawn as one group at one opacity, rather than each of its widgets
-        // at that opacity: fading them one by one shows the page through the gaps between them, and
-        // comes out darker where two of them overlap. Two things answer with one -- a layer arriving
-        // or leaving, and any widget whose own `opacity` is below 1, which is how a page arrives. See
-        // `Layer::Arrival` and `NavigationView::transition`. Nothing is pushed at 1, which is every
-        // widget for all but a few frames.
-        Layer *layer = w->AsLayer();
-        const float op = w->opacity * (layer ? layer->Arrival() : 1.0f);
-        const bool fading = op < 1.0f;
-        if (fading) {
-            p.rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
-                                                  D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                                  D2D1::IdentityMatrix(), op), nullptr);
-        }
-        // **The widget's own drawing is not clipped by its own window.** `Clips` is a window onto a
-        // widget's *children* -- that is the sentence it is documented with -- and the two are only
-        // the same box while nothing is arriving: a flyout draws the panel's surface *and its shadow*,
-        // and a shadow cut off square at the reveal that is growing over it is the one edge in the
-        // picture that nothing else explains. So the clip goes on here, after this widget has drawn,
-        // and comes off before the children are done.
-        w->Paint(p);
-        // A widget that is a window onto its children clips them to itself -- or to the part of itself
-        // it is showing, which is what a panel arriving is. The clip is pushed *after* the transform,
-        // so its rectangle is read in the space that transform is in -- and that space is the parent's
-        // with this widget's own glide taken *out* of it, because the transform being
-        // `ox + (drawn - rect)` is exactly what carries a widget painting at `rect` to `drawn`. The
-        // rectangle that means "where this widget is drawn" in here is therefore `rect` -- which is
-        // what `ClipBox` answers by default -- and pushing `where` would put the box a whole glide
-        // further along than the thing it clips: a row of a sliding list drawn past the panel's edge,
-        // and the row at the other edge cut off. See Widget::Clips.
-        const bool clips = w->Clips();
-        if (clips) p.rt->PushAxisAlignedClip(w->ClipBox(), D2D1_ANTIALIAS_MODE_ALIASED);
-        const float cx = ox + where.left, cy = oy + where.top;
-        for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
-        if (clips) p.rt->PopAxisAlignedClip();
-        if (fading) p.rt->PopLayer();
-        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    }
-
+    // the accumulated offsets of its ancestors. The walk below is called under that translation, which
+    // is what lets a control go on drawing at `rect` -- and why a widget that is gliding takes its
+    // children with it, the origin they are handed being the position it is drawn at rather than the
+    // one it was arranged into. **A free function rather than the window's**, because what it needs is
+    // a tree and a `Painter` and nothing else: a surface that is not this window -- a menu, a tip --
+    // draws its own tree exactly this way. See `PaintTree` below.
 #if MICULA_DEBUG_LAYOUT
     // The boxes a layout worked out, drawn on top of the page: red for where a widget is, magenta
     // for where it was arranged while it is on its way there, orange for the box its own layout
@@ -1494,7 +1453,10 @@ inline void Window::ReloadTheme() {
     // caller of it, and it is called from WM_SETTINGCHANGE when Windows says the colours changed --
     // so a page whose only statement about its theme was to set `pal` was a page that lost it the
     // moment somebody opened the personalisation settings.
-    pal = MakePalette(DarkTheme());
+    //
+    // **The palette is the process's**, so this is a refresh rather than an assignment: every window
+    // reads the same one, and each of them hears this message for itself.
+    RefreshPalette();
     ApplyThemeToFrame();
     Invalidate();
 }
@@ -1504,25 +1466,13 @@ inline void Window::ReloadTheme() {
 inline bool Window::CreateDevice() {
     if (dc) return true;
 
-    // BGRA support is required by Direct2D and is not on by default. Hardware first,
-    // WARP second: this window has to appear on a machine with a broken or absent
-    // display driver, because one of the things it may have to say is why.
-    const D3D_DRIVER_TYPE types[] = { D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP };
-    for (D3D_DRIVER_TYPE t : types) {
-        if (SUCCEEDED(D3D11CreateDevice(nullptr, t, nullptr,
-                                        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                        nullptr, 0, D3D11_SDK_VERSION, &d3d, nullptr, nullptr)))
-            break;
-    }
-    if (!d3d) return false;
-    if (FAILED(d3d->QueryInterface(__uuidof(IDXGIDevice), (void **)&dxgi))) return false;
+    // **The device is the process's, not this window's** -- see `graphics.h` for why. All that is left
+    // to do here is the surface: the context that draws into it, the brush everything is drawn with, and
+    // the target that puts it on screen.
+    const Graphics &g = Device();
+    if (!g.Ready()) return false;
 
-    D2D1_FACTORY_OPTIONS opts = {};
-    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
-                                 &opts, (void **)&d2d)))
-        return false;
-    if (FAILED(d2d->CreateDevice(dxgi, &d2dDevice))) return false;
-    if (FAILED(d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc)))
+    if (FAILED(g.d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc)))
         return false;
 
     // Grayscale, not ClearType. Subpixel antialiasing needs to know the opaque colour
@@ -1531,13 +1481,6 @@ inline bool Window::CreateDevice() {
     // this way for the same reason.
     dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     if (FAILED(dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0), &brush))) return false;
-
-    IDXGIAdapter *adapter = nullptr;
-    IDXGIFactory2 *factory = nullptr;
-    if (FAILED(dxgi->GetAdapter(&adapter)) || !adapter) return false;
-    const HRESULT fhr = adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&factory);
-    adapter->Release();
-    if (FAILED(fhr) || !factory) return false;
 
     RECT rc; GetClientRect(hwnd, &rc);
     DXGI_SWAP_CHAIN_DESC1 desc = {};
@@ -1551,17 +1494,14 @@ inline bool Window::CreateDevice() {
     // The line the whole file exists for. Without premultiplied alpha the swap chain
     // is opaque and Mica is behind a solid rectangle.
     desc.AlphaMode   = DXGI_ALPHA_MODE_PREMULTIPLIED;
-    const HRESULT shr = factory->CreateSwapChainForComposition(d3d, &desc, nullptr, &swap);
-    factory->Release();
+    const HRESULT shr = g.factory->CreateSwapChainForComposition(g.d3d, &desc, nullptr, &swap);
     if (FAILED(shr) || !swap) return false;
 
-    if (FAILED(DCompositionCreateDevice(dxgi, __uuidof(IDCompositionDevice), (void **)&comp)))
-        return false;
-    if (FAILED(comp->CreateTargetForHwnd(hwnd, TRUE, &compTarget))) return false;
-    if (FAILED(comp->CreateVisual(&compVisual))) return false;
+    if (FAILED(g.comp->CreateTargetForHwnd(hwnd, TRUE, &compTarget))) return false;
+    if (FAILED(g.comp->CreateVisual(&compVisual))) return false;
     compVisual->SetContent(swap);
     compTarget->SetRoot(compVisual);
-    comp->Commit();
+    g.comp->Commit();
 
     return CreateSizedResources();
 }
@@ -1616,13 +1556,63 @@ inline void Window::ReleaseDevice() {
     if (brush)      { brush->Release();      brush = nullptr; }
     if (compVisual) { compVisual->Release(); compVisual = nullptr; }
     if (compTarget) { compTarget->Release(); compTarget = nullptr; }
-    if (comp)       { comp->Release();       comp = nullptr; }
     if (swap)       { swap->Release();       swap = nullptr; }
     if (dc)         { dc->Release();         dc = nullptr; }
-    if (d2dDevice)  { d2dDevice->Release();  d2dDevice = nullptr; }
-    if (d2d)        { d2d->Release();        d2d = nullptr; }
-    if (dxgi)       { dxgi->Release();       dxgi = nullptr; }
-    if (d3d)        { d3d->Release();        d3d = nullptr; }
+    // **And nothing below this.** The device -- Direct3D's, the DXGI device, both factories and the
+    // composition device -- is the process's rather than this window's, and releasing it here would take
+    // it away from whatever was made next. See `graphics.h`.
+}
+
+// The paint walk, whole. See the note where it used to live, in `Window`: it needs a tree and a
+// `Painter`, and a surface that is not this window draws its own tree through the same one.
+//
+// `ox, oy` is where the space `w->rect` is measured in sits on the target, which is the accumulated
+// offsets of the widget's ancestors. Everything below is called under that translation, which is what
+// lets a control go on drawing at `rect` regardless of where the subtree it is in has ended up.
+inline void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
+    if (!w->visible) return;
+    const D2D1_RECT_F where = w->placed ? w->drawn : w->rect;
+    // A widget that is not where it was arranged is drawn where it is: the difference between the two
+    // goes on as a translation for this widget alone.
+    const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
+    p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
+    // A subtree being faded is drawn as one group at one opacity, rather than each of its widgets at
+    // that opacity: fading them one by one shows the page through the gaps between them, and comes out
+    // darker where two of them overlap. Two things answer with one -- a layer arriving or leaving, and
+    // any widget whose own `opacity` is below 1, which is how a page arrives. See `Layer::Arrival` and
+    // `NavigationView::transition`. Nothing is pushed at 1, which is every widget for all but a few
+    // frames.
+    Layer *layer = w->AsLayer();
+    const float op = w->opacity * (layer ? layer->Arrival() : 1.0f);
+    const bool fading = op < 1.0f;
+    if (fading) {
+        p.rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
+                                              D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                              D2D1::IdentityMatrix(), op), nullptr);
+    }
+    // **The widget's own drawing is not clipped by its own window.** `Clips` is a window onto a
+    // widget's *children* -- that is the sentence it is documented with -- and the two are only the
+    // same box while nothing is arriving: a flyout draws the panel's surface *and its shadow*, and a
+    // shadow cut off square at the reveal that is growing over it is the one edge in the picture that
+    // nothing else explains. So the clip goes on here, after this widget has drawn, and comes off
+    // before the children are done.
+    w->Paint(p);
+    // A widget that is a window onto its children clips them to itself -- or to the part of itself it
+    // is showing, which is what a panel arriving is. The clip is pushed *after* the transform, so its
+    // rectangle is read in the space that transform is in -- and that space is the parent's with this
+    // widget's own glide taken *out* of it, because the transform being `ox + (drawn - rect)` is
+    // exactly what carries a widget painting at `rect` to `drawn`. The rectangle that means "where this
+    // widget is drawn" in here is therefore `rect` -- which is what `ClipBox` answers by default -- and
+    // pushing `where` would put the box a whole glide further along than the thing it clips: a row of a
+    // sliding list drawn past the panel's edge, and the row at the other edge cut off. See
+    // Widget::Clips.
+    const bool clips = w->Clips();
+    if (clips) p.rt->PushAxisAlignedClip(w->ClipBox(), D2D1_ANTIALIAS_MODE_ALIASED);
+    const float cx = ox + where.left, cy = oy + where.top;
+    for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
+    if (clips) p.rt->PopAxisAlignedClip();
+    if (fading) p.rt->PopLayer();
+    p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
 inline void Window::Paint() {
@@ -2640,13 +2630,11 @@ inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
     // means: a program with its own manifest keeps what its manifest says.
     detail::EnsureCom();
     if (!dpiapi::AwarenessSettled()) dpiapi::EnablePerMonitorV2();
-    if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-                                   reinterpret_cast<IUnknown **>(&dw))))
-        return false;
-    if (!fonts.Create(dw)) return false;
-    // The program's own answer if it has one, and the machine's otherwise -- see ThemeMode. Read
-    // here rather than assumed, so that a window told before it was made comes up in it.
-    pal = MakePalette(DarkTheme());
+    // The palette and the fonts are the process's and are made on first use; this only makes sure they
+    // exist before the first frame, since `pal` and `fonts` are references into them. The program's own
+    // answer about the theme if it has one, and the machine's otherwise -- see ThemeMode.
+    CurrentFonts();
+    RefreshPalette();
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc   = Proc;
@@ -2949,14 +2937,16 @@ inline void Window::BeginPump() {
 
 // Nothing is left to fire at, and the window is about to go back to its page: the caret's and the
 // frame loop's timers are stopped here rather than in their destructors, which run with no hwnd
-// left. The device goes with them, so that a window that comes back through Run() builds it again
+// left. The *surface* goes with them, so that a window that comes back through Run() builds it again
 // rather than keeping a swap chain nobody can see.
+//
+// **The palette and the fonts do not.** They are the process's rather than this window's, and are the
+// one thing here that survives -- a window closing is not a reason to take the theme away from the
+// menu that is still open, or from the window that is still running.
 inline void Window::EndPump() {
     caretTimer.Stop();
     frameTimer.Stop();
-    fonts.Release();
     ReleaseDevice();
-    if (dw) { dw->Release(); dw = nullptr; }
 }
 
 inline int Window::Run() {

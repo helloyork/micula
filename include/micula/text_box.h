@@ -121,9 +121,9 @@ struct TextBox : Widget {
     }
     void Ensure() const {
         Window *w = window();
-        if (layout || !w || !w->dw || !w->fonts.body) return;
-        w->dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
-                                100000.0f, 100.0f, &layout);
+        if (layout || !w || !w->fonts.dw || !w->fonts.body) return;
+        w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
+                                      100000.0f, 100.0f, &layout);
         // The shared body format is vertically centred, because every other call site
         // hands DirectWrite a rectangle the size of its control and wants the text in
         // the middle of it. A *layout* is different: it centres within its own
