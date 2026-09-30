@@ -344,6 +344,13 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A drop-down's panel is as tall as the room, not as tall as the choice left it.** Its height was the
+  rows above the chosen one, the chosen one, and the rows below it -- and a choice near either end of
+  the list has no rows below it, so choosing the last option opened a panel one row tall with the rest
+  of the list scrollable inside it. The room decides the height now, in whole rows, and the choice only
+  decides where the list sits inside it; one height for the whole list is also what keeps every notch of
+  a wheel landing on a row.
+
 - **A clipping container is clipped where it is *drawn*, not a glide past it.** The clip box came from
   the widget's `drawn` rectangle, but it is pushed in the space the paint walk's transform has just put
   on -- and that space is the parent's with the widget's own glide already taken out of it, because the

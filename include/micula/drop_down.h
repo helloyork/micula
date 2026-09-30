@@ -513,8 +513,12 @@ struct DropDownList : Widget {
     //
     // A press needs nothing of its own: the window has the capture, sets `pressed` on it, and clears it
     // when the pointer leaves the rectangle -- so the row under the pointer is the pressed one.
-    int Hot() const {
-        if (!hover) return -1;
+    // **What the hand is over, whether or not there is a pointer over it.** `hover` is the mouse's, and
+    // a finger does not hover -- so a list that asked it would find nothing under the finger at all, and
+    // a tap would choose nothing. What a click asks is this; what lights up asks `Hot`, and nothing
+    // lights up under a finger.
+    int Hot() const { return hover ? UnderHand() : -1; }
+    int UnderHand() const {
         const D2D1_POINT_2F at = Cursor();
         if (!Inside(rect, at.x, at.y)) return -1;
         return RowAt(at.y);
@@ -553,7 +557,7 @@ struct DropDownList : Widget {
         // Asked again rather than remembered: the press and the release are two messages apart, and
         // between them the list may have slid under the pointer -- a notch of the wheel, a step of the
         // keyboard. The old one read the cursor here for the same reason.
-        const int i = Hot();
+        const int i = UnderHand();
         if (i < 0) return;
         dd->Choose(i);
         dd->SetOpen(false);
@@ -670,14 +674,22 @@ inline void DropDown::Press(bool glide) {
     const float roomBottom = Height(root->rect) - FlyoutLayout::kGap - kPad;
     const float line = anchor - rowH / 2.0f;             // where the chosen row's own top edge has to be
     const float fitAbove = (std::floor)((line - roomTop) / rowH);
-    const float fitBelow = (std::floor)((roomBottom - line - rowH) / rowH);
-    // **The alignment first and the edges second.** The chosen row is `above` rows down the panel and the
-    // panel is placed by the line that puts it on the control; so the rows above it are as many whole rows
-    // as the room over the control has, and the rows below as many as the room under it has. A split fixed
-    // at half the panel instead -- which is what this did -- is a panel that reaches further than the room
-    // on one side, gets clamped by it, and takes the choice off the control with it.
-    const float above = std::clamp(fitAbove, 0.0f, (float)selected);
-    const float below = std::clamp(fitBelow, 0.0f, (float)(n - 1 - selected));
+    // **The panel is as tall as the room allows, in whole rows, and that is not a question about the
+    // choice.** A panel that was as tall as the rows the choice happened to leave above and below it came
+    // out three rows tall whenever the choice was near either end -- there was nothing under it, so there
+    // was nothing for the panel to be but the three rows that were left. What the choice decides is where
+    // the list *sits* in the panel, never how much of the panel there is. One height for the whole list is
+    // also what keeps every notch of a wheel landing on a row: the same panel, whole rows, one row a step.
+    const float rowsFit = (std::floor)((roomBottom - roomTop) / rowH);
+    const float rows = std::clamp(rowsFit, 1.0f, (float)n);
+    // **And the choice still comes out on the control.** As far down the panel as it may sit is what the
+    // room over the control allows -- past that the panel's top edge leaves the page -- and the view may
+    // not begin before the list's first row, which is the other side of the same line. Both are whole
+    // rows, so the chosen row lands on the control's own line every time the list opens.
+    float above = (std::min)((std::min)(fitAbove, rows - 1.0f), (float)selected);
+    const float earliest = (float)selected - ((float)n - rows);
+    if (above < earliest) above = earliest;
+    const float below = rows - 1.0f - above;
     // **The view is the placement, not a second opinion about it.** The chosen row's own row inside the
     // panel is the one the rows above it leave it, so the view shows the list from exactly there: the
     // panel is placed once and does not move while the choice walks it, and every step is the rows
