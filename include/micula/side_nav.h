@@ -311,6 +311,19 @@ struct SideNav : Widget {
         if (style == PaneStyle::Fixed) return -1;
         return open ? 1 : 0;
     }
+    bool AccessibleWritable() const override { return true; }
+    // **Choosing a row, which is what a click on it is**: the page's own `Select`, `onSelect` included.
+    // The index is the page's own and not the row's place, which is what the item's `index` carries.
+    bool AccessibleSelect(int index) override {
+        if (index < 0 || index >= Selectable()) return false;
+        Select(index);
+        return true;
+    }
+    bool AccessibleSetExpanded(bool o) override {
+        if (style == PaneStyle::Fixed || style == PaneStyle::Minimal) return false;
+        SetOpen(o);
+        return true;
+    }
 
     // --- geometry ------------------------------------------------------------------
     struct Row {

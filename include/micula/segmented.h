@@ -132,6 +132,14 @@ struct Segmented : Widget {
         out.onscreen = out.box.right > seen.left && out.box.left < seen.right;
         return true;
     }
+    bool AccessibleWritable() const override { return true; }
+    // The same `Select` a press and a drag go through, `onChange` included: choosing a cell from a
+    // screen reader is choosing it.
+    bool AccessibleSelect(int index) override {
+        if (index < 0 || index >= (int)options.size()) return false;
+        Select(index);
+        return true;
+    }
 
     void Tick(float dt) override {
         Widget::Tick(dt);

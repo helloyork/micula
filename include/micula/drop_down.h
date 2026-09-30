@@ -205,6 +205,23 @@ struct DropDown : Widget {
     }
     // Whether the list is out, which is what says whether the rows are the page or a thing to open.
     int AccessibleExpanded() const override { return open ? 1 : 0; }
+    bool AccessibleWritable() const override { return true; }
+    // Opening and closing, which is what a click on the control does.
+    bool AccessibleSetExpanded(bool o) override {
+        SetOpen(o);
+        return true;
+    }
+    // **Typing an option name into a combo box**, which is what `IValueProvider::SetValue` means on one:
+    // not free text but the name of one of the options. An exact match, so that a client spelling an
+    // option out is believed and one saying something the list has never heard of is told so.
+    bool AccessibleSetValue(const std::wstring &text) override {
+        for (size_t i = 0; i < options.size(); i++)
+            if (options[i] == text) {
+                Choose((int)i);
+                return true;
+            }
+        return false;
+    }
 
     // **As wide as the room it is given**, like every other control in a card: a field, a slider and a
     // drop-down all fill the slot the card keeps for them. Written from the label instead -- the chosen
@@ -579,6 +596,16 @@ struct DropDownList : Widget {
         // A row the panel has scrolled past is one a client is told about and cannot reach.
         const D2D1_RECT_F seen = VisibleArea();
         out.onscreen = out.box.bottom > seen.top && out.box.top < seen.bottom;
+        return true;
+    }
+    bool AccessibleWritable() const override { return true; }
+    // **Choosing a row, which is what a click on it is**: the choice is made -- and a keyboard walk of
+    // the list is what that leads to -- and the list goes away. Not a change to `selected` behind the
+    // control's back: `Choose` is the one path in, and what the page's callback is run from.
+    bool AccessibleSelect(int index) override {
+        if (index < 0 || index >= Count()) return false;
+        dd->Choose(index);
+        dd->SetOpen(false);
         return true;
     }
 };

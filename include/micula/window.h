@@ -2555,12 +2555,14 @@ inline int App::Run() {
 // element are those items rather than its child widgets. That is what WinUI's own list reports --
 // one element per `ListViewItem` -- without the widgets under it.
 //
-// **Read-out first, and the write half of each pattern where it is honest.** A client can read
-// what every control says and where everything is; it cannot yet change any of it, and each
-// pattern that can be written says so by refusing: `SetValue` is not implemented, `IsReadOnly` is
-// true. Writing a control's value from outside the page means running the page's own callback on
-// a stranger's thread of control -- the click a screen reader is standing in for has to be the
-// page's click, and that step is not taken yet.
+// **Reading and writing, and the writing goes the way the page does.** A client can read what every
+// control says, where everything is, and what is chosen -- and can change the ones that say they can
+// be changed: a slider's value, a field's text, the choice in a list or a pane, whether a drop-down is
+// open, where a page is scrolled to. Every write lands on the control's own path (`onChange`,
+// `onSelect`, `Select`, `SetOpen`), so a page cannot tell a screen reader from a hand -- which is the
+// whole of what makes it safe to have. What a control cannot do, it refuses: `IsReadOnly` answers for
+// the control rather than for the pattern, and a write that was never going to be taken is answered
+// rather than dropped.
 // ============================================================================================
 
 // The four functions this needs out of UIAutomationCore.dll, looked up rather than linked -- and
@@ -2773,7 +2775,9 @@ struct UiaElement : IRawElementProviderSimple,
         case UIA_ExpandCollapseExpandCollapseStatePropertyId:
             return SmallInt(out, w->AccessibleExpanded() == 1 ? ExpandCollapseState_Expanded
                                                               : ExpandCollapseState_Collapsed);
-        case UIA_ValueIsReadOnlyPropertyId:          return Flag(out, true);
+        // The property and the pattern's own `get_IsReadOnly` are one answer: a client that asks
+        // whether it may write gets the same word either way. An item has no value to write.
+        case UIA_ValueIsReadOnlyPropertyId:          return Flag(out, isItem || !w->AccessibleWritable());
         case UIA_ValueValuePropertyId: {
             std::wstring v;
             return HasText(*w) && w->AccessibleValue(v) ? Text(out, v.c_str()) : S_OK;
@@ -2972,16 +2976,22 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
 
-    // ---- reading a control's value -----------------------------------------------------------
-    // **`IValueProvider` is for a value that is words, `IRangeValueProvider` for one that is a
-    // number**: a field's text against a slider's position. A control that answers with the wrong one
-    // of the two is a control a screen reader reads wrongly -- "40%" as a value to be retyped, or a
-    // name as a number that cannot be read out at all.
-    //
-    // Both are read-only for now, and say so: `SetValue` refuses and `IsReadOnly` is true. Writing a
-    // control's value is the page's own callback running from a client's call -- see the note at the
-    // top of this section -- and that step is the next one, not this one.
-    HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR /*value*/) override { return UIA_E_NOTSUPPORTED; }
+    // ---- writing a control's value -----------------------------------------------------------
+    // **Each of these is the page's own path and not a way around it**: the value goes in through the
+    // same callback a gesture would have run, so a page cannot tell a screen reader from a hand. That
+    // is the whole of what makes writing safe -- there is no second kind of change to get wrong -- and
+    // it is why the refusals are refusals rather than silence: a client that is told no can offer the
+    // control as read-only, and one that is told nothing can only guess.
+    HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR value) override {
+        if (!value) return E_INVALIDARG;
+        Widget *w = Target();
+        if (!w || IsItem()) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        if (!w->AccessibleWritable()) return UIA_E_NOTSUPPORTED;
+        if (!w->AccessibleSetValue(value)) return UIA_E_INVALIDOPERATION;
+        win->Invalidate();
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE get_Value(BSTR *out) override {
         if (!out) return E_INVALIDARG;
         *out = nullptr;
@@ -2991,13 +3001,25 @@ struct UiaElement : IRawElementProviderSimple,
         *out = SysAllocString(v.c_str());
         return *out ? S_OK : E_OUTOFMEMORY;
     }
+    // **Read-only is the control's answer and not the pattern's**: a value that only a pointer can move
+    // is a value a client reads and does not write, and a slider is the other thing. False here means
+    // the write above it will be taken, which is what a client decides what to offer from.
     HRESULT STDMETHODCALLTYPE get_IsReadOnly(BOOL *out) override {
         if (!out) return E_INVALIDARG;
-        *out = TRUE;
+        Widget *w = Target();
+        *out = (w && w->AccessibleWritable()) ? FALSE : TRUE;
         return S_OK;
     }
 
-    HRESULT STDMETHODCALLTYPE SetValue(double /*value*/) override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE SetValue(double value) override {
+        Widget *w = Target();
+        if (!w || IsItem()) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        if (!w->AccessibleWritable()) return UIA_E_NOTSUPPORTED;
+        if (!w->AccessibleSetRange((float)value)) return UIA_E_INVALIDOPERATION;
+        win->Invalidate();
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE get_Value(double *out) override {
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
@@ -3044,8 +3066,8 @@ struct UiaElement : IRawElementProviderSimple,
     // ---- a control that opens and closes ------------------------------------------------------
     // A drop-down's list and a navigation pane are the two: what a client reads is whether it is open,
     // which is what says whether the rows inside it are the page or a thing that has to be opened.
-    HRESULT STDMETHODCALLTYPE Expand() override { return UIA_E_NOTSUPPORTED; }
-    HRESULT STDMETHODCALLTYPE Collapse() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE Expand() override { return SetExpanded(true); }
+    HRESULT STDMETHODCALLTYPE Collapse() override { return SetExpanded(false); }
     HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(ExpandCollapseState *out) override {
         if (!out) return E_INVALIDARG;
         Widget *w = Target();
@@ -3059,13 +3081,44 @@ struct UiaElement : IRawElementProviderSimple,
     // Read-out of where the view is and how much of the content it is showing: a screen reader says
     // "half way down" from the percent and decides whether there is more to say at all from the view
     // size. A page scrolls one way, so the horizontal numbers are the "no scrolling" ones.
-    HRESULT STDMETHODCALLTYPE Scroll(ScrollAmount /*horizontal*/,
-                                     ScrollAmount /*vertical*/) override {
-        return UIA_E_NOTSUPPORTED;
+    HRESULT STDMETHODCALLTYPE Scroll(ScrollAmount horizontal, ScrollAmount vertical) override {
+        Widget *w = Target();
+        if (!w || IsItem() || !w->AccessibleWritable()) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        // One way only, which is the axis a page has: a client that asks to move sideways is asking
+        // for something this container does not do.
+        if (horizontal != ScrollAmount_NoAmount) return UIA_E_NOTSUPPORTED;
+        float at = 0.0f, view = 1.0f;
+        bool can = false;
+        if (!w->AccessibleScroll(at, view, can) || !can) return UIA_E_NOTSUPPORTED;
+        // A large amount is a page of the same size as the one being read, and a small one is a
+        // couple of lines of it -- which is what a wheel notch is, near enough, and fine enough.
+        const float page = std::clamp(view, 0.05f, 1.0f);
+        float delta = 0.0f;
+        switch (vertical) {
+        case ScrollAmount_SmallIncrement: delta = 0.05f; break;
+        case ScrollAmount_LargeIncrement: delta = page; break;
+        case ScrollAmount_NoAmount:       delta = 0.0f; break;
+        case ScrollAmount_LargeDecrement: delta = -page; break;
+        case ScrollAmount_SmallDecrement: delta = -0.05f; break;
+        default: return E_INVALIDARG;
+        }
+        if (!w->AccessibleSetScroll(std::clamp(at + delta, 0.0f, 1.0f))) return UIA_E_NOTSUPPORTED;
+        win->Invalidate();
+        return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE SetScrollPercent(double /*horizontal*/,
-                                               double /*vertical*/) override {
-        return UIA_E_NOTSUPPORTED;
+    HRESULT STDMETHODCALLTYPE SetScrollPercent(double horizontal, double vertical) override {
+        Widget *w = Target();
+        if (!w || IsItem() || !w->AccessibleWritable()) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        // The axis this container does not scroll in: a client passes -1 for it, or 100 for "leave
+        // that one where it is", and either is an answer rather than an error.
+        if (horizontal != kUiaNoScroll && horizontal != 100.0) return UIA_E_NOTSUPPORTED;
+        if (vertical == kUiaNoScroll) return S_OK;
+        if (vertical < 0.0 || vertical > 100.0) return E_INVALIDARG;
+        if (!w->AccessibleSetScroll((float)(vertical / 100.0))) return UIA_E_NOTSUPPORTED;
+        win->Invalidate();
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_HorizontalScrollPercent(double *out) override {
         if (!out) return E_INVALIDARG;
@@ -3115,8 +3168,8 @@ struct UiaElement : IRawElementProviderSimple,
 
     // ---- which of a set is chosen -------------------------------------------------------------
     // The set is the widget and the chosen thing is one of its items: one choice out of the rows of a
-    // list, the cells of a segmented control, the items of a pane. Nothing can be chosen from outside
-    // yet -- see the note at the top of this section -- so the selection is read and not written.
+    // list, the cells of a segmented control, the items of a pane. Choosing is `Select`, which goes
+    // through the control's own path, and `RemoveFromSelection` has nothing to do -- see below.
     HRESULT STDMETHODCALLTYPE GetSelection(SAFEARRAY **out) override {
         if (!out) return E_INVALIDARG;
         *out = nullptr;
@@ -3154,8 +3207,24 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
 
-    HRESULT STDMETHODCALLTYPE Select() override { return UIA_E_NOTSUPPORTED; }
-    HRESULT STDMETHODCALLTYPE AddToSelection() override { return UIA_E_NOTSUPPORTED; }
+    // **Choosing a row from outside**, through the control's own path: the index is the page's own and
+    // not the item's place in the sequence, which is what `Item::index` carries for exactly this.
+    HRESULT STDMETHODCALLTYPE Select() override {
+        Widget *w = Target();
+        Widget::Item it;
+        if (!w || !Item(&it)) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        if (it.index < 0) return UIA_E_NOTSUPPORTED;   // an item that is not a place a choice can be
+        if (!w->AccessibleSelect(it.index)) return UIA_E_NOTSUPPORTED;
+        win->Invalidate();
+        return S_OK;
+    }
+    // The same thing here, because there is one of them: this control's set always has a choice in it
+    // and cannot have two. See `get_CanSelectMultiple`.
+    HRESULT STDMETHODCALLTYPE AddToSelection() override { return Select(); }
+    // **Nothing can be taken out of the set.** `IsSelectionRequired` is true, so a client asking for
+    // the choice to be cleared is asking for a state this control cannot be in -- which is answered
+    // rather than ignored, because a client that gets an answer can stop offering it.
     HRESULT STDMETHODCALLTYPE RemoveFromSelection() override { return UIA_E_NOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE get_IsSelected(BOOL *out) override {
         if (!out) return E_INVALIDARG;
@@ -3213,6 +3282,15 @@ private:
         return w.AccessibleScroll(at, view, can) && can;
     }
     static bool BoxIsEmpty(const D2D1_RECT_F &r) { return r.right <= r.left || r.bottom <= r.top; }
+    // Both of a control that opens and closes, which is one write with two names.
+    HRESULT SetExpanded(bool open) {
+        Widget *w = Target();
+        if (!w || IsItem() || w->AccessibleExpanded() < 0) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        if (!w->AccessibleSetExpanded(open)) return UIA_E_NOTSUPPORTED;
+        win->Invalidate();
+        return S_OK;
+    }
     // **What is really on screen, in the client area and in DIPs**: where the widget is drawn, cut by
     // the containers above it that clip. A widget a scroll has taken out of the container showing it
     // comes back empty, which is what `IsOffscreen` is, and what keeps a client from drawing a

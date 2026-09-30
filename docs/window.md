@@ -107,7 +107,7 @@ them: a control is a rectangle a screen reader cannot see into unless the window
 through UI Automation, and there is nothing to switch on -- a program that never runs beside a
 screen reader does no UIA work at all, and one that does gets a tree of the page's controls.
 
-What a control has to say is four questions and one string:
+What a control has to say is a handful of virtuals, and one string for the page's half of it:
 
 |---|---|
 | `std::wstring tips` | The tooltip text, and the same string is what a client reads as the help text. One string, because what a control says in a tooltip and what it says to somebody who cannot see it are the same thought. |
@@ -121,6 +121,20 @@ What a control has to say is four questions and one string:
 | `virtual bool AccessibleRange(float &value, float &minimum, float &maximum, float &step) const` | The number a control's value *is*, for the controls whose value is one -- a slider, a progress bar -- and what UIA reads with `IRangeValueProvider`. False for a control with no range, which is not a control whose range is all zeros. |
 | `virtual int AccessibleExpanded() const` | -1 when this is not something that opens; otherwise 0 collapsed, 1 expanded. A drop-down's list and a navigation pane are the two. |
 | `virtual bool AccessibleScroll(float &percent, float &view, bool &canScroll) const` | For a container that scrolls: how far down it is (0 to 1 of what there is to scroll), how much of the content it is showing (0 to 1) and whether there is anything to scroll at all. The percentages are worked out by the container because it is the only side that knows both halves of them. |
+| `virtual bool AccessibleWritable() const` | Whether the control can be changed from outside at all. False everywhere by default -- a control is read-only until it says otherwise -- and it is the one answer a client decides what to offer from, so the property `IsReadOnly` and the pattern's own `get_IsReadOnly` are both this. |
+| `virtual bool AccessibleSetValue(const std::wstring &text)` | Write the text of a control whose value is one -- a field. True if it was taken. |
+| `virtual bool AccessibleSetRange(float value)` | Write the number of a control whose value is one -- a slider. The control snaps it to its own step and range before anything sees it, so a client cannot put it where a hand could not. |
+| `virtual bool AccessibleSelect(int i)` | Choose one of the things the control draws -- a row of a list, a cell of a segmented control, an item of a pane, by the page's own index. |
+| `virtual bool AccessibleSetExpanded(bool open)` | Open or close a control that opens -- a drop-down's list, a navigation pane. |
+| `virtual bool AccessibleSetScroll(float percent)` | Move a container that scrolls, 0 to 1 of what there is to scroll. |
+
+**Every one of those is the page's own path and not a way around it.** `AccessibleSetValue` ends in
+`SetText` and the same `onChange` a keystroke runs; `AccessibleSelect` in `Select` and the same
+`onSelect` a click runs; `AccessibleSetExpanded` in `SetOpen`; `AccessibleSetRange` in the slider's
+own step, `onChange` and `onCommit`. So a page cannot tell a screen reader from a hand, which is the
+whole of what makes writing safe to have: there is no second kind of change that a page could be
+right about and this wrong about. The writing is a dozen lines per control because the control
+already had the path, and the only new thing is that something other than a gesture can ask for it.
 
 - **What a control does not have to say.** Its rectangle (in screen pixels, cut by the containers
   that clip it), whether it is enabled, whether it takes the keyboard, whether it has the keyboard,
@@ -135,19 +149,22 @@ What a control has to say is four questions and one string:
   by the row it is on, and what a drop-down *is set to* is its value rather than its name.
 - **Focus is announced.** Every move of the keyboard focus raises
 `UIA_AutomationFocusChangedEventId`, which is the event a screen reader follows the Tab key by.
-- **Reading, not writing.** A client can read a slider but not move it: `SetValue` is not
-implemented, because writing a control's value from outside the page means running the page's own
-callback from a client's call. The keyboard and the pointer are the two ways in for now, and each
-pattern that could be written says so by refusing -- which is a state a client handles, unlike a
-pattern that is not there at all.
+- **Reading and writing, and a refusal is an answer.** A client reads what every control says and
+writes the ones that say they can be written -- a slider's value, a field's text, the choice in a
+list or a pane, whether something is open, where a page is scrolled to -- through
+`IValueProvider`, `IRangeValueProvider`, `ISelectionItemProvider`, `IExpandCollapseProvider` and
+`IScrollProvider`. A control that cannot do the thing refuses in the way a client expects
+(`UIA_E_NOTSUPPORTED`, `UIA_E_INVALIDOPERATION`), which it can act on, rather than accepting the
+call and doing nothing, which it cannot.
 - **`UIAutomationCore` is not linked.** Its four functions are looked up at run time, so a program
 built on micula takes on no new load-time dependency, and a machine without them is a machine whose
 screen readers see the window as they did before -- the same reasoning as
 `DCompositionWaitForCompositorClock`, which is resolved for a different reason: that one is Windows
 11 only.
-- **Not there yet.** The write half of every pattern: moving a slider, choosing a row from outside,
-opening a list with `Expand()`, scrolling with `SetScrollPercent`. And the scroll bar itself, which
-is drawn rather than published as a range of its own.
+- **Not there yet.** The scroll bar itself, which is drawn rather than published as a range of its
+own, and the events beyond focus: a client is told when the keyboard moves but not yet when a row
+is chosen or a list opens, so a screen reader is at present given the state of a page rather than
+its changes.
 
 ## Page callbacks
 

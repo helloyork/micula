@@ -85,6 +85,23 @@ struct Slider : Widget {
         step = this->step;
         return true;
     }
+    bool AccessibleWritable() const override { return true; }
+    // **The path a drag takes, not a way around it**: snapped to the step, reported through `onChange`
+    // and committed, because a client setting a slider is somebody setting it and a page that saves on
+    // a commit must not be able to tell the two apart. Out of range is refused rather than clamped: a
+    // client that asked for 200 out of a 5..100 slider asked for something this control does not do.
+    bool AccessibleSetRange(float v) override {
+        if (this->hi <= this->lo || v < this->lo || v > this->hi) return false;
+        const float raw = step > 0.0f ? std::round(v / step) * step : v;
+        const float snapped = std::clamp(raw, this->lo, this->hi);
+        if (snapped == value) return true;
+        value = snapped;
+        moved = true;
+        if (onChange) onChange(value);
+        if (onCommit) onCommit(value);
+        Invalidate();
+        return true;
+    }
 
     bool Animating() const override { return Widget::Animating() || drawn.Wants(Frac()); }
     void Tick(float dt) override {

@@ -8,6 +8,19 @@ library can be: a minor version may break.
 
 ### Added
 
+- **The writing half of the same thing.** A client that can read a control can now change the ones
+  that allow it: `IValueProvider::SetValue` on a field, `IRangeValueProvider::SetValue` on a slider or a
+  progress bar, `ISelectionItemProvider::Select` on a row of a list, a cell of a segmented control or an
+  item of a navigation pane, `IExpandCollapseProvider::Expand` and `Collapse` on a drop-down or a pane,
+  and `IScrollProvider::SetScrollPercent` and `Scroll` on a page. Every one of them lands on the
+  control's own path -- `SetText` and the same `onChange`, `Select` and the same `onSelect`, `SetOpen`,
+  the slider's own step and `onCommit` -- so a page cannot tell a screen reader from a hand, which is
+  what makes writing safe to have rather than a second kind of change that has to be kept in step. A
+  widget offers the half it has through `AccessibleWritable`, `AccessibleSetValue`,
+  `AccessibleSetRange`, `AccessibleSelect`, `AccessibleSetExpanded` and `AccessibleSetScroll`; a control
+  that cannot do what it is asked refuses in the way a client acts on (`UIA_E_NOTSUPPORTED`,
+  `UIA_E_INVALIDOPERATION`) rather than accepting the call and doing nothing, and `IsReadOnly` -- the
+  property and the pattern's own -- answers for the control rather than for the pattern.
 - **A widget that draws a set of things is a set of things to a screen reader.** `AccessibleItems` and
   `AccessibleItem` say what a widget is made of -- the rows of an open drop-down, the cells of a
   segmented control, the items of a navigation pane -- and a client visits them one at a time as the

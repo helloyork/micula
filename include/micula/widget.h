@@ -351,6 +351,30 @@ struct Widget {
     virtual bool AccessibleScroll(float & /*percent*/, float & /*view*/, bool & /*canScroll*/) const {
         return false;
     }
+
+    // **Whether a client may change this control, and how.** The write half of each pattern is answered
+    // by these, and every one of them goes through the page's own path -- the callback a gesture would
+    // have run -- so that a screen reader's "set this to 40" and a hand on the slider arrive at the page
+    // the same way. That is the whole of what makes a written value safe: the page cannot tell which of
+    // the two happened, so there is no second kind of change for it to get wrong.
+    //
+    // A widget that answers none of them is read-only, which is the default, and each pattern says so
+    // rather than staying quiet: `IsReadOnly` true, and the write refused. A client handles a refusal;
+    // a pattern that is not there at all it can only guess about.
+    virtual bool AccessibleWritable() const { return false; }
+    // Set the number, for a control whose value is one. False for a number this control does not take,
+    // which is an answer and not a fault: a client that gets nothing back can only try something else.
+    virtual bool AccessibleSetRange(float /*value*/) { return false; }
+    // Set the words, for a control whose value is text -- and for a drop-down, whose value is the name
+    // of one of its options.
+    virtual bool AccessibleSetValue(const std::wstring & /*text*/) { return false; }
+    // Choose the item with this index -- the page's own number for it, which is what `Item::index` is
+    // for, and not the item's place in the sequence.
+    virtual bool AccessibleSelect(int /*index*/) { return false; }
+    // Open or close, for the controls that have those two states.
+    virtual bool AccessibleSetExpanded(bool /*open*/) { return false; }
+    // Scroll to `percent` of what there is to scroll: 0 to 1, and not the 0 to 100 a client speaks in.
+    virtual bool AccessibleSetScroll(float /*percent*/) { return false; }
     // The number Add gave this widget. What a UIA element holds instead of a pointer, which is what
     // makes an element that has outlived its widget harmless.
     int uid = 0;

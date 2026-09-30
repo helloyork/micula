@@ -77,6 +77,14 @@ struct ScrollView : View {
     // A region that holds things and scrolls them, which is the type UIA has for it: not a list, and
     // not the page -- the page is what a client walks into this to read.
     int AccessibleType() const override { return UIA_PaneControlTypeId; }
+    bool AccessibleWritable() const override { return true; }
+    // Where a client asks to be taken: a percentage of what there is to scroll, which is what the
+    // scroll bar and a dragged thumb do too. Glided rather than snapped, for the same reason they are.
+    bool AccessibleSetScroll(float percent) override {
+        if (percent < 0.0f || percent > 1.0f) return false;
+        ScrollTo(percent * ScrollMax(), true);
+        return true;
+    }
 
     // A view is a window onto its children: they are drawn where they are inside it and not
     // otherwise. See Widget::Clips.

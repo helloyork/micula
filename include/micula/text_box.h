@@ -89,6 +89,18 @@ struct TextBox : Widget {
     // the field is worse than reading nothing -- so the page names the field with `accessibleName`,
     // which is what the words beside it are for. See the Accessibility section of docs/window.md.
     int AccessibleType() const override { return UIA_EditControlTypeId; }
+    // **What typing into it is.** The text goes in through `onChange` and is committed, because a field
+    // a client has just filled in is a field that has been filled in -- a page that only listens for a
+    // commit would otherwise never hear about it -- and the caret goes to the end, as it does after a
+    // paste. `SetText` is what a page uses to put a value in without anybody having typed it.
+    bool AccessibleWritable() const override { return true; }
+    bool AccessibleSetValue(const std::wstring &s) override {
+        SetText(s);
+        if (onChange) onChange(text);
+        if (onCommit) onCommit(text);
+        Invalidate();
+        return true;
+    }
     bool AccessibleValue(std::wstring &out) const override {
         if (text.empty()) return false;
         out = text;
