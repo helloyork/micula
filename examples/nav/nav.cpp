@@ -149,14 +149,16 @@ void PanePage(ScrollView *sheet) {
     Setting(sheet, glyph::kView, L"Style",
             L"Room for the pane, or the pane over the page")
         ->Set(new Segmented({ kStyles[0], kStyles[1], kStyles[2], kStyles[3] }, paneStyle,
-                            [](int i) { paneStyle = i; Apply(); }));
+                            [](int i) { paneStyle = i; Apply(); }))
+        ->tips = L"Fixed keeps the pane in the layout; Peek slides it over the page";
 
     Setting(sheet, glyph::kMenu, L"Open",
             L"The pane's own state, driven from the page -- the same thing its button does")
         ->Set(new ToggleSwitch(L"", paneOpen, [](bool v) {
             paneOpen = v;
             if (nav) nav->pane->SetOpen(v);
-        }));
+        }))
+        ->tips = L"What the pane's own button does, asked for from the page instead";
 
     Setting(sheet, glyph::kBusy, L"Animate the width",
             L"Off, the pane arrives in one frame -- which is what a pane that is part of the layout "
@@ -192,7 +194,7 @@ void PanePage(ScrollView *sheet) {
     width->Set(new Slider(paneOpenW, 160.0f, 400.0f, 20.0f, [](float v) {
         paneOpenW = v;
         Apply();
-    }));
+    }))->tips = L"WinUI's OpenPaneLength: the room the page keeps for the pane";
     // The value the card shows is the state, read when it is painted: the slider's own `value` is the
     // number it holds, and a card's is a string to draw beside the control.
     width->value = [] { return Dip(paneOpenW); };
@@ -341,6 +343,9 @@ NavigationView *BuildTree(Widget *root) {
 // --- the window -----------------------------------------------------------------------------------
 struct NavWindow : Window {
     NavigationView *shell = nullptr;
+    // Every control on these pages with a `tips` says it when the pointer rests on it. One line is the
+    // whole of what a window has to do about it -- see tip.h.
+    Tips tips{ *this };
 
     const wchar_t *ClassName() const override { return L"MiculaNav"; }
     const wchar_t *Title() const override { return L"Micula - navigation"; }

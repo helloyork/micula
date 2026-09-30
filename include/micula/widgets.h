@@ -41,6 +41,7 @@
 
 #include "window.h"
 #include "popup.h"
+#include "tip.h"
 
 #include "button.h"
 #include "card.h"

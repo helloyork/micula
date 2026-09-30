@@ -137,7 +137,7 @@ void GeneralPage(ScrollView *sheet) {
         // The field is the state's to write and not the other way round, which is why the picker's
         // answer goes through it rather than around it.
         path->SetText(picked);
-    }));
+    }))->tips = L"Pick the folder with the shell's own dialog";
     where->Set(line);
 
     sheet->Add(new Heading(L"Appearance"));
@@ -154,8 +154,10 @@ void GeneralPage(ScrollView *sheet) {
         true;
     auto *actions = new View();
     actions->SetLayout(new RowLayout());
-    actions->Add(new Button(L"Clean up now", ButtonStyle::Accent, [] {}));
-    actions->Add(new Button(L"View log", ButtonStyle::Standard, [] {}));
+    actions->Add(new Button(L"Clean up now", ButtonStyle::Accent, [] {}))
+        ->tips = L"Move everything the rules above match, and say so afterwards";
+    actions->Add(new Button(L"View log", ButtonStyle::Standard, [] {}))->tips =
+        L"What the last cleanup did, file by file";
     sheet->Add(actions);
 }
 
@@ -249,6 +251,8 @@ void ReadState(const wchar_t *cmd) {
 // --- the window -----------------------------------------------------------------------------------
 struct SettingsWindow : Window {
     NavigationView *shell = nullptr;
+    // Every control on these pages with a `tips` says it when the pointer rests on it; see tip.h.
+    Tips tips{ *this };
 
     const wchar_t *ClassName() const override { return L"MiculaSettings"; }
     const wchar_t *Title() const override { return L"Folder Cleanup"; }

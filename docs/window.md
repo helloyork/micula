@@ -137,11 +137,12 @@ app.Add(menu);
 | Member | Description |
 |---|---|
 | `virtual const wchar_t *ClassName() const` | The window class it is made with. Registered on demand, like a window's. |
-| `bool Show(int x, int y, int dipW, int dipH)` | Shows it with its corner at `x, y` screen DIPs and a client area of `dipW` x `dipH`. Topmost. Returns false if the window could not be made. |
+| `bool Show(int x, int y, int dipW, int dipH, UINT dpiOf = 0)` | Shows it with its corner at `x, y` screen DIPs and a client area of `dipW` x `dipH`. Topmost. `dpiOf` says which monitor's DIPs those are -- pass it if you have worked it out (`dpiapi::ForPoint` takes pixels), and 0 asks the point. Returns false if the window could not be made. |
 | `void Place(int x, int y)` | Moves it, in screen DIPs. |
 | `void Place(int x, int y, int dipW, int dipH)` | Moves it and resizes it. The tree is arranged into the new box and `OnPlaced` runs. |
 | `void Hide()` / `bool Shown()` | Takes it off the screen, and whether it is on it. The window and the tree stay where they are, so showing it again is one call. |
 | `bool activates` | Whether it is allowed to take the foreground. Set it before `Show`: a tip or a menu over an active window wants false, or the caption of the window it belongs to blinks. |
+| `DWORD extraStyle` | Extra extended styles for its window, on top of `WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP`. Set it before `Show`. A tip is `WS_EX_TRANSPARENT`, so that a click where the tip is lands on what the tip is about. |
 | `virtual bool OnMessage(UINT, WPARAM, LPARAM)` | A message the popup answers itself -- the keys, the wheel, activation. The press, the move and the release are the surface's already. |
 | `virtual void OnPlaced()` | Shown, moved or resized: where a menu puts its tree. |
 | `View *EnsureContent()`, `T *Add(T *)`, `void SetLayout(Layout *)` | The tree, the same three a window has. |
@@ -150,6 +151,46 @@ Both halves of the mouse and the finger path are shared with `Window` -- `Surfac
 one place a press is turned into a click -- so a menu answers a finger exactly as a window does.
 What it does *not* have is a caption, the page hooks, a frame the size of the screen, or an automation
 tree of its own: `UiaElement` is the window's.
+
+## Tips
+
+A control's `tips`, shown when the pointer comes to rest on it: `tip.h`. `Widget::tips` is one string and
+it is both the tooltip and what a screen reader is told, so there is nothing for a page to declare twice.
+
+`Tips` is the whole of the behaviour, and attaching it to a surface is the whole of using it:
+
+```cpp
+struct MyWindow : micula::Window {
+    micula::Tips tips{ *this };
+    ...
+};
+```
+
+Every control in that window with `tips` set now has a tooltip. The box is a `Popup`, so it may cross the
+edge of the window it belongs to; it is as big as its words and no bigger, and it takes neither the
+foreground nor the click. **A finger triggers no tip**, because a tip waits for a pointer to rest and a
+finger does not rest.
+
+**It hangs off the control and not the pointer**: centred on the control and one small gap under it, so
+that the control stays readable while its own sentence is up, and so that the tip stays put while the hand
+moves across a wide one. A tip with no room left under the control flips above it, and one with no room
+anywhere is kept inside the work area, less the room its own shadow needs -- so a tip against the edge of
+a screen shows its shadow whole and a gap beside it rather than sitting on the last pixel, and a control on
+the last row of a window is exactly the case a tip is a `Popup` for. `TipFollow::Pointer` puts the box
+below and to the right of the hand instead, and follows it:
+
+```cpp
+micula::Tips tips{ *this };
+tips.Follow(micula::TipFollow::Pointer);
+```
+
+| Member | Description |
+|---|---|
+| `Tips(Surface &s, UINT dwellMs = 0)` | Attaches to a surface. The dwell is the machine's own `SPI_GETMOUSEHOVERTIME` -- 400 ms out of the box -- unless one is passed. |
+| `void Dwell(UINT ms)` | How long the pointer has to rest before the tip appears. |
+| `void Follow(TipFollow f)` | What the box hangs off: `TipFollow::Control`, the default, or `TipFollow::Pointer`. |
+| `Tip *Box()` | The box, for a page that draws something else in it. |
+| `Tip` | The `Popup` itself: `std::wstring text`, and `For(text, anchor, at, follow)` to show it -- `anchor` is the control's box and `at` the hand, both in screen pixels. Subclass it and override `PaintFurniture` to draw something else. |
 
 ## Accessibility
 
@@ -161,7 +202,7 @@ screen reader does no UIA work at all, and one that does gets a tree of the page
 What a control has to say is a handful of virtuals, and one string for the page's half of it:
 
 |---|---|
-| `std::wstring tips` | The tooltip text, and the same string is what a client reads as the help text. One string, because what a control says in a tooltip and what it says to somebody who cannot see it are the same thought. |
+| `std::wstring tips` | The tooltip text, and the same string is what a client reads as the help text. One string, because what a control says in a tooltip and what it says to somebody who cannot see it are the same thought. `Tips` (tip.h) is what shows it -- see [Tips](#tips). |
 | `std::wstring accessibleName` | What the page calls the control, for the times the page knows a name the control does not -- the words beside a switch are page text and are not part of it, and a page cannot override a virtual on a control it did not write. Set, and it wins over `AccessibleName()` below. |
 | `virtual const wchar_t *AccessibleName() const` | What the control is called. Null for a control whose whole content is a glyph, which is an honest answer and better than a name made up from the class. |
 | `virtual int AccessibleType() const` | The UIA control type -- `UIA_ButtonControlTypeId` and the rest. `UIA_CustomControlTypeId` by default. |

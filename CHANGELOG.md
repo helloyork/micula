@@ -325,7 +325,14 @@ library can be: a minor version may break.
   window has (`Add`, `SetLayout`), the three things a hand does (`Surface::HandMessage`, so a menu
   answers a finger the way every control already does), and none of what a caption or an automation
   tree needs.
-
+- **`Tips`**: a control's `tips`, shown when the pointer comes to rest on it (`tip.h`). Attached to a
+  surface with one line -- `Tips tips{ *this };` in a window -- and every control under it with `tips`
+  set has a tooltip: the wait is the machine's own `SPI_GETMOUSEHOVERTIME`, the box is a `Popup` of its
+  own so it can cross the edge of the window, it is as big as its words and no bigger, it is flipped
+  when the work area runs out, and it takes neither the foreground nor the click. It is placed under the
+  control it is about and centred on it -- `Follow(TipFollow::Pointer)` puts it beside the hand instead --
+  and it goes when the pointer leaves, or when the pointer's window stops being ours. A finger triggers
+  no tip, because a tip waits for a pointer to rest and a finger does not rest.
 ### Changed
 
 - **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and

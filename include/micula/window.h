@@ -158,6 +158,29 @@ inline int SystemMetric(int index, UINT dpi) {
     return GetSystemMetrics(index);
 }
 
+// Pixels per layout unit for the monitor a point is on, which is what something that has no window yet
+// needs: a popup is asked for in the DIPs of the monitor it is going to land on, and the point it is
+// being opened at is on that monitor. It has to be asked of the monitor rather than of a window --
+// asking a window means making one first, in the wrong pixels.
+//
+// Shcore's `GetDpiForMonitor` is the only call that answers for a monitor, and it is loaded rather than
+// linked for the same reason the awareness calls above are.
+inline UINT ForPoint(POINT screen) {
+    using Fn = HRESULT(WINAPI *)(HMONITOR, int, UINT *, UINT *);
+    if (HMODULE sh = LoadLibraryW(L"shcore.dll"))
+        if (auto get = (Fn)GetProcAddress(sh, "GetDpiForMonitor")) {
+            UINT x = 96, y = 96;   // 0 is MDT_EFFECTIVE_DPI
+            if (SUCCEEDED(get(MonitorFromPoint(screen, MONITOR_DEFAULTTONEAREST), 0, &x, &y)) && x)
+                return x;
+        }
+    // Nothing can say: a machine before 8.1, where per-monitor DPI does not exist and every monitor is
+    // the system's.
+    HDC dc = GetDC(nullptr);
+    const UINT d = dc ? (UINT)GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    if (dc) ReleaseDC(nullptr, dc);
+    return d ? d : 96;
+}
+
 // Whether anything has said what this process's DPI awareness is yet: a manifest, a call by the
 // program, or a previous window. Only an unaware process leaves it to Create to say, which is what
 // happens on a launch with no manifest at all; anything else is an answer somebody meant, and a
@@ -1033,6 +1056,20 @@ struct Surface {
     // shape under a pointer that has not moved at all.
     bool RefreshHover();
     bool SetHover(Widget *w, Widget *over);
+    // **Who the pointer is over**, and what anything outside the tree that follows from it hears. A
+    // widget is told by its own `hover` flag -- that is what `SetHover` above writes -- and a tip is
+    // told here, because a tip is a window of its own and nothing in the tree can tell it anything.
+    // Kept rather than worked out on demand: the answer is wanted long after the move that produced it,
+    // and the hit test needs a point to ask again with.
+    Widget *hovered = nullptr;
+    // Called when that changes, with the widget the pointer left and the one it arrived at. Either may
+    // be null: a pointer that left the surface, or one that arrived where there is nothing to hover.
+    // One callback rather than a list of them, because a surface has one tip at most and the tip is
+    // the page's -- see `Tips` in tip.h, which is what sets it.
+    std::function<void(Widget *was, Widget *now)> onHoverMoved;
+    // **The one way the hover changes**, so that the tree, the record of it and whoever is listening
+    // cannot come to disagree. Returns whether anything needs repainting, like `SetHover` below.
+    bool HoverTo(Widget *over);
     // The pointer moved: the widget under it hears about it, and so does any widget whose watched region
     // outside itself contains it (see Widget::ExternalRegion). Returns true when something under the
     // pointer wants a repaint per move.
@@ -1080,6 +1117,13 @@ struct Surface {
     // delivers a touch as a pointer message first and only turns it into a mouse button if the window
     // *ignores* the pointer.
     bool HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp);
+
+    // **Ask Windows to say when the pointer leaves**, which nothing hears by itself: a window is told
+    // WM_MOUSELEAVE only after it has asked, and the asking lasts until the pointer leaves -- or until
+    // *any* window appears or disappears under it, which is what a tip or a menu does. So a surface that
+    // puts a window over itself while the pointer is resting on it has to ask again, and one that asks
+    // after the pointer has already gone is answered at once rather than never. See `Tips` in tip.h.
+    void TrackLeave();
 
     // Mark the whole surface for a repaint. The frame loop paints outside `WM_PAINT` while something is
     // moving, so a request for a frame is not a request to Windows for one -- see `Frame`. And while it
@@ -2189,13 +2233,13 @@ inline bool Surface::RefreshHover() {
     if (LeavingLayer()) return false;
     // **A finger is not hovering anything**, and the mouse's position is not where the finger is: while
     // one is down the pointer is the finger, and what is under it is what it is holding. See `MoveTo`.
-    if (finger) return content ? SetHover(content.get(), nullptr) : false;
+    if (finger) return HoverTo(nullptr);
     // **And a finger that has lifted takes its hover with it.** The cursor is not where a finger was,
     // and on a touchscreen it may be nowhere near it -- the same reason `pointerX` exists at all. Asking
     // `GetCursorPos` after a finger lets go is asking about a place nobody is pointing at, and lighting
     // a row under a cursor that never moved there. Until a mouse really arrives, the last hand that
     // touched this window is all this window knows, and a finger does not hover.
-    if (pointerHand == Hand::Finger) return content ? SetHover(content.get(), nullptr) : false;
+    if (pointerHand == Hand::Finger) return HoverTo(nullptr);
     // Whose window the pointer is actually over. A cursor resting on something else
     // must not leave a control lit: this is called from the tick, not from a mouse
     // message, so there is no WM_MOUSELEAVE to lean on.
@@ -2203,7 +2247,7 @@ inline bool Surface::RefreshHover() {
     ScreenToClient(hwnd, &pt);
     const float s = scale();
     Widget *over = capture ? capture : (mine ? HitTest(pt.x / s, pt.y / s) : nullptr);
-    return content ? SetHover(content.get(), over) : false;
+    return HoverTo(over);
 }
 
 // One widget is hovered and every other one is not. A walk rather than a loop over a list, and the
@@ -2220,6 +2264,22 @@ inline bool Surface::SetHover(Widget *w, Widget *over) {
         }
         if (SetHover(child.get(), over)) changed = true;
     }
+    return changed;
+}
+
+// The pointer is over `over`, or over nothing when that is null. The tree is told by `SetHover`, the
+// surface remembers it, and whatever asked to hear about it hears about it -- in that order, because
+// the thing being told is usually about to ask the tree what it just did.
+//
+// **Called from the move as well as from the frame.** The frame is where the *correction* is made (a
+// page that changed shape under a stationary pointer), and the move is where the hover really happens:
+// the frame loop only runs while something is animating, so a window sitting still under a still
+// pointer has no frames to notice anything in. See `MoveTo` and `RefreshHover`.
+inline bool Surface::HoverTo(Widget *over) {
+    Widget *was = hovered;
+    hovered = over;
+    const bool changed = content ? SetHover(content.get(), over) : false;
+    if (was != over && onHoverMoved) onHoverMoved(was, over);
     return changed;
 }
 
@@ -2283,20 +2343,24 @@ inline void Surface::CancelCapture() {
     Invalidate();
 }
 
+inline void Surface::TrackLeave() {
+    if (!hwnd) return;
+    TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+    TrackMouseEvent(&tme);
+}
+
 // The input path, whole. See the note on the declaration for what this is and why it is one function.
 inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     const float s = scale();
     const float mx = (float)GET_X_LPARAM(lp) / s;
     const float my = (float)GET_Y_LPARAM(lp) / s;
     switch (m) {
-    case WM_MOUSEMOVE: {
-        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
-        TrackMouseEvent(&tme);
+    case WM_MOUSEMOVE:
+        TrackLeave();
         if (MoveTo(mx, my, Hand::Mouse, true)) Invalidate();
         return true;
-    }
     case WM_MOUSELEAVE:
-        if (content) SetHover(content.get(), nullptr);
+        HoverTo(nullptr);
         Invalidate();
         return true;
     case WM_LBUTTONDOWN:
@@ -2463,7 +2527,7 @@ inline bool Surface::MoveTo(float x, float y, Hand hand, bool contact) {
     // is in the air, which is what `contact` is for.
     const bool hovering = hand != Hand::Finger;
     Widget *over = capture ? capture : HitTest(x, y);
-    const bool changed = content ? SetHover(content.get(), hovering ? over : nullptr) : false;
+    const bool changed = HoverTo(hovering ? over : nullptr);
 
     // Only the hand that made the press drives what it is doing. See `capturing`.
     if (capture && hand == capturing) {

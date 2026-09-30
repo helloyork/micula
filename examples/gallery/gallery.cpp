@@ -104,7 +104,8 @@ struct Page {
         // card gives it what is left. None of that arithmetic is in the page.
         auto *gain = page->Add(new Card(L"音量", L"只改这台电脑回放时的增益，不会改动设备自己的音量。"));
         gain->icon = glyph::kVolume;
-        gain->Set(new Slider(this->volume, 0.0f, 1.0f, 0.05f, [this](float v) { this->volume = v; }));
+        gain->Set(new Slider(this->volume, 0.0f, 1.0f, 0.05f, [this](float v) { this->volume = v; }))
+            ->tips = L"Drag it, or use the arrow keys once it has the focus";
         gain->value = [this] {
             return std::to_wstring((int)(this->volume * 100.0f + 0.5f)) + L"%";
         };
@@ -118,10 +119,12 @@ struct Page {
         // and these are not.
         auto *verbs = page->Add(new View());
         verbs->SetLayout(new RowLayout());
-        verbs->Add(new Button(L"开始", ButtonStyle::Accent, [this] { notify = true; }));
+        verbs->Add(new Button(L"开始", ButtonStyle::Accent, [this] { notify = true; }))
+            ->tips = L"Show a notification, which is what this playground is for";
         // A control reaches the window through the tree it is in, which is what lets this callback
         // close the window without the page holding a pointer to one.
         quit = verbs->Add(new Button(L"关闭", ButtonStyle::Standard, nullptr));
+        quit->tips = L"Close the window";
         quit->onClick = [this] { root->Add(AskClose()); };
 
         page->Add(new Label(L"这一页没有一处坐标：控件报告它们想要什么，布局决定它们在哪里。",
@@ -205,6 +208,8 @@ void Print(const Fonts &fonts, const Widget *w, int depth, float ox, float oy) {
 struct Gallery : Window {
     Page *page;
     explicit Gallery(Page *p) : page(p) {}
+    // Every control on the page with a `tips` says it when the pointer rests on it; see tip.h.
+    Tips tips{ *this };
 
     const wchar_t *ClassName() const override { return L"MiculaGallery"; }
     const wchar_t *Title() const override { return L"Micula"; }

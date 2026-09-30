@@ -67,7 +67,6 @@ struct Popup : Surface {
     // arrangement has already been asked for by then -- see `Surface::Frame` -- so what this is for is
     // a change of *size*, which a layout that arranges by hand cannot see for itself.
     virtual void OnPlaced() {}
-
     // --- showing it -----------------------------------------------------------------------------
     // Show it with its top-left corner at `x, y` **screen DIPs** and a client area of `dipW x dipH`.
     //
@@ -76,7 +75,17 @@ struct Popup : Surface {
     // the window it belongs to from active to inactive and back. Decide it before `Show`, because the
     // window is *made* with it.
     bool activates = true;
-    bool Show(int x, int y, int dipW, int dipH);
+    // Extra extended styles for the popup's own window, on top of the two it always has
+    // (`WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP`). Set it before `Show`. A tip is
+    // `WS_EX_TRANSPARENT`, so that a click where the tip is lands on what the tip is *about* rather
+    // than on the tip: a name that swallows the click on the thing it names is a control that stops
+    // working while its own name is on the screen.
+    DWORD extraStyle = 0;
+    // **Which monitor's DIPs the point is in.** A caller that has already worked it out -- a tip, which
+    // has to know to flip on the right work area -- passes it, and one that has not passes 0 and the
+    // point itself is asked (see `dpiapi::ForPoint`, which takes pixels and can only be as right as the
+    // point it is given).
+    bool Show(int x, int y, int dipW, int dipH, UINT dpiOf = 0);
     // Move it, in screen DIPs, without touching its size or its tree.
     void Place(int x, int y);
     void Place(int x, int y, int dipW, int dipH);
@@ -117,7 +126,7 @@ inline Popup::~Popup() {
     DestroyWindow(h);
 }
 
-inline bool Popup::Show(int x, int y, int dipW, int dipH) {
+inline bool Popup::Show(int x, int y, int dipW, int dipH, UINT dpiOf) {
     // COM and the theme, exactly as a window does it -- and here it is not a formality: a program whose
     // only window is a menu (the tray case) is a program with no `Window::Create` in it at all, so this
     // is the first thing in it that needs either.
@@ -136,25 +145,30 @@ inline bool Popup::Show(int x, int y, int dipW, int dipH) {
     wc.hbrBackground = nullptr;
     RegisterClassExW(&wc);
 
-    // **Placed in the DPI of the monitor it lands on, which is not known until it exists.** A menu
-    // opens where the pointer is, and the pointer can be on a screen other than the one the window it
-    // belongs to is on, so the DIPs it is asked for are that monitor's DIPs. The window is therefore
-    // created a pixel wide at the point -- on the right monitor, in the wrong pixels -- and moved once
-    // its own DPI is known. It is created hidden and shown after, so none of that is visible; creating
-    // it at the final size in the wrong DPI and letting WM_DPICHANGED fix it up would be, and for a
-    // menu the opening is the whole of what it looks like.
-    DWORD ex = WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP;
+    // **Placed in the DPI of the monitor it lands on**, which is asked of the *monitor* and not of a
+    // window: a menu opens where the pointer is, and the pointer can be on a screen other than the one
+    // the window it is opened from is on, so the DIPs it is asked for are that monitor's DIPs. Asking a
+    // window instead would mean creating it first, in the wrong pixels on a machine with two different
+    // screens, and moving it once the answer came back -- and for a menu the opening is the whole of
+    // what it looks like. See `dpiapi::ForPoint`.
+    DWORD ex = WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP | extraStyle;
     if (!activates) ex |= WS_EX_NOACTIVATE;
-    hwnd = CreateWindowExW(ex, ClassName(), L"", WS_POPUP, x, y, 1, 1,
+    dpi = dpiOf ? dpiOf : dpiapi::ForPoint({ x, y });
+    hwnd = CreateWindowExW(ex, ClassName(), L"", WS_POPUP,
+                           MulDiv(x, (int)dpi, 96), MulDiv(y, (int)dpi, 96),
+                           (std::max)(1, MulDiv(dipW, (int)dpi, 96)),
+                           (std::max)(1, MulDiv(dipH, (int)dpi, 96)),
                            nullptr, nullptr, wc.hInstance, this);
     if (!hwnd) return false;
-    dpi = dpiapi::ForWindow(hwnd);
+    // **And topmost, which is not what a new window is.** `CreateWindowExW` puts a window at the top of the
+    // *non-topmost* band, so a popup opened by a window that is topmost -- or by anything that has itself
+    // been raised, a test harness being the one that showed this -- is behind the window it was opened
+    // from until something moves it. `Place` is what carries that, so it is the one path both the first
+    // show and every move go through.
     Place(x, y, dipW, dipH);
-
     // A popup is built into before it is shown, so the tree is already there and owes an arrangement;
-    // that happens on the way to the first paint.
+    // that happens on the way to the first paint, which is what `Place` just asked for.
     EnsureContent();
-    layoutDirty = true;
     // `SW_SHOWNOACTIVATE` for the popups that asked not to activate, and `SW_SHOW` -- which is what
     // makes the menu the foreground window, and therefore what makes a click outside it possible to
     // notice -- for the ones that did not.
