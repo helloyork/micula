@@ -162,6 +162,22 @@ while nobody was listening is answered by the state rather than by silence, and 
 a client attach in the first place is not the one thing it never hears. A page being scrolled is
 announced in half-percent steps and not per frame, since a client that heard about every frame of it
 would hear about nothing else.
+- **And the tree, which is the half a value cannot carry.** A client does not hold values, it holds
+*elements*, and the same frame that compares values also compares shape: who is a child of whom,
+which children a control has and in what order, and how many rows or cells it says it is made of. An
+element that arrived, one that left, and the same ones in another order are none of them about a
+control -- no property says "the thing you are holding is not the thing that is there" -- so they go
+out as `UiaRaiseStructureChangedEvent` instead: `ChildRemoved` before `ChildAdded`, so a client
+following along never has two elements claiming the same place, `ChildrenReordered` when the set is
+the same and the order is not, and `ChildrenInvalidated` when a list's options were replaced, where
+every id the client holds for it is the wrong one and there is no id that can name the set that took
+its place. Nothing is said about the first frame the table is filled on: a window whose whole tree has
+just been written down has had nothing added to it.
+- **A row is an element and has its own runtime id.** `GetRuntimeId` answers `{AppendRuntimeId, uid}`
+for a control and `{AppendRuntimeId, uid, row}` for a row of one, because to a client the rows of a
+list are elements in their own right -- it reads "30 days, 4 of 6, selected" and may hold that row
+across frames. Two elements under one id is the confusion the id exists to prevent: with the row
+sharing its control's id, every per-row announcement read as an announcement about the whole list.
 - **Reading and writing, and a refusal is an answer.** A client reads what every control says and
 writes the ones that say they can be written -- a slider's value, a field's text, the choice in a
 list or a pane, whether something is open, where a page is scrolled to -- through

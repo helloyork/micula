@@ -1089,8 +1089,20 @@ struct Window {
         bool hasScroll = false;
         float scroll = 0.0f;        // 0 to 100, which is what a client is told in
         std::vector<char> chosen;    // one per item, and whether it is the chosen one
+        // **And the shape of the tree, which is the half a property cannot carry.** Who this is a
+        // child of, which children it has and in what order, and how many item elements it says it is
+        // made of -- enough to tell a client that what it is holding is still there, and to say which
+        // of them it is not.
+        int parent = 0;              // the uid of the widget this is a child of, and 0 for the page
+        std::vector<int> kids;       // the uids of its visible children, in the order they are in
+        int items = 0;               // how many rows or cells the widget is made of
     };
     std::unordered_map<int, UiaSeen> uiaSeen, uiaNow;
+    // **The frame the table was first filled on tells nobody anything.** Everything in it is new to a
+    // client that has never been told, so the first pass is a seeding rather than a change -- and so is
+    // the arrival of each element in it, which is what the per-widget test below is for. This one is
+    // about the *tree*: nothing was added to a window whose whole tree was just written down.
+    bool uiaSeeded = false;
     // The provider reads the widget list, the focus, the hovered control and the page's own
     // transform, and calls a control's action: it is the window's own business said from outside,
     // and it is not worth twenty accessors.
@@ -3143,6 +3155,12 @@ struct Api {
     // whose UIA can build this tree and hand it over can be read, which is worth having even if
     // nothing arrives when what was read changes. Every use of this one checks it first.
     HRESULT(WINAPI *RaisePropertyChanged)(IRawElementProviderSimple *, PROPERTYID, VARIANT, VARIANT);
+    // **And the sixth, which is not a property of anything.** A client does not hold values, it holds
+    // *elements* -- and a page that swapped its contents, a list whose options were replaced and a
+    // control added to a card all leave it holding ones that no longer mean what they did. None of
+    // them is a value that changed, so nothing above this can carry them. Not part of `Ready()` either,
+    // for the same reason as the fifth: a tree that can be handed over can be read.
+    HRESULT(WINAPI *RaiseStructureChanged)(IRawElementProviderSimple *, StructureChangeType, int *, int);
 
     Api()
         : ReturnRawElementProvider((decltype(ReturnRawElementProvider))
@@ -3154,7 +3172,9 @@ struct Api {
           ClientsAreListening((decltype(ClientsAreListening))
               Lookup("UiaClientsAreListening", 0x3E)),
           RaisePropertyChanged((decltype(RaisePropertyChanged))
-              Lookup("UiaRaiseAutomationPropertyChangedEvent", 0x5F)) {}
+              Lookup("UiaRaiseAutomationPropertyChangedEvent", 0x5F)),
+          RaiseStructureChanged((decltype(RaiseStructureChanged))
+              Lookup("UiaRaiseStructureChangedEvent", 0x62)) {}
 
     // All four or none: a provider tree that can be built but not handed over is not worth the
     // three that did resolve.
@@ -3450,7 +3470,12 @@ struct UiaElement : IRawElementProviderSimple,
         // Two numbers and no pointer. A runtime id has to be unique within the window, which the
         // uid Add handed out already is, and a pointer would change identity every time the page
         // was laid out again -- which is the one thing UIA uses the id to notice.
-        SAFEARRAY *a = SafeArrayCreateVector(VT_I4, 0, 2);
+        //
+        // **Three for an item.** To a client a list's rows are elements of their own -- it reads
+        // "30 days, 4 of 6, selected" and may hold that row across frames -- so a row cannot share an
+        // id with the control that draws it. Two elements under one id is exactly the confusion the id
+        // exists to prevent, and it made every per-row event read as an event about the whole list.
+        SAFEARRAY *a = SafeArrayCreateVector(VT_I4, 0, item >= 0 ? 3 : 2);
         if (!a) return E_OUTOFMEMORY;
         LONG i = 0;
         // 3, which the documentation calls UIA_AppendRuntimeId. It has a name in the UIA
@@ -3460,6 +3485,11 @@ struct UiaElement : IRawElementProviderSimple,
         i = 1;
         v = widget;
         SafeArrayPutElement(a, &i, &v);
+        if (item >= 0) {
+            i = 2;
+            v = item;
+            SafeArrayPutElement(a, &i, &v);
+        }
         *out = a;
         return S_OK;
     }
@@ -4028,8 +4058,9 @@ inline void Window::UiaAnnounce() {
     // One pass, and the only pass: what a control says is asked of the control, so there is nothing
     // kept in step and nothing a page can forget to tell.
     uiaNow.clear();
-    std::function<void(Widget *)> look = [&](Widget *w) {
+    std::function<void(Widget *, int)> look = [&](Widget *w, int parentUid) {
         UiaSeen &s = uiaNow[w->uid];
+        s.parent = parentUid;
         std::wstring text;
         if (w->AccessibleValue(text)) {
             s.hasValue = true;
@@ -4051,10 +4082,15 @@ inline void Window::UiaAnnounce() {
             Widget::Item it;
             s.chosen[(size_t)i] = (w->AccessibleItem(i, it) && it.selected) ? 1 : 0;
         }
-        for (const auto &child : w->children)
-            if (child->visible) look(child.get());
+        s.items = items;
+        s.kids.clear();
+        for (const auto &child : w->children) {
+            if (!child->visible) continue;
+            s.kids.push_back(child->uid);
+            look(child.get(), w->uid);
+        }
     };
-    look(content.get());
+    look(content.get(), 0);
 
     // The old value and the new one are handed over as they are made, and cleared here: a VARIANT
     // passed by value is the same string, so exactly one side of each of these frees it.
@@ -4071,12 +4107,62 @@ inline void Window::UiaAnnounce() {
         uia.RaiseAutomationEvent(e, id);
         e->Release();
     };
+    // **A change to the tree, from the parent's side.** The provider handed over is the one the change
+    // happened *in*, and the runtime ids are the ones it happened *to* -- the same two numbers
+    // `GetRuntimeId` hands out, because an id a client is told about has to be one it can have seen.
+    // Without them a client is told that something changed and not what, which is worth very little.
+    auto raise = [&](int parentUid, StructureChangeType kind, const std::vector<int> &who) {
+        if (!listening || !uia.RaiseStructureChanged) return;
+        UiaElement *e = new UiaElement(this, parentUid, -1);
+        std::vector<int> ids;
+        for (int one : who) {
+            ids.push_back(3);      // UIA_AppendRuntimeId, as in `GetRuntimeId`
+            ids.push_back(one);
+        }
+        uia.RaiseStructureChanged(e, kind, ids.empty() ? nullptr : ids.data(), (int)ids.size());
+        e->Release();
+    };
+
+    // **The first pass writes the table down and says nothing.** Everything in it is new to a client
+    // that has never been told -- and so is every element in it, which the per-widget test below has
+    // always handled. This one is about the tree: nothing was added to a window whose whole tree has
+    // just been written down for the first time.
+    const bool seeded = uiaSeeded;
+    uiaSeeded = true;
 
     for (const auto &kv : uiaNow) {
         auto before = uiaSeen.find(kv.first);
         if (before == uiaSeen.end()) continue;      // nobody has been told this one exists yet
         const UiaSeen &a = before->second, &b = kv.second;
         const int uid = kv.first;
+        // **The tree, before the values.** A client holds elements, not values: what it needs to know
+        // first is whether the page still has the ones it is holding. No property can say that -- an
+        // element that arrived, one that left, and the same ones in another order are not about a
+        // control at all -- which is why they are a second kind of event rather than more of the first.
+        if (seeded && a.kids != b.kids) {
+            std::vector<int> came, gone;
+            for (int k : b.kids)
+                if (std::find(a.kids.begin(), a.kids.end(), k) == a.kids.end()) came.push_back(k);
+            for (int k : a.kids)
+                if (std::find(b.kids.begin(), b.kids.end(), k) == b.kids.end()) gone.push_back(k);
+            if (came.empty() && gone.empty()) {
+                // Nothing arrived and nothing left, so the same children are in another order -- the
+                // whole of what a reordered list changes, and worth saying rather than leaving to be
+                // worked out from positions that were never asked for.
+                raise(uid, StructureChangeType_ChildrenReordered, b.kids);
+            } else {
+                // **Out first and in second**, so a client following along never has two elements
+                // claiming the same place: what left is gone before what arrived is there.
+                if (!gone.empty()) raise(uid, StructureChangeType_ChildRemoved, gone);
+                if (!came.empty()) raise(uid, StructureChangeType_ChildAdded, came);
+            }
+        }
+        if (seeded && a.items != b.items) {
+            // A list whose options were replaced is not a list with one option changed: every element
+            // the client holds for it is the wrong one now, and there is no id that names a set that
+            // replaced another. This is the event that says exactly that, and the only one that can.
+            raise(uid, StructureChangeType_ChildrenInvalidated, {});
+        }
         if (a.hasValue != b.hasValue || a.value != b.value) {
             VARIANT was = a.hasValue ? UiaVarText(a.value) : UiaVarNone();
             VARIANT now = b.hasValue ? UiaVarText(b.value) : UiaVarNone();

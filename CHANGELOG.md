@@ -33,6 +33,12 @@ library can be: a minor version may break.
   eight DIPs of travel turns a tap into a drag, a second finger takes the first one's click away, and a
   gesture belongs to the hand that began it -- the mouse moving under a finger neither un-presses it nor
   drags it. A pen goes through the same path and hovers while it is in the air.
+- **The tree is announced, not only the values.** `UiaRaiseStructureChangedEvent` now carries a
+  child arriving, a child leaving, the same children reordered and a list whose options were replaced
+  -- the four things no property can say, because they are not about a control but about whether the
+  element a client is holding still means what it did. A row also has a runtime id of its own rather
+  than sharing its control's, so the announcement about a row is about that row: it used to read as
+  one about the whole list.
 - **A change is told, not only drawn.** `UIA_PropertyChangedEventId` now carries the four things a
   screen reader follows -- what a control says, a slider's number, whether something is open, where a
   page is scrolled to -- and which of a set is chosen is told with `SelectionItem.IsSelected` on the
