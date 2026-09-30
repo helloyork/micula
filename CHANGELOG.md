@@ -8,6 +8,22 @@ library can be: a minor version may break.
 
 ### Added
 
+- **A widget that draws a set of things is a set of things to a screen reader.** `AccessibleItems` and
+  `AccessibleItem` say what a widget is made of -- the rows of an open drop-down, the cells of a
+  segmented control, the items of a navigation pane -- and a client visits them one at a time as the
+  children of that one element: "30 days, 4 of 6, selected". That is what WinUI's own list reports
+  without the widgets a page would need to build it. A heading is an item too and is not a place a
+  choice can be, which a widget says by giving it no index.
+- **The read-out is complete.** `IRangeValueProvider` for a value that is a number (a slider, a
+  progress bar) alongside `IValueProvider` for one that is words, `IScrollProvider` for a container
+  that scrolls, `IExpandCollapseProvider` for a drop-down's list and a navigation pane,
+  `ISelectionProvider` and `ISelectionItemProvider` for which of a set is chosen, and `PositionInSet`,
+  `SizeOfSet` and a bounding rectangle cut by every container that clips. `IsOffscreen` is true for a
+  control a scroll has taken out of the container showing it, which is what `VisibleArea` now answers
+  for all of them together rather than for the nearest one.
+- **`Card::Set` names the control it is given**, unless the control answers a name of its own: a switch
+  with no label is named by the line it is on, and what a drop-down is set to is its value rather than
+  its name -- "Move files older than, 30 days" and not a control called "30 days".
 - **A `Flyout` is uncovered from the row it hangs off.** The panel's two vertical edges travel from the
   control's line outward over `motion::kFast` and back into it as the layer leaves, and the rows inside
   the panel do not move: a list is *uncovered* rather than grown, because the chosen row is on the

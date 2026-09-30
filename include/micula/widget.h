@@ -308,6 +308,49 @@ struct Widget {
     // Whether OnActivate does something a client may ask for on this widget's behalf. False by
     // default, focusable or not: a field is focusable and activating it does nothing.
     virtual bool AccessibleActionable() const { return false; }
+
+    // **A widget that draws a set of things, and what one of them is.** A list of forty countries is
+    // one widget and forty things a client has to be able to read one at a time -- the rows of an open
+    // drop-down, the cells of a segmented control, the items of a navigation pane. So a widget answers
+    // how many it is made of, and a client visits them as the children of that one widget: one
+    // `ListItem` element per row, which is what WinUI's own list reports, and no widget per row.
+    //
+    // A thing like this is not a widget, so a uid is not enough to name one: an element for an item is
+    // the widget's uid and the item's *place* in the sequence. `index` is the page's own number for it,
+    // which is what a client asks the control to act on -- a pane counts its headings and a list counts
+    // from zero, and neither of those is the place.
+    struct Item {
+        const wchar_t *name = nullptr;   // what a screen reader reads out
+        int type = UIA_ListItemControlTypeId;
+        int index = -1;                  // the page's own number for it, when it has one
+        bool selected = false;
+        // Where it is drawn, in this widget's own space, and whether it is on screen at all: a row the
+        // scroll has carried out of its panel is an item a client is told about and cannot reach.
+        D2D1_RECT_F box = {};
+        bool onscreen = false;
+    };
+    // How many things this widget is made of. Zero -- the default -- is a widget that is one thing, and
+    // then a client's children of it are its child widgets, which is the tree the page built.
+    virtual int AccessibleItems() const { return 0; }
+    // What item `i` is. False for a widget that has no such item, which is the honest answer for an
+    // element a client held on to while the list under it changed.
+    virtual bool AccessibleItem(int /*i*/, Item & /*out*/) const { return false; }
+    // A number a client can compare two values of, for a control whose value is one: a slider, a
+    // progress bar. False for a control that has no range, which is not the same as one whose value is
+    // zero. See `IValueProvider` and `IRangeValueProvider` in the UIA section of window.h: the first is
+    // for a value that is words -- a field's text -- and the second for one that is a number.
+    virtual bool AccessibleRange(float & /*value*/, float & /*minimum*/, float & /*maximum*/,
+                                 float & /*step*/) const {
+        return false;
+    }
+    // Whether this widget can be opened and closed: a drop-down's list, a navigation pane. -1 for one
+    // that cannot, otherwise 0 collapsed and 1 expanded -- the two states `ExpandCollapseState` has a
+    // word for, and the two this has.
+    virtual int AccessibleExpanded() const { return -1; }
+    // Whether this widget is the thing a client can scroll, and how far it has: see `IScrollProvider`.
+    virtual bool AccessibleScroll(float & /*percent*/, float & /*view*/, bool & /*canScroll*/) const {
+        return false;
+    }
     // The number Add gave this widget. What a UIA element holds instead of a pointer, which is what
     // makes an element that has outlived its widget harmless.
     int uid = 0;

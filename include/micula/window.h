@@ -1976,26 +1976,35 @@ inline D2D1_POINT_2F Widget::Cursor() const {
 inline D2D1_RECT_F Widget::VisibleArea() const {
     Window *w = window();
     if (!w || !w->content) return D2D1_RECT_F{ 0, 0, 0, 0 };
-    // Whatever clips is what this widget is really seen through: the nearest container above it that
-    // is a window onto its children, and the page's own box when nothing between the two does. A
-    // control inside a scrolling container that asked the page instead would be told it has room it
-    // does not have.
-    const Widget *box = w->content.get();
-    for (const Widget *at = this; at; at = at->parent) {
-        if (!at->Clips()) continue;
-        box = at;
-        break;
-    }
-    // And that box in this widget's own space. `OriginOf` is where a widget's rectangle is measured
-    // *from* in the client, so the two origins are what carries one space's rectangle into another.
+    // **Every container above it that is a window onto its children, intersected**, with the page's own
+    // box as the one it starts from. The nearest of them alone is a box that something above it may
+    // already have cut: a control inside a list inside a panel being uncovered is inside all three, and
+    // the room it really has is the smallest of them. A control in a scrolling container that asked the
+    // page instead would be told it has room it does not have.
+    //
+    // In this widget's own space, which is the space its `rect` is written in: `OriginOf` is where a
+    // widget's rectangle is measured *from* in the client, so the difference between the two origins is
+    // what carries one space's rectangle into another.
     const D2D1_POINT_2F mine = w->OriginOf(this);
-    const D2D1_POINT_2F its = w->OriginOf(box);
-    // The box is the one the window *shows*, which for a container that is showing only a part of itself
-    // is that part -- a control in a panel that is still arriving is told the room it can be reached in.
-    // See Widget::ClipBox.
-    const D2D1_RECT_F r = box->ClipBox();
-    return { r.left + its.x - mine.x, r.top + its.y - mine.y,
-             r.right + its.x - mine.x, r.bottom + its.y - mine.y };
+    const Widget *root = w->content.get();
+    const D2D1_POINT_2F at = w->OriginOf(root);
+    D2D1_RECT_F out = { root->rect.left + at.x - mine.x, root->rect.top + at.y - mine.y,
+                        root->rect.right + at.x - mine.x, root->rect.bottom + at.y - mine.y };
+    for (const Widget *box = this; box; box = box->parent) {
+        if (!box->Clips()) continue;
+        // The box is the one the window *shows*, which for a container that is showing only a part of
+        // itself is that part -- a control in a panel that is still arriving is told the room it can be
+        // reached in. See Widget::ClipBox.
+        const D2D1_POINT_2F there = w->OriginOf(box);
+        const D2D1_RECT_F r = box->ClipBox();
+        const D2D1_RECT_F in = { r.left + there.x - mine.x, r.top + there.y - mine.y,
+                                 r.right + there.x - mine.x, r.bottom + there.y - mine.y };
+        out.left = (std::max)(out.left, in.left);
+        out.top = (std::max)(out.top, in.top);
+        out.right = (std::max)(out.left, (std::min)(out.right, in.right));
+        out.bottom = (std::max)(out.top, (std::min)(out.bottom, in.bottom));
+    }
+    return out;
 }
 
 inline bool Widget::ShowFocusRing() const {
@@ -2523,32 +2532,35 @@ inline int App::Run() {
 // window answers WM_GETOBJECT with a provider only while UiaClientsAreListening() says somebody
 // is, and every call after that is a call that was asked for.
 //
-// **One element, whatever it is an element for.** `UiaElement` implements the three fragment
-// interfaces and the patterns a control can answer, and dispatches all of them to the `Widget` --
-// or to the `Window`, when the element is the root. There is no class per control, and that is
-// not a shortcut: what a control *is* comes from four questions (`AccessibleName`,
-// `AccessibleType`, `AccessibleToggle`, `AccessibleValue`) and what it *does* comes from
-// `OnActivate`, which is Space. A control wired up for the keyboard is wired up for a screen
-// reader by the same code.
+// **One element, whatever it is an element for.** `UiaElement` implements the fragment interfaces
+// and the patterns a control can answer, and dispatches all of them to the `Widget` -- or to the
+// `Window`, when the element is the root. There is no class per control, and that is not a
+// shortcut: what a control *is* comes from six questions (`AccessibleName`, `AccessibleType`,
+// `AccessibleToggle`, `AccessibleValue`, `AccessibleRange`, `AccessibleExpanded`) and what it
+// *does* comes from `OnActivate`, which is Space. A control wired up for the keyboard is wired up
+// for a screen reader by the same code.
 //
 // **A widget pointer is not an element.** Layout() rebuilds the page for all sorts of reasons, so
 // by the time a client asks its next question the widget an element was made for is usually gone.
-// An element therefore holds the window and a `uid` -- the number Window::Add gave that widget --
-// and resolves it on every call. A widget that has been thrown away answers "no such widget",
-// which is the truth, where a stale pointer would answer with whatever the page built in its
-// place, which is a lie and a crash waiting to be one.
+// An element therefore holds the window, a `uid` -- the number Window::Add gave that widget -- and
+// which of that widget's items it is, and resolves them on every call. A widget that has been
+// thrown away answers "no such widget", which is the truth, where a stale pointer would answer
+// with whatever the page built in its place, which is a lie and a crash waiting to be one.
 //
-// **One list, one level.** micula has no parent/child widget tree: it has a flat list in paint
-// order, with `z` for what is over what, and a Layer spread across the middle of it. So every
-// widget is a child of the window in paint order, which is the order a client should visit them
-// in anyway. Per-item elements -- the rows of an open drop-down, the cells of a segmented control
-// -- are the obvious next step and are not here yet: a control reports its selected value rather
-// than its children.
+// **A thing a widget draws is not a widget, and is still a child.** The rows of a list, the cells
+// of a segmented control and the items of a pane are drawn by one widget each -- forty options are
+// not forty widgets, which is the whole reason a list is one control with its own layout -- and a
+// client has to be able to read them one at a time: what a row says, which one is chosen, where it
+// is. So a widget answers `AccessibleItems` and what one of them is, and the children of its
+// element are those items rather than its child widgets. That is what WinUI's own list reports --
+// one element per `ListViewItem` -- without the widgets under it.
 //
-// **Read-only, and deliberately.** SetValue is not implemented, so a client can read a slider but
-// not move it. Writing a control's value from outside the page means waking up whatever the page
-// does in response -- page code, run on a stranger's thread of control. The keyboard and the
-// pointer are the two ways in for now.
+// **Read-out first, and the write half of each pattern where it is honest.** A client can read
+// what every control says and where everything is; it cannot yet change any of it, and each
+// pattern that can be written says so by refusing: `SetValue` is not implemented, `IsReadOnly` is
+// true. Writing a control's value from outside the page means running the page's own callback on
+// a stranger's thread of control -- the click a screen reader is standing in for has to be the
+// page's click, and that step is not taken yet.
 // ============================================================================================
 
 // The four functions this needs out of UIAutomationCore.dll, looked up rather than linked -- and
@@ -2602,14 +2614,25 @@ inline const Api &Get() {
 }
 }  // namespace uiaapi
 
+// The number UIA wants for a direction a container does not scroll in: -1, which the managed API calls
+// `ScrollPattern.NoScroll` and which the native headers have no name for at all. Not zero, which is "at
+// the top of it": a client reading that would think the page was as far up as it goes.
+constexpr double kUiaNoScroll = -1.0;
+
 struct UiaElement : IRawElementProviderSimple,
                     IRawElementProviderFragment,
                     IRawElementProviderFragmentRoot,
                     IInvokeProvider,
                     IToggleProvider,
-                    IValueProvider {
-    // `uid` 0 is the window itself, which is the root of the tree.
-    UiaElement(Window *w, int uid) : win(w), widget(uid) {}
+                    IValueProvider,
+                    IRangeValueProvider,
+                    IExpandCollapseProvider,
+                    IScrollProvider,
+                    ISelectionProvider,
+                    ISelectionItemProvider {
+    // `uid` 0 is the window itself, which is the root of the tree; `item` is which of that widget's
+    // items this element is, or -1 for the widget itself. See `Widget::AccessibleItems`.
+    UiaElement(Window *w, int uid, int item = -1) : win(w), widget(uid), item(item) {}
 
     // ---- IUnknown -------------------------------------------------------------------------
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
@@ -2627,6 +2650,16 @@ struct UiaElement : IRawElementProviderSimple,
             *out = static_cast<IToggleProvider *>(this);
         else if (iid == __uuidof(IValueProvider))
             *out = static_cast<IValueProvider *>(this);
+        else if (iid == __uuidof(IRangeValueProvider))
+            *out = static_cast<IRangeValueProvider *>(this);
+        else if (iid == __uuidof(IExpandCollapseProvider))
+            *out = static_cast<IExpandCollapseProvider *>(this);
+        else if (iid == __uuidof(IScrollProvider))
+            *out = static_cast<IScrollProvider *>(this);
+        else if (iid == __uuidof(ISelectionProvider))
+            *out = static_cast<ISelectionProvider *>(this);
+        else if (iid == __uuidof(ISelectionItemProvider))
+            *out = static_cast<ISelectionItemProvider *>(this);
         else
             return E_NOINTERFACE;
         AddRef();
@@ -2655,12 +2688,25 @@ struct UiaElement : IRawElementProviderSimple,
         *out = nullptr;
         Widget *w = Target();
         if (!w) return S_OK;
-        if (id == UIA_InvokePatternId && w->AccessibleActionable())
+        if (IsItem()) {
+            // An item is a row of something: the one pattern it can have is being the chosen one.
+            if (id == UIA_SelectionItemPatternId && SelectableItem())
+                *out = static_cast<ISelectionItemProvider *>(this);
+        } else if (id == UIA_InvokePatternId && w->AccessibleActionable()) {
             *out = static_cast<IInvokeProvider *>(this);
-        else if (id == UIA_TogglePatternId && w->AccessibleToggle() >= 0)
+        } else if (id == UIA_TogglePatternId && w->AccessibleToggle() >= 0) {
             *out = static_cast<IToggleProvider *>(this);
-        else if (id == UIA_ValuePatternId && HasValue())
+        } else if (id == UIA_ValuePatternId && HasText(*w)) {
             *out = static_cast<IValueProvider *>(this);
+        } else if (id == UIA_RangeValuePatternId && HasRange(*w)) {
+            *out = static_cast<IRangeValueProvider *>(this);
+        } else if (id == UIA_ExpandCollapsePatternId && w->AccessibleExpanded() >= 0) {
+            *out = static_cast<IExpandCollapseProvider *>(this);
+        } else if (id == UIA_ScrollPatternId && CanScroll(*w)) {
+            *out = static_cast<IScrollProvider *>(this);
+        } else if (id == UIA_SelectionPatternId && w->AccessibleItems() > 0) {
+            *out = static_cast<ISelectionProvider *>(this);
+        }
         if (*out) AddRef();
         return S_OK;
     }
@@ -2684,25 +2730,56 @@ struct UiaElement : IRawElementProviderSimple,
             }
             return S_OK;
         }
+        Widget::Item it;
+        const bool isItem = Item(&it);
         switch (id) {
-        case UIA_ControlTypePropertyId:              return SmallInt(out, w->AccessibleType());
-        case UIA_NamePropertyId:                     return Text(out, w->AccessibleLabel());
+        case UIA_ControlTypePropertyId:
+            return SmallInt(out, isItem ? it.type : w->AccessibleType());
+        case UIA_NamePropertyId:
+            return Text(out, isItem ? it.name : w->AccessibleLabel());
         case UIA_HelpTextPropertyId:                 return Text(out, w->tips.c_str());
         case UIA_IsEnabledPropertyId:                return Flag(out, w->enabled);
-        case UIA_IsOffscreenPropertyId:              return Flag(out, !w->visible);
-        case UIA_IsKeyboardFocusablePropertyId:      return Flag(out, w->Focusable());
-        case UIA_HasKeyboardFocusPropertyId:         return Flag(out, win->focused == w);
+        // **A control nothing can show is off screen**, and so is an item a list has carried out of its
+        // panel: what is not drawn is not there as far as a client is concerned, and a screen reader
+        // that read out the rows a scroll had taken away from the panel would be reading the wrong list.
+        // See `VisibleArea`.
+        case UIA_IsOffscreenPropertyId:
+            return Flag(out, !w->visible || (isItem ? !it.onscreen : BoxIsEmpty(VisibleBox(*w))));
+        case UIA_IsKeyboardFocusablePropertyId:      return Flag(out, !isItem && w->Focusable());
+        case UIA_HasKeyboardFocusPropertyId:         return Flag(out, !isItem && win->focused == w);
         case UIA_IsControlElementPropertyId:
         case UIA_IsContentElementPropertyId:         return Flag(out, true);
         case UIA_FrameworkIdPropertyId:              return Text(out, L"Micula");
         case UIA_BoundingRectanglePropertyId:        return BoxOf(out, box);
-        case UIA_IsInvokePatternAvailablePropertyId: return Flag(out, w->AccessibleActionable());
-        case UIA_IsTogglePatternAvailablePropertyId: return Flag(out, w->AccessibleToggle() >= 0);
-        case UIA_IsValuePatternAvailablePropertyId:  return Flag(out, HasValue());
+        // Where an item sits in the set it belongs to, which is what a screen reader says "3 of 40"
+        // with. The place, not the page's own index: an item is usually the only one that has both.
+        case UIA_PositionInSetPropertyId:            return isItem ? SmallInt(out, item + 1) : S_OK;
+        case UIA_SizeOfSetPropertyId:
+            return isItem ? SmallInt(out, w->AccessibleItems()) : S_OK;
+        case UIA_IsInvokePatternAvailablePropertyId: return Flag(out, !isItem && w->AccessibleActionable());
+        case UIA_IsTogglePatternAvailablePropertyId:
+            return Flag(out, !isItem && w->AccessibleToggle() >= 0);
+        case UIA_IsValuePatternAvailablePropertyId:  return Flag(out, !isItem && HasText(*w));
+        case UIA_IsRangeValuePatternAvailablePropertyId:
+            return Flag(out, !isItem && HasRange(*w));
+        case UIA_IsScrollPatternAvailablePropertyId: return Flag(out, !isItem && CanScroll(*w));
+        case UIA_IsExpandCollapsePatternAvailablePropertyId:
+            return Flag(out, !isItem && w->AccessibleExpanded() >= 0);
+        case UIA_IsSelectionPatternAvailablePropertyId:
+            return Flag(out, !isItem && w->AccessibleItems() > 0);
+        case UIA_IsSelectionItemPatternAvailablePropertyId:
+            return Flag(out, isItem && it.index >= 0);
+        case UIA_SelectionItemIsSelectedPropertyId:  return Flag(out, isItem && it.selected);
+        case UIA_ExpandCollapseExpandCollapseStatePropertyId:
+            return SmallInt(out, w->AccessibleExpanded() == 1 ? ExpandCollapseState_Expanded
+                                                              : ExpandCollapseState_Collapsed);
+        case UIA_ValueIsReadOnlyPropertyId:          return Flag(out, true);
         case UIA_ValueValuePropertyId: {
             std::wstring v;
-            return w->AccessibleValue(v) ? Text(out, v.c_str()) : S_OK;
+            return HasText(*w) && w->AccessibleValue(v) ? Text(out, v.c_str()) : S_OK;
         }
+        default:
+            break;
         }
         return S_OK;   // VT_EMPTY: a property this control has no answer for
     }
@@ -2724,25 +2801,52 @@ struct UiaElement : IRawElementProviderSimple,
                                        IRawElementProviderFragment **out) override {
         if (!out) return E_INVALIDARG;
         *out = nullptr;
-        const int count = ChildCount();
-        if (!widget) {
-            if (dir == NavigateDirection_FirstChild && count > 0) *out = ChildAt(0);
-            else if (dir == NavigateDirection_LastChild && count > 0) *out = ChildAt(count - 1);
-            // No parent: the HWND is the root's host, not its parent.
+        // An item: the widget it is an item of is its parent, and the items beside it are its siblings.
+        // It has no children of its own -- an item is one thing to read, and the widget that draws it
+        // is what a client asks about what is inside it.
+        if (item >= 0) {
+            Widget *w = Target();
+            if (!w) return S_OK;
+            const int n = w->AccessibleItems();
+            if (dir == NavigateDirection_Parent) *out = new UiaElement(win, widget, -1);
+            else if (dir == NavigateDirection_NextSibling && item + 1 < n)
+                *out = new UiaElement(win, widget, item + 1);
+            else if (dir == NavigateDirection_PreviousSibling && item > 0)
+                *out = new UiaElement(win, widget, item - 1);
             return S_OK;
         }
+        // First and last child, from any element: what the children *are* is the host's business --
+        // items for a widget that draws a set of them, child widgets for one that does not.
+        Widget *host = Host();
+        const int count = VisibleChildren(host);
+        if (dir == NavigateDirection_FirstChild && count > 0) {
+            *out = ChildAt(host, 0);
+            return S_OK;
+        }
+        if (dir == NavigateDirection_LastChild && count > 0) {
+            *out = ChildAt(host, count - 1);
+            return S_OK;
+        }
+        // No parent above the window: the HWND is the root's host, not its parent.
+        if (!widget) return S_OK;
         if (dir == NavigateDirection_Parent) {
-            // The parent widget, and the window for one whose parent is the root widget -- which is
-            // not an element of its own, because the window already is one.
-            Widget *p = widget ? Target() : nullptr;
+            // The parent widget, and the window for one whose parent is the root widget -- which is not
+            // an element of its own, because the window already is one.
+            Widget *p = Target();
             Widget *up = p ? p->parent : nullptr;
             *out = new UiaElement(win, (up && up != win->content.get()) ? up->uid : 0);
             return S_OK;
         }
-        const int at = SiblingIndex(Target());
+        // A sibling is one of the *parent's* children, so the set to count and walk is the parent's.
+        Widget *p = Target();
+        Widget *parent = p ? p->parent : nullptr;
+        const int at = SiblingIndex(p);
+        const int among = VisibleChildren(parent ? parent : win->content.get());
         if (at < 0) return S_OK;
-        if (dir == NavigateDirection_NextSibling && at + 1 < count) *out = ChildAt(at + 1);
-        else if (dir == NavigateDirection_PreviousSibling && at > 0) *out = ChildAt(at - 1);
+        if (dir == NavigateDirection_NextSibling && at + 1 < among)
+            *out = ChildAt(parent ? parent : win->content.get(), at + 1);
+        else if (dir == NavigateDirection_PreviousSibling && at > 0)
+            *out = ChildAt(parent ? parent : win->content.get(), at - 1);
         return S_OK;
     }
 
@@ -2779,12 +2883,16 @@ struct UiaElement : IRawElementProviderSimple,
         }
         Widget *w = Target();
         if (!w) return S_OK;
-        // Where the widget is *drawn*, in the client area: the accumulated origins of its ancestors
-        // plus its own drawn rectangle. A widget on its way somewhere is reported where it looks.
-        const D2D1_POINT_2F o = win->OriginOf(w);
-        const D2D1_RECT_F r = w->placed ? w->drawn : w->rect;
-        *out = { origin.x + (double)(o.x + r.left) * s, origin.y + (double)(o.y + r.top) * s,
-                 (double)Width(r) * s, (double)Height(r) * s };
+        // Where the widget is *drawn*, in the client area, and what is left of it: the accumulated
+        // origins of its ancestors plus its own drawn rectangle, cut by every container above it that
+        // clips. A widget on its way somewhere is reported where it looks, and one a scroll has taken
+        // out of the container showing it is reported with the sliver that is still there -- which is
+        // nothing, which is an empty rectangle, which is what `IsOffscreen` says about it too.
+        Widget::Item it;
+        const D2D1_RECT_F r = Item(&it) ? (it.onscreen ? Clipped(*w, it.box) : D2D1_RECT_F{ 0, 0, 0, 0 })
+                                        : VisibleBox(*w);
+        *out = { origin.x + (double)r.left * s, origin.y + (double)r.top * s,
+                 (double)(r.right - r.left) * s, (double)(r.bottom - r.top) * s };
         return S_OK;
     }
 
@@ -2864,7 +2972,15 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
 
-    // ---- IValueProvider, the reading half of it ---------------------------------------------
+    // ---- reading a control's value -----------------------------------------------------------
+    // **`IValueProvider` is for a value that is words, `IRangeValueProvider` for one that is a
+    // number**: a field's text against a slider's position. A control that answers with the wrong one
+    // of the two is a control a screen reader reads wrongly -- "40%" as a value to be retyped, or a
+    // name as a number that cannot be read out at all.
+    //
+    // Both are read-only for now, and say so: `SetValue` refuses and `IsReadOnly` is true. Writing a
+    // control's value is the page's own callback running from a client's call -- see the note at the
+    // top of this section -- and that step is the next one, not this one.
     HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR /*value*/) override { return UIA_E_NOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE get_Value(BSTR *out) override {
         if (!out) return E_INVALIDARG;
@@ -2881,23 +2997,273 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
 
+    HRESULT STDMETHODCALLTYPE SetValue(double /*value*/) override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE get_Value(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        Widget *w = Target();
+        if (!w || !w->AccessibleRange(v, lo, hi, step)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = (double)v;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_Minimum(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        Widget *w = Target();
+        if (!w || !w->AccessibleRange(v, lo, hi, step)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = (double)lo;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_Maximum(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        Widget *w = Target();
+        if (!w || !w->AccessibleRange(v, lo, hi, step)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = (double)hi;
+        return S_OK;
+    }
+    // A small change is one step of the control's own -- a slider's arrow key -- and a large one is
+    // what a page of the same control would move, which for a slider with a step is five of them.
+    HRESULT STDMETHODCALLTYPE get_SmallChange(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        Widget *w = Target();
+        if (!w || !w->AccessibleRange(v, lo, hi, step)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = (double)step;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_LargeChange(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        Widget *w = Target();
+        if (!w || !w->AccessibleRange(v, lo, hi, step)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = (double)(step * 5.0f);
+        return S_OK;
+    }
+
+    // ---- a control that opens and closes ------------------------------------------------------
+    // A drop-down's list and a navigation pane are the two: what a client reads is whether it is open,
+    // which is what says whether the rows inside it are the page or a thing that has to be opened.
+    HRESULT STDMETHODCALLTYPE Expand() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE Collapse() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(ExpandCollapseState *out) override {
+        if (!out) return E_INVALIDARG;
+        Widget *w = Target();
+        const int state = w ? w->AccessibleExpanded() : -1;
+        if (state < 0) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = state == 1 ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+        return S_OK;
+    }
+
+    // ---- a container that scrolls -------------------------------------------------------------
+    // Read-out of where the view is and how much of the content it is showing: a screen reader says
+    // "half way down" from the percent and decides whether there is more to say at all from the view
+    // size. A page scrolls one way, so the horizontal numbers are the "no scrolling" ones.
+    HRESULT STDMETHODCALLTYPE Scroll(ScrollAmount /*horizontal*/,
+                                     ScrollAmount /*vertical*/) override {
+        return UIA_E_NOTSUPPORTED;
+    }
+    HRESULT STDMETHODCALLTYPE SetScrollPercent(double /*horizontal*/,
+                                               double /*vertical*/) override {
+        return UIA_E_NOTSUPPORTED;
+    }
+    HRESULT STDMETHODCALLTYPE get_HorizontalScrollPercent(double *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = kUiaNoScroll;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_VerticalScrollPercent(double *out) override {
+        if (!out) return E_INVALIDARG;
+        float at = 0.0f, view = 1.0f;
+        bool can = false;
+        Widget *w = Target();
+        if (!w || !w->AccessibleScroll(at, view, can) || !can) {
+            *out = kUiaNoScroll;
+            return S_OK;
+        }
+        *out = (double)at * 100.0;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_HorizontalViewSize(double *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = 100.0;                       // all of it: nothing is off to the side
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_VerticalViewSize(double *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = 100.0;
+        float at = 0.0f, view = 1.0f;
+        bool can = false;
+        Widget *w = Target();
+        if (w && w->AccessibleScroll(at, view, can)) *out = (double)view * 100.0;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_HorizontallyScrollable(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = FALSE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_VerticallyScrollable(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = FALSE;
+        float at = 0.0f, view = 1.0f;
+        bool can = false;
+        Widget *w = Target();
+        if (w && w->AccessibleScroll(at, view, can) && can) *out = TRUE;
+        return S_OK;
+    }
+
+    // ---- which of a set is chosen -------------------------------------------------------------
+    // The set is the widget and the chosen thing is one of its items: one choice out of the rows of a
+    // list, the cells of a segmented control, the items of a pane. Nothing can be chosen from outside
+    // yet -- see the note at the top of this section -- so the selection is read and not written.
+    HRESULT STDMETHODCALLTYPE GetSelection(SAFEARRAY **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        Widget *w = Target();
+        if (!w) return UIA_E_ELEMENTNOTAVAILABLE;
+        std::vector<int> chosen;
+        Widget::Item it;
+        for (int i = 0; i < w->AccessibleItems(); i++)
+            if (w->AccessibleItem(i, it) && it.selected) chosen.push_back(i);
+        SAFEARRAY *a = SafeArrayCreateVector(VT_UNKNOWN, 0, (ULONG)chosen.size());
+        if (!a) return E_OUTOFMEMORY;
+        for (size_t k = 0; k < chosen.size(); k++) {
+            IRawElementProviderSimple *p = new UiaElement(win, widget, chosen[k]);
+            LONG at = (LONG)k;
+            if (FAILED(SafeArrayPutElement(a, &at, p))) {   // the array holds its own reference
+                p->Release();
+                SafeArrayDestroy(a);
+                return E_UNEXPECTED;
+            }
+            p->Release();
+        }
+        *out = a;
+        return S_OK;
+    }
+    // One choice, and the set is never empty: a drop-down always names something and a pane is always
+    // on something. A client that offers a "clear" would be offering a state the control cannot be in.
+    HRESULT STDMETHODCALLTYPE get_CanSelectMultiple(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = FALSE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_IsSelectionRequired(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        *out = TRUE;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Select() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE AddToSelection() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE RemoveFromSelection() override { return UIA_E_NOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE get_IsSelected(BOOL *out) override {
+        if (!out) return E_INVALIDARG;
+        Widget::Item it;
+        if (!Item(&it)) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = it.selected ? TRUE : FALSE;
+        return S_OK;
+    }
+    // The widget the item belongs to, which is what a client asks when it wants to know what the
+    // choice is one of.
+    HRESULT STDMETHODCALLTYPE get_SelectionContainer(IRawElementProviderSimple **out) override {
+        if (!out) return E_INVALIDARG;
+        *out = nullptr;
+        if (!Target()) return UIA_E_ELEMENTNOTAVAILABLE;
+        *out = static_cast<IRawElementProviderSimple *>(new UiaElement(win, widget, -1));
+        return S_OK;
+    }
+
 private:
     // The widget this element is for, resolved now: null for the root, and null for a widget the
     // page has since laid out again -- which every caller has to expect and answer for.
     Widget *Target() const { return widget ? win->UiaFind(widget) : nullptr; }
-    bool HasValue() const {
+    // This element's item, when it is one. False for the widget's own element, and false for an item
+    // the list no longer has -- which is the same "no such element" the widget case gets out of
+    // `Target`, and is why every caller has to ask rather than hold.
+    bool Item(Widget::Item *out = nullptr) const {
         Widget *w = Target();
+        if (!w || item < 0 || item >= w->AccessibleItems()) return false;
+        Widget::Item it;
+        if (!w->AccessibleItem(item, it)) return false;
+        if (out) *out = it;
+        return true;
+    }
+    bool IsItem() const {
+        Widget::Item it;
+        return Item(&it);
+    }
+    // An item a client can *be on* rather than only read: a pane's headings are items too, and are not
+    // somewhere a choice can be. The widget says which by giving one an index and the other none.
+    bool SelectableItem() const {
+        Widget::Item it;
+        return Item(&it) && it.index >= 0;
+    }
+    static bool HasText(const Widget &w) {
         std::wstring v;
-        return w && w->AccessibleValue(v);
+        return w.AccessibleValue(v);
+    }
+    static bool HasRange(const Widget &w) {
+        float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
+        return w.AccessibleRange(v, lo, hi, step);
+    }
+    static bool CanScroll(const Widget &w) {
+        float at = 0.0f, view = 0.0f;
+        bool can = false;
+        return w.AccessibleScroll(at, view, can) && can;
+    }
+    static bool BoxIsEmpty(const D2D1_RECT_F &r) { return r.right <= r.left || r.bottom <= r.top; }
+    // **What is really on screen, in the client area and in DIPs**: where the widget is drawn, cut by
+    // the containers above it that clip. A widget a scroll has taken out of the container showing it
+    // comes back empty, which is what `IsOffscreen` is, and what keeps a client from drawing a
+    // highlight around a row nobody can see. `VisibleArea` answers with all of them together.
+    D2D1_RECT_F VisibleBox(const Widget &w) const {
+        return Cut(win->OriginOf(&w), w.VisibleArea(), w.placed ? w.drawn : w.rect);
+    }
+    // The same for a box inside the widget -- an item's row -- which is written in the space the
+    // widget's `rect` is in, and is a whole item only for as long as the container shows all of it.
+    D2D1_RECT_F Clipped(const Widget &w, const D2D1_RECT_F &box) const {
+        return Cut(win->OriginOf(&w), w.VisibleArea(), box);
+    }
+    static D2D1_RECT_F Cut(const D2D1_POINT_2F &origin, const D2D1_RECT_F &seen,
+                           const D2D1_RECT_F &box) {
+        const float l = (std::max)(box.left, seen.left), t = (std::max)(box.top, seen.top);
+        const float r = (std::max)(l, (std::min)(box.right, seen.right));
+        const float b = (std::max)(t, (std::min)(box.bottom, seen.bottom));
+        return { origin.x + l, origin.y + t, origin.x + r, origin.y + b };
     }
     // The widget whose children this element reports: the widget the uid names, and for the window
     // itself the root widget -- whose box is the client area, and which is not an element of its own
     // because the window already is one.
     Widget *Host() const { return widget ? Target() : win->content.get(); }
-    // Where a widget sits among its parent's visible children, which is the order a client visits
-    // them in: what is not drawn is not there as far as a client is concerned.
+    // How many children the host has: the items for a widget that is made of them, and the visible
+    // child widgets for one that is not. An element that *is* an item has none either way: an item is
+    // one thing to read, and what is inside it is the widget's business.
+    int VisibleChildren(const Widget *host) const {
+        if (!host) return 0;
+        const int items = host->AccessibleItems();
+        if (items > 0) return items;
+        if (host == Target() && item >= 0) return 0;
+        int n = 0;
+        for (const auto &child : host->children)
+            if (child->visible) n++;
+        return n;
+    }
+    UiaElement *ChildAt(const Widget *host, int index) const {
+        if (!host || index < 0) return nullptr;
+        const int items = host->AccessibleItems();
+        if (items > 0) return index < items ? new UiaElement(win, host->uid, index) : nullptr;
+        if (host == Target() && item >= 0) return nullptr;
+        for (const auto &child : host->children)
+            if (child->visible && index-- == 0) return new UiaElement(win, child->uid);
+        return nullptr;
+    }
+    // Where a widget sits among the children its parent reports, which is the order a client visits
+    // them in -- and what is not drawn is not there as far as a client is concerned, so an invisible
+    // child is not counted. -1 for a widget that is not among them: the child widgets of a parent that
+    // is made of items are not in the tree at all.
     static int SiblingIndex(const Widget *w) {
-        if (!w || !w->parent) return -1;
+        if (!w || !w->parent || w->parent->AccessibleItems() > 0) return -1;
         int n = 0;
         for (const auto &child : w->parent->children) {
             if (!child->visible) continue;
@@ -2905,21 +3271,6 @@ private:
             n++;
         }
         return -1;
-    }
-    int ChildCount() const {
-        Widget *host = Host();
-        if (!host) return 0;
-        int n = 0;
-        for (const auto &child : host->children)
-            if (child->visible) n++;
-        return n;
-    }
-    UiaElement *ChildAt(int index) const {
-        Widget *host = Host();
-        if (!host) return nullptr;
-        for (const auto &child : host->children)
-            if (child->visible && index-- == 0) return new UiaElement(win, child->uid);
-        return nullptr;
     }
 
     // A property, four ways, into a VARIANT the caller has already initialised. One that is not
@@ -2956,6 +3307,7 @@ private:
 
     Window *win;
     int widget;          // 0 for the window itself; otherwise a Widget::uid
+    int item = -1;       // which of that widget's items, or -1 for the widget itself
     LONG refs = 1;
 };
 

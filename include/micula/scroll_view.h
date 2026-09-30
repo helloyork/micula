@@ -64,6 +64,20 @@ struct ScrollView : View {
     // everything a page adds.
     template <typename T> T *Add(T *w) { return content->Add(w); }
 
+    // A viewport to a client: how far down the page it is, how much of the page it is showing, and
+    // whether there is anything to scroll at all. Both percentages are worked out here because this is
+    // the only side that knows both halves of them -- the offset and what it is an offset *in*.
+    bool AccessibleScroll(float &percent, float &view, bool &canScroll) const override {
+        const float most = ScrollMax();
+        canScroll = most > 0.0f;
+        percent = canScroll ? std::clamp(scroll / most, 0.0f, 1.0f) : 0.0f;
+        view = extent > 0.0f ? std::clamp(Height(rect) / extent, 0.0f, 1.0f) : 1.0f;
+        return true;
+    }
+    // A region that holds things and scrolls them, which is the type UIA has for it: not a list, and
+    // not the page -- the page is what a client walks into this to read.
+    int AccessibleType() const override { return UIA_PaneControlTypeId; }
+
     // A view is a window onto its children: they are drawn where they are inside it and not
     // otherwise. See Widget::Clips.
     bool Clips() const override { return true; }

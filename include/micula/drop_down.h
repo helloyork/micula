@@ -192,11 +192,19 @@ struct DropDown : Widget {
     }
 
     bool Focusable() const override { return true; }
-    const wchar_t *AccessibleName() const override {
-        return selected >= 0 && selected < (int)options.size() ? options[selected].c_str() : L"";
-    }
     int AccessibleType() const override { return UIA_ComboBoxControlTypeId; }
     bool AccessibleActionable() const override { return true; }
+    // **What is chosen is the control's value, not its name**: a combo box is named by the words beside
+    // it -- which is the card it is on, and what `Card::Set` puts on it -- and read out as "Move files
+    // older than, 1 week": the label, then the choice. The choice as the *name* reads as a control
+    // called "1 week", and leaves nothing to say what it is 1 week of.
+    bool AccessibleValue(std::wstring &out) const override {
+        if (selected < 0 || selected >= (int)options.size()) return false;
+        out = options[selected];
+        return true;
+    }
+    // Whether the list is out, which is what says whether the rows are the page or a thing to open.
+    int AccessibleExpanded() const override { return open ? 1 : 0; }
 
     // **As wide as the room it is given**, like every other control in a card: a field, a slider and a
     // drop-down all fill the slot the card keeps for them. Written from the label instead -- the chosen
@@ -554,7 +562,25 @@ struct DropDownList : Widget {
         }
     }
 
-    int AccessibleType() const override { return UIA_ListItemControlTypeId; }
+    int AccessibleType() const override { return UIA_ListControlTypeId; }
+
+    // **The rows, one element each.** A list of forty options is one widget and forty things a client
+    // has to be able to read one at a time -- "Row 14, 15 of 40, selected" -- so the children of this
+    // element are the rows rather than anything the tree happens to hold. See Widget::AccessibleItems.
+    int AccessibleItems() const override { return Count(); }
+    bool AccessibleItem(int i, Item &out) const override {
+        if (i < 0 || i >= Count()) return false;
+        out.name = dd->options[i].c_str();
+        out.type = UIA_ListItemControlTypeId;
+        out.index = i;                        // the page's own number for the option
+        out.selected = (i == dd->selected);
+        const float top = RowTop(i);
+        out.box = { rect.left + DropDown::kPad, top, rect.right - DropDown::kPad, top + RowH() };
+        // A row the panel has scrolled past is one a client is told about and cannot reach.
+        const D2D1_RECT_F seen = VisibleArea();
+        out.onscreen = out.box.bottom > seen.top && out.box.top < seen.bottom;
+        return true;
+    }
 };
 
 inline void DropDown::SetOpen(bool o) {

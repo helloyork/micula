@@ -266,8 +266,9 @@ title, a `Heading` is a heading with a level, a `Page` in a `SideNav` is a page,
 open drop-down can be item elements of the drop-down, because a control can have children now.
 
 Most of the list under "Not there yet" in [Window](window.md) is a list of things a flat list cannot
-express. The four questions a control answers about itself (`AccessibleName`, `AccessibleType`,
-`AccessibleToggle`, `AccessibleValue`) do not change.
+express. The five questions a control answers about itself (`AccessibleName`, `AccessibleType`,
+`AccessibleToggle`, `AccessibleValue`, `AccessibleRange`) and the two it answers about the set it
+draws (`AccessibleItems`, `AccessibleItem`) do not change.
 
 ## What the window becomes
 

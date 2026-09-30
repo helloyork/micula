@@ -71,6 +71,17 @@ struct ProgressBar : Widget {
         out = std::to_wstring((int)(std::clamp(value, 0.0f, 1.0f) * 100.0f + 0.5f)) + L"%";
         return true;
     }
+    // The number as well as the words: a bar is a fraction of the way through something, and a client
+    // that has the fraction can say how much is left. No step, because a bar is not something anybody
+    // moves -- it is a reading, and the pattern is here for the reading.
+    bool AccessibleRange(float &v, float &lo, float &hi, float &step) const override {
+        if (indeterminate) return false;
+        v = std::clamp(value, 0.0f, 1.0f);
+        lo = 0.0f;
+        hi = 1.0f;
+        step = 0.0f;
+        return true;
+    }
 
     // Where in the cycle *now* is, in seconds.
     //

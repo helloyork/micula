@@ -117,26 +117,37 @@ What a control has to say is four questions and one string:
 | `virtual int AccessibleToggle() const` | -1 when the control is not a switch; otherwise 0 off, 1 on, 2 indeterminate. |
 | `virtual bool AccessibleValue(std::wstring &out) const` | False when there is no value worth reading. True fills `out` with what a client should say -- `"40%"` rather than 0.4, because the formatting is the control's business, not the client's. |
 | `virtual bool AccessibleActionable() const` | Whether `OnActivate` -- Space -- does something a client may ask for. Invoke and Toggle both land on it, so a control wired up for the keyboard is wired up for a screen reader by the same code. |
+| `virtual int AccessibleItems() const`, `virtual bool AccessibleItem(int i, Widget::Item &out) const` | **The things a widget *is*, when it draws a set of them rather than one**: the rows of a list, the cells of a segmented control, the items of a pane. The children of its element are those items rather than its child widgets -- one element per row, which is what WinUI's own list reports, and no widget per row. An item carries its name, its kind, the page's own index for it, whether it is the chosen one, where it is drawn and whether it is on screen at all. See `Widget::Item`. |
+| `virtual bool AccessibleRange(float &value, float &minimum, float &maximum, float &step) const` | The number a control's value *is*, for the controls whose value is one -- a slider, a progress bar -- and what UIA reads with `IRangeValueProvider`. False for a control with no range, which is not a control whose range is all zeros. |
+| `virtual int AccessibleExpanded() const` | -1 when this is not something that opens; otherwise 0 collapsed, 1 expanded. A drop-down's list and a navigation pane are the two. |
+| `virtual bool AccessibleScroll(float &percent, float &view, bool &canScroll) const` | For a container that scrolls: how far down it is (0 to 1 of what there is to scroll), how much of the content it is showing (0 to 1) and whether there is anything to scroll at all. The percentages are worked out by the container because it is the only side that knows both halves of them. |
 
-- **What a control does not have to say.** Its rectangle (in screen pixels, with the page's scroll
-taken off), whether it is enabled, whether it takes the keyboard, whether it has the keyboard, and
-that it is there at all, all come from the widget. So does the tree: the window is the root and
-every visible widget is one of its children, in paint order. micula has no parent/child widget tree
-to mirror -- a flat list and `z` -- and paint order is the order a client should visit them in.
+- **What a control does not have to say.** Its rectangle (in screen pixels, cut by the containers
+  that clip it), whether it is enabled, whether it takes the keyboard, whether it has the keyboard,
+  and that it is there at all, all come from the widget. So does the tree: a widget's children are
+  its items if it is made of them and its child widgets if it is not, and the window is the root.
+- **Nothing that cannot be seen is answered for.** `IsOffscreen` is true for a control a scroll has
+  taken out of the container showing it -- and for an item a list has carried out of its panel -- and
+  its bounding rectangle is the part of it that is really there, which is nothing. `VisibleArea()` is
+  where that answer comes from: every container above it that clips, intersected.
+- **The things beside a control are what it is called.** `Card::Set` puts the card's own line on the
+  control it is given, unless the control answers a name of its own: a switch with no label is named
+  by the row it is on, and what a drop-down *is set to* is its value rather than its name.
 - **Focus is announced.** Every move of the keyboard focus raises
 `UIA_AutomationFocusChangedEventId`, which is the event a screen reader follows the Tab key by.
 - **Reading, not writing.** A client can read a slider but not move it: `SetValue` is not
-implemented, because writing a control's value from outside the page means running page code on a
-client's thread of control. The keyboard and the pointer are the two ways in.
+implemented, because writing a control's value from outside the page means running the page's own
+callback from a client's call. The keyboard and the pointer are the two ways in for now, and each
+pattern that could be written says so by refusing -- which is a state a client handles, unlike a
+pattern that is not there at all.
 - **`UIAutomationCore` is not linked.** Its four functions are looked up at run time, so a program
 built on micula takes on no new load-time dependency, and a machine without them is a machine whose
 screen readers see the window as they did before -- the same reasoning as
 `DCompositionWaitForCompositorClock`, which is resolved for a different reason: that one is Windows
 11 only.
-- **Not there yet.** Per-item elements -- the rows of an open drop-down, the cells of a segmented
-control, the rows of the navigation pane -- so a control reports its selected value rather than its
-children; the scroll bar; `ExpandCollapse` for a drop-down; and `IRangeValueProvider`, which is the
-pattern UIA prefers for a slider and which a value-as-text stands in for today.
+- **Not there yet.** The write half of every pattern: moving a slider, choosing a row from outside,
+opening a list with `Expand()`, scrolling with `SetScrollPercent`. And the scroll bar itself, which
+is drawn rather than published as a range of its own.
 
 ## Page callbacks
 

@@ -62,8 +62,17 @@ struct Card : Widget {
 
     // Takes the control, adds it, and hands it back:
     //     auto *t = card->Set(new ToggleSwitch(on));
+    //
+    // **The card's own line is what the control is called.** A card has the words and the control does
+    // not -- "Keep free space above" above a slider -- and a screen reader that read the slider as an
+    // unnamed number would be reading the half of the row that means nothing on its own. Put on the
+    // control unless it answers a name of its own: a button's label is its name, and the line beside it
+    // is not.
     template <typename T> T *Set(T *w) {
         content = w;
+        // An empty label is no name at all, which is what a bare switch has: `ToggleSwitch(L"", on)`.
+        const wchar_t *named = w->AccessibleLabel();
+        if (!named || !*named) w->accessibleName = text;
         return Add(w);
     }
 

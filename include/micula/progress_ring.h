@@ -93,6 +93,14 @@ struct ProgressRing : Widget {
         out = std::to_wstring((int)(std::clamp(value, 0.0f, 1.0f) * 100.0f + 0.5f)) + L"%";
         return true;
     }
+    bool AccessibleRange(float &v, float &lo, float &hi, float &step) const override {
+        if (indeterminate) return false;
+        v = std::clamp(value, 0.0f, 1.0f);
+        lo = 0.0f;
+        hi = 1.0f;
+        step = 0.0f;
+        return true;
+    }
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;

@@ -280,6 +280,38 @@ struct SideNav : Widget {
 
     SideNav();
 
+    // **The rows, one element each** -- which is what a pane is: a client reads "A long page, 2 of 5,
+    // selected" rather than one pane with a name and nothing under it. A heading is an item too, since
+    // a client has to be able to read the group it labels, and it is not a place a choice can be: the
+    // difference is the index, which a heading does not have. See `Widget::AccessibleItems`.
+    int AccessibleType() const override { return UIA_ListControlTypeId; }
+    int AccessibleItems() const override {
+        Build();
+        return (int)rows.size();
+    }
+    bool AccessibleItem(int i, Item &out) const override {
+        Build();
+        if (i < 0 || i >= (int)rows.size()) return false;
+        const Row &r = rows[i];
+        if (!r.item) return false;
+        out.name = r.item->label.c_str();
+        out.type = r.item->header ? UIA_TextControlTypeId : UIA_ListItemControlTypeId;
+        out.index = r.item->header ? -1 : r.index;
+        out.selected = !r.item->header && r.index == selected;
+        out.box = { rect.left, r.top, rect.right, r.top + rowH };
+        // A row the scroll has taken out of the band is a row a client is told about and cannot reach;
+        // a footer row is never out of it, because the footer is what the band stops above.
+        const D2D1_RECT_F band = Band();
+        out.onscreen = r.pinned || (r.top + rowH > band.top && r.top < band.bottom);
+        return true;
+    }
+    // Whether the pane is out. A pane that cannot be closed -- `Fixed`, or a rail that is only a rail
+    // -- has nothing to open, and says so by having no such state at all.
+    int AccessibleExpanded() const override {
+        if (style == PaneStyle::Fixed) return -1;
+        return open ? 1 : 0;
+    }
+
     // --- geometry ------------------------------------------------------------------
     struct Row {
         const NavItem *item = nullptr;

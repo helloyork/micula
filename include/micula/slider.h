@@ -74,6 +74,17 @@ struct Slider : Widget {
         out = std::to_wstring((int)(Frac() * 100.0f + 0.5f)) + L"%";
         return true;
     }
+    // And the number behind the percentage: what it is worth, what it runs between, and the step one
+    // press of an arrow key takes. A client needs the number rather than the words -- it is what says
+    // "five to a hundred" out loud -- and the percentage is what a reader says after it.
+    bool AccessibleRange(float &v, float &lo, float &hi, float &step) const override {
+        if (this->hi <= this->lo) return false;
+        v = value;
+        lo = this->lo;
+        hi = this->hi;
+        step = this->step;
+        return true;
+    }
 
     bool Animating() const override { return Widget::Animating() || drawn.Wants(Frac()); }
     void Tick(float dt) override {

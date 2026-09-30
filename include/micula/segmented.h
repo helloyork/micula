@@ -115,14 +115,23 @@ struct Segmented : Widget {
         return Widget::Animating() || pillPos.Wants((float)selected) || pillLag != pillPos.value;
     }
 
-    // A segmented control to a screen reader: the cell that is chosen, and that is all it can say as
-    // one element. WinUI's RadioButtons report one radio button per item, and per-item elements are
-    // the step this has not taken -- see the "one list, one level" note in the UIA section of
-    // window.h.
-    const wchar_t *AccessibleName() const override {
-        return selected >= 0 && selected < (int)options.size() ? options[selected].c_str() : L"";
-    }
+    // **A segmented control is a set of cells, and a client reads them one at a time** -- "Entrance, 3
+    // of 3, selected" -- which is exactly what WinUI's own RadioButtons report. The control's own name
+    // is the page's to give it, and the words beside it are page text: what `Card::Set` puts on it.
     int AccessibleType() const override { return UIA_GroupControlTypeId; }
+    int AccessibleItems() const override { return (int)options.size(); }
+    bool AccessibleItem(int i, Item &out) const override {
+        if (i < 0 || i >= (int)options.size()) return false;
+        out.name = options[i].c_str();
+        out.type = UIA_RadioButtonControlTypeId;
+        out.index = i;
+        out.selected = (i == selected);
+        const float x = rect.left + CellW() * (float)i;
+        out.box = { x, rect.top, x + CellW(), rect.bottom };
+        const D2D1_RECT_F seen = VisibleArea();
+        out.onscreen = out.box.right > seen.left && out.box.left < seen.right;
+        return true;
+    }
 
     void Tick(float dt) override {
         Widget::Tick(dt);
