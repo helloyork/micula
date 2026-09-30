@@ -285,6 +285,114 @@ constexpr float kResizeGrip  = 6.0f;
 // machine pointing at a pixel -- and a pen has a small one, but this is not it.
 constexpr float kTouchSlop   = 8.0f;
 
+// ---- the system's own gesture recognition ---------------------------------------------------------
+//
+// A finger is not a mouse, and how far one may wander and still be a tap is not a number the library
+// should be inventing: it, how fast a fling starts, how it dies and where it stops are all things
+// Windows already decides -- in `InteractionContext`, the recognizer under the shell and under WinUI.
+// Feed it a pointer's frames and it answers with the three things that would otherwise be guesses:
+// `TAP` when a hand meant a click, `DRAG` when it meant a drag, and a manipulation whose delta is the
+// movement -- with `INTERACTION_FLAG_INERTIA` set once the hand is gone and the system is coasting.
+//
+// Declared here rather than included, for the same reason UIAutomationCore is looked up rather than
+// linked: MinGW-w64 ships no `interactioncontext.h` and no import library for these, so a static call
+// would not build on that toolchain at all. What is below is copied from the SDK header, which is the
+// only way to be sure of it -- a structure the system validates is not one to write from memory.
+namespace icapi {
+using Handle = void *;
+
+// INTERACTION_ID
+enum { kManipulation = 1, kTap = 2, kDrag = 5 };
+// INTERACTION_FLAGS
+enum { kBegin = 0x1, kEnd = 0x2, kCancel = 0x4, kInertia = 0x8 };
+// INTERACTION_CONFIGURATION_FLAGS -- the low bits are reused per interaction, and **bit 0 of each is
+// what enables that interaction at all**: the SDK's own `INTERACTION_CONTEXT_CONFIGURATION_DEFAULT`
+// carries it next to every flag it sets, and a configuration without it recognizes nothing.
+enum {
+    kEnable = 0x1,
+    kManipTranslationX = 0x2,
+    kManipTranslationY = 0x4,
+    kManipTranslationInertia = 0x20,
+};
+
+struct Config {
+    UINT32 interaction;
+    UINT32 enable;
+};
+struct Transform {
+    float translationX, translationY, scale, expansion, rotation;
+};
+struct Velocity {
+    float velocityX, velocityY, velocityExpansion, velocityAngular;
+};
+struct Manipulation {
+    Transform delta;
+    Transform cumulative;
+    Velocity velocity;
+    UINT32 railsState;
+};
+struct Tap {
+    UINT32 count;
+};
+struct CrossSlide {
+    UINT32 flags;
+};
+struct Output {
+    UINT32 interactionId;
+    UINT32 interactionFlags;
+    UINT32 inputType;
+    float x, y;
+    union {
+        Manipulation manipulation;
+        Tap tap;
+        CrossSlide crossSlide;
+    } arguments;
+};
+
+using OutputCallback = void (WINAPI *)(void *clientData, const Output *output);
+
+// `NInput.dll`, and not any of the modules a first guess would reach for: the symbols are in the SDK's
+// `ninput.lib`, whose import table names that one module, and neither `user32.dll` nor `OneCoreUAP.dll`
+// exports a single one of them. Loaded rather than linked for the same reason as above: MinGW-w64 has
+// no import library for it either.
+inline FARPROC Lookup(const char *name) {
+    static HMODULE module = LoadLibraryW(L"NInput.dll");
+    return module ? GetProcAddress(module, name) : nullptr;
+}
+
+struct Api {
+    HRESULT(WINAPI *Create)(Handle *out);
+    HRESULT(WINAPI *Destroy)(Handle context);
+    HRESULT(WINAPI *Configure)(Handle context, UINT32 count, const Config *config);
+    HRESULT(WINAPI *Callback)(Handle context, OutputCallback callback, void *clientData);
+    HRESULT(WINAPI *AddPointer)(Handle context, UINT32 pointerId);
+    HRESULT(WINAPI *RemovePointer)(Handle context, UINT32 pointerId);
+    HRESULT(WINAPI *Process)(Handle context, UINT32 entries, UINT32 pointers,
+                             const POINTER_INFO *frames);
+    HRESULT(WINAPI *Reset)(Handle context);
+
+    Api()
+        : Create((decltype(Create))Lookup("CreateInteractionContext")),
+          Destroy((decltype(Destroy))Lookup("DestroyInteractionContext")),
+          Configure((decltype(Configure))Lookup("SetInteractionConfigurationInteractionContext")),
+          Callback((decltype(Callback))Lookup("RegisterOutputCallbackInteractionContext")),
+          AddPointer((decltype(AddPointer))Lookup("AddPointerInteractionContext")),
+          RemovePointer((decltype(RemovePointer))Lookup("RemovePointerInteractionContext")),
+          Process((decltype(Process))Lookup("ProcessPointerFramesInteractionContext")),
+          Reset((decltype(Reset))Lookup("ResetInteractionContext")) {}
+
+    bool Ready() const {
+        return Create && Destroy && Configure && Callback && AddPointer && RemovePointer && Process &&
+               Reset;
+    }
+};
+
+inline const Api &Get() {
+    static const Api api;
+    return api;
+}
+}  // namespace icapi
+
 // Defined beside the frame clock further down, and declared here because the input path is written
 // before it: a fling is a speed, and a speed is a distance over a time.
 inline double MonotonicSeconds();
@@ -821,6 +929,10 @@ struct Window {
     // mouse: a touch does not move the mouse, so `GetCursorPos` answers with a place nobody is pointing
     // at. See `Widget::Cursor`.
     float pointerX = 0.0f, pointerY = 0.0f;
+    // **And which hand put it there.** The position outlives the hand -- a finger that has lifted is
+    // still the last thing that happened -- but "something is over this control" is a question only a
+    // mouse answers. Set wherever `pointerX` is set. See `RefreshHover`.
+    Hand pointerHand = Hand::Mouse;
     // **A drag no control has taken belongs to whatever above it scrolls.** See `Widget::Pans`. The
     // widget is decided once, when the finger has wandered far enough to say it is not tapping, and it
     // keeps the gesture until the hand lifts -- so a page that scrolled cannot leave the rest of the
@@ -833,6 +945,27 @@ struct Window {
     bool MoveTo(float x, float y, Hand hand, bool contact);
     void ReleaseAt(Hand hand);
     Widget *PanTargetFor(Widget *w);
+    // ---- what the system's recognizer says, and what is done about it --------------------------------
+    // The recognizer for the hand that is down, or null. One per gesture rather than one per window: a
+    // hand that has been recognized is over, and a fresh context has no state to inherit from it.
+    icapi::Handle gesture = nullptr;
+    UINT32 gestureId = 0;
+    // The last frame that went in, handed back while the page coasts: the recognizer answers only while
+    // frames keep arriving, and after the hand is gone those frames are this one, over and over.
+    POINTER_INFO gestureFrame = {};
+    // What it has said since the last time anyone acted on it. The callback runs inside `Process`, where
+    // the tree must not be touched, so it records and the frame that carried it acts. See `GestureApply`.
+    float gestureDx = 0.0f, gestureDy = 0.0f;
+    bool gestureTap = false;      // the hand meant a click
+    bool gestureDragging = false; // and it is a drag from here on, which no longer counts as a press
+    bool gestureDone = false;     // the system has said CANCEL: nothing more is coming at all
+    bool gestureLooked = false;   // the container above has been asked once, and asked only once
+    int gestureIdle = 0;          // frames fed to the system in a row that came back with nothing
+    static void WINAPI Output(void *clientData, const icapi::Output *out);
+    void GestureSay(const icapi::Output *out);
+    bool GestureApply();
+    void GestureBegin(UINT32 pointerId, const POINTER_INFO &info);
+    bool GestureFeed(const POINTER_INFO &info);    void GestureFinish();
     // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
     // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
     // because an arrangement is one walk from the root -- a widget whose parent has not been
@@ -983,12 +1116,28 @@ struct Window {
     bool Animating() const {
         for (int i = 0; i < 3; i++)
             if (captionT[i] != (captionHot == i ? 1.0f : 0.0f)) return true;
+        // A fling keeps the loop turning on its own account: the recognizer has nothing left to say
+        // until somebody asks it again, and the page is still moving until it does.
+        if (gesture && !finger) return true;
         return content && content->Animating();
     }
     void Tick(float dt) {
         for (int i = 0; i < 3; i++)
             motion::Ramp(&captionT[i], captionHot == i ? 1.0f : 0.0f, dt, motion::kFaster);
         if (content) content->Tick(dt);
+        // **And this is what carries a fling.** The hand is gone, so no message is coming to hand the
+        // recognizer a frame -- and it has nothing to say until it is given one. The last frame goes
+        // back in, over and over, and what comes out of it is the coast: the same deltas `PanMove` was
+        // being given while the finger was still down, made by the system instead of by a hand.
+        if (gesture && !finger) {
+            const bool moving = GestureFeed(gestureFrame);
+            // **The recognizer goes quiet before it is finished.** A fling does not answer on the frame
+            // the hand left it -- it answers once it has started to coast, a frame or two later -- so
+            // silence is only the end of the gesture after it has gone on for a while.
+            if (gestureDone) GestureFinish();
+            else if (moving) gestureIdle = 0;
+            else if (++gestureIdle > 8) GestureFinish();
+        }
     }
 
     // One frame's worth of time, and what it is spent on. Called from the loop in Run().
@@ -1902,6 +2051,12 @@ inline bool Window::RefreshHover() {
     // **A finger is not hovering anything**, and the mouse's position is not where the finger is: while
     // one is down the pointer is the finger, and what is under it is what it is holding. See `MoveTo`.
     if (finger) return content ? SetHover(content.get(), nullptr) : false;
+    // **And a finger that has lifted takes its hover with it.** The cursor is not where a finger was,
+    // and on a touchscreen it may be nowhere near it -- the same reason `pointerX` exists at all. Asking
+    // `GetCursorPos` after a finger lets go is asking about a place nobody is pointing at, and lighting
+    // a row under a cursor that never moved there. Until a mouse really arrives, the last hand that
+    // touched this window is all this window knows, and a finger does not hover.
+    if (pointerHand == Hand::Finger) return content ? SetHover(content.get(), nullptr) : false;
     // Whose window the pointer is actually over. A cursor resting on something else
     // must not leave a control lit: this is called from the tick, not from a mouse
     // message, so there is no WM_MOUSELEAVE to lean on.
@@ -2011,7 +2166,7 @@ inline void Window::PressAt(float x, float y, Hand hand) {
     pressY = y;
     pointerX = x;
     pointerY = y;
-    capturing = hand;
+    pointerHand = hand;    capturing = hand;
     panning = nullptr;
     Widget *w = HitTest(x, y);
     // Everything else puts away whatever it was showing. This is what closes an open
@@ -2074,6 +2229,7 @@ inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
     if (!(finger && hand == Hand::Mouse)) {
         pointerX = x;
         pointerY = y;
+        pointerHand = hand;
     }
     // **A finger has no hover.** Nothing is "over" a control that a hand is touching, and a control
     // that lit up as the hand went by would be lighting up for nothing, so a touch clears whatever was
@@ -2090,39 +2246,48 @@ inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
         // whether it is still pressed is the point it is being dragged with.
         const D2D1_POINT_2F at = LocalPoint(capture, x, y);
         bool down = contact && Inside(capture->rect, at.x, at.y);
-        // **A finger that has wandered is not holding a click any more**, even while it is still over
-        // the control: eight DIPs of travel is what separates a tap from a drag, and without this a
-        // page scrolled with a finger would end as a click on the row it started on. The drag itself
-        // goes on regardless -- a slider is dragged exactly this way, and it is the control's own
-        // answer about tracking the pointer that says whether it wants to be.
-        if (down && hand == Hand::Finger &&
-            (std::fabs(x - pressX) > kTouchSlop || std::fabs(y - pressY) > kTouchSlop))
-            down = false;
-        // **And a drag that no control is using is the container's.** The control has just said it is
-        // not a click, so the question is who the gesture belongs to. A container that pans takes it
-        // itself; a control that is moving its own value keeps it, and one that only wants the pointer
-        // so its own highlight can follow -- a list's rows -- does not, because a list's rows following
-        // a finger and the list scrolling under it are the same gesture. Failing both, it is the first
-        // thing above that scrolls, found once and kept for the rest of the gesture.
-        if (hand == Hand::Finger && contact && !panning && !down) {
-            if (capture->Pans()) panning = capture;
-            else if (!capture->Dragging()) panning = PanTargetFor(capture);
-            panLastY = y;
-            panLastT = MonotonicSeconds();
-            panSpeedY = 0.0f;
-        }
-        capture->pressed = down;
-        if (panning) {
-            const double now = MonotonicSeconds();
-            const float dt = (float)(now - panLastT);
-            panLastT = now;
-            // Smoothed rather than taken whole: one jittery frame at the end of a fling would be the
-            // whole of what the fling is worth.
-            if (dt > 0.001f) panSpeedY = panSpeedY * 0.6f + ((y - panLastY) / dt) * 0.4f;
-            panning->PanMove(0.0f, y - panLastY);
-            panLastY = y;
-        } else {
+        if (gesture) {
+            // The recognizer is the judge where there is one: a drag it has called takes the press
+            // away, and how far a finger may wander before that happens is its business and not a
+            // constant of ours.
+            if (gestureDragging) down = false;
+            capture->pressed = down;
             capture->OnDrag(at.x, at.y);
+        } else {
+            // **A finger that has wandered is not holding a click any more**, even while it is still over
+            // the control: eight DIPs of travel is what separates a tap from a drag, and without this a
+            // page scrolled with a finger would end as a click on the row it started on. The drag itself
+            // goes on regardless -- a slider is dragged exactly this way, and it is the control's own
+            // answer about tracking the pointer that says whether it wants to be.
+            if (down && hand == Hand::Finger &&
+                (std::fabs(x - pressX) > kTouchSlop || std::fabs(y - pressY) > kTouchSlop))
+                down = false;
+            // **And a drag that no control is using is the container's.** The control has just said it is
+            // not a click, so the question is who the gesture belongs to. A container that pans takes it
+            // itself; a control that is moving its own value keeps it, and one that only wants the pointer
+            // so its own highlight can follow -- a list's rows -- does not, because a list's rows following
+            // a finger and the list scrolling under it are the same gesture. Failing both, it is the first
+            // thing above that scrolls, found once and kept for the rest of the gesture.
+            if (hand == Hand::Finger && contact && !panning && !down) {
+                if (capture->Pans()) panning = capture;
+                else if (!capture->Dragging()) panning = PanTargetFor(capture);
+                panLastY = y;
+                panLastT = MonotonicSeconds();
+                panSpeedY = 0.0f;
+            }
+            capture->pressed = down;
+            if (panning) {
+                const double now = MonotonicSeconds();
+                const float dt = (float)(now - panLastT);
+                panLastT = now;
+                // Smoothed rather than taken whole: one jittery frame at the end of a fling would be the
+                // whole of what the fling is worth.
+                if (dt > 0.001f) panSpeedY = panSpeedY * 0.6f + ((y - panLastY) / dt) * 0.4f;
+                panning->PanMove(0.0f, y - panLastY);
+                panLastY = y;
+            } else {
+                capture->OnDrag(at.x, at.y);
+            }
         }
     }
 
@@ -2160,7 +2325,7 @@ inline void Window::ReleaseAt(Hand hand) {
         // saying the second the moment a widget keeps it through a drag that has left
         // its rectangle -- a slider let go three rows away is not a click on whatever
         // it was let go over.
-        const bool click = w->pressed;
+        const bool click = gesture ? gestureTap : w->pressed;
         w->pressed = false;
         Invalidate();
         if (w->enabled) w->OnRelease();
@@ -2178,6 +2343,132 @@ inline Widget *Window::PanTargetFor(Widget *w) {
     for (Widget *up = w->parent; up; up = up->parent)
         if (up->Pans()) return up;
     return nullptr;
+}
+
+// ---- the gesture the system is asked to recognise ---------------------------------------------------
+//
+// Three interactions and no more: a tap, a drag, and a manipulation whose translation is what we scroll
+// by. Nothing here decides anything -- the answers are recorded by the callback, which runs inside
+// `Process` where the tree is not to be touched, and acted on by the frame that carried them.
+inline void WINAPI Window::Output(void *clientData, const icapi::Output *out) {
+    static_cast<Window *>(clientData)->GestureSay(out);
+}
+
+inline void Window::GestureSay(const icapi::Output *out) {
+    if (out->interactionId == icapi::kManipulation) {
+        // Screen pixels in, client DIPs out: the frames this was fed were the pointer's own, and the
+        // page is measured in the space every other point handed to a control is in.
+        const float s = scale();
+        gestureDx += out->arguments.manipulation.delta.translationX / s;
+        gestureDy += out->arguments.manipulation.delta.translationY / s;
+    } else if (out->interactionId == icapi::kTap) {
+        gestureTap = true;
+    } else if (out->interactionId == icapi::kDrag) {
+        gestureDragging = true;
+    }
+    if (out->interactionFlags & icapi::kCancel) gestureDone = true;
+}
+
+// What the answers amount to. Called right after a frame goes in, and again on every frame of a fling.
+// Says whether anything came back at all -- a recognizer that answers nothing is one that is finished.
+inline bool Window::GestureApply() {
+    bool moved = false;
+    // **The first movement is what makes it a drag**, and that is the whole of what is needed: whether
+    // the hand meant a click is not decided here at all -- `gestureTap` is the recognizer's answer at
+    // the end of the gesture, and everything that moved was not it. So this only has to stop the press
+    // looking pressed and find out who the movement belongs to. A control dragging its own value keeps
+    // it -- a slider -- and anything else offers it to a container above it, once.
+    const bool traveling = gestureDx != 0.0f || gestureDy != 0.0f;
+    if (!gestureLooked && capture && (gestureDragging || traveling)) {
+        gestureLooked = true;
+        // **The control is asked first, and that is not the same as asking its parent.** The press
+        // landed on it, so a control that pans is the one the drag belongs to -- a pane that draws its
+        // own rows is exactly this case, and looking only above it left that pane impossible to drag
+        // while its own bar and its arrows still worked. A control that is dragging its own value has
+        // already been ruled out by `Dragging`, which is what separates the two questions.
+        if (!capture->Dragging()) panning = capture->Pans() ? capture : PanTargetFor(capture);
+        if (panning) {
+            capture->pressed = false;
+            // A new gesture starts from nothing: the speed the last one ended with is not this hand's.
+            panLastT = MonotonicSeconds();
+            panSpeedY = 0.0f;
+            Invalidate();
+            moved = true;
+        }
+    }
+    if (traveling) {
+        if (panning) {
+            // **What the hand was worth, frame by frame, and the only place it can be read.** The
+            // recognizer answers with a distance and not a speed, and it stops answering the moment the
+            // hand is gone -- so what is left here when the hand lifts is all a fling is thrown with.
+            // Smoothed for the same reason the mouse path smooths it: a single jittery frame at the end
+            // would otherwise be the whole of it.
+            const double now = MonotonicSeconds();
+            const float dt = (float)(now - panLastT);
+            panLastT = now;
+            if (dt > 0.001f) panSpeedY = panSpeedY * 0.6f + (gestureDy / dt) * 0.4f;
+            panning->PanMove(gestureDx, gestureDy);
+        }
+        gestureDx = gestureDy = 0.0f;
+        moved = true;
+    }
+    return moved;
+}
+
+inline void Window::GestureBegin(UINT32 pointerId, const POINTER_INFO &info) {
+    const icapi::Api &ic = icapi::Get();
+    if (!ic.Ready() || gesture) return;
+    if (FAILED(ic.Create(&gesture)) || !gesture) { gesture = nullptr; return; }
+    const icapi::Config config[3] = {
+        { icapi::kManipulation, icapi::kEnable | icapi::kManipTranslationX |
+                                icapi::kManipTranslationY | icapi::kManipTranslationInertia },
+        { icapi::kTap, icapi::kEnable },
+        { icapi::kDrag, icapi::kEnable },
+    };
+    ic.Configure(gesture, 3, config);
+    ic.Callback(gesture, &Window::Output, this);
+    ic.AddPointer(gesture, pointerId);
+    gestureId = pointerId;
+    gestureLooked = false;
+    gestureIdle = 0;
+    GestureFeed(info);
+}
+
+inline bool Window::GestureFeed(const POINTER_INFO &info) {
+    if (!gesture) return false;
+    gestureFrame = info;
+    // **A frame is not a moment, and a speed cannot be read off one point.** What decides whether a
+    // hand threw the page is how fast it was going when it let go, and the system keeps the samples
+    // that led up to the newest one: `GetPointerInfo` answers with the last of them and says how many
+    // are behind it, in order. Feeding the newest alone is feeding it no speed at all, and a fling is
+    // exactly what never happens -- which is invisible while the hand is down, because the movement is
+    // still arriving frame by frame.
+    POINTER_INFO frames[16] = {};
+    frames[0] = info;
+    UINT32 count = 1;
+    UINT32 have = 0;
+    if (GetPointerInfoHistory(info.pointerId, &have, nullptr) && have > 1) {
+        if (have > 16) have = 16;
+        if (GetPointerInfoHistory(info.pointerId, &have, frames)) count = have;
+    }
+    icapi::Get().Process(gesture, count, 1, frames);
+    return GestureApply();
+}
+
+// **What ends a gesture.** Not the hand leaving -- that is `END`, and a fling's frames all come after
+// it, which is the whole point of one. Not the recognizer answering, either: it answers the same
+// frame the same way for as long as it is feeding an inertia, and answers nothing once it has stopped.
+// So a gesture ends when the system says `CANCEL`, or when feeding it has stopped producing anything.
+// Destroying the context at the release would throw the fling away with the finger.
+inline void Window::GestureFinish() {
+    if (!gesture) return;
+    if (panning) panning->PanRelease(0.0f, 0.0f);
+    panning = nullptr;
+    icapi::Get().Destroy(gesture);
+    gesture = nullptr;
+    gestureDx = gestureDy = 0.0f;
+    gestureTap = gestureDragging = gestureDone = gestureLooked = false;
+    gestureIdle = 0;
 }
 
 // ---- the three calls that belong to the window, which is what widget.h has only declared --------
@@ -4069,6 +4360,7 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         const bool contact = (info.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
         const Window::Hand hand = touching ? Window::Hand::Finger : Window::Hand::Pen;
         if (m == WM_POINTERDOWN) {
+            self->GestureBegin(id, info);
             if (!touching) {
                 self->PressAt(x, y, hand);
             } else if (self->finger == 0) {
@@ -4081,12 +4373,17 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 self->capture->pressed = false;
             }
         } else if (m == WM_POINTERUPDATE) {
+            self->GestureFeed(info);
             if (!touching || self->finger == id) self->MoveTo(x, y, hand, contact);
         } else if (!touching) {
+            self->GestureFeed(info);
             self->ReleaseAt(hand);
         } else if (self->finger == id) {
+            self->GestureFeed(info);
             self->finger = 0;
             self->ReleaseAt(hand);
+            // **The gesture outlives the hand here.** A fling's remaining frames come after this one,
+            // and `Tick` is what keeps asking for them; `GestureFinish` is decided there, not here.
         }
         return 0;
     }

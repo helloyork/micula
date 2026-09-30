@@ -231,6 +231,10 @@ struct SideNav : Widget {
     // business, and a range that leaves half a row at either end is a range that is wrong.
     float scrolled = 0.0f;
     float scrollTo = 0.0f;
+    // **A throw, as `fling` wants it**: where the rows were when the hand let go, how far the throw is
+    // worth, how long it takes, and how much of that has gone by. What the wheel and the arrows do not
+    // have and a finger does. See `PanRelease`.
+    float flingFrom = 0.0f, flingBy = 0.0f, flingFor = 0.0f, flingSpent = 0.0f;
     // How long the scroll takes to close most of its gap, in seconds.
     static constexpr float kGlide = 0.05f;
     // The pane's own scroll bar, for the wide pane: WinUI's NavigationView keeps its rows in a
@@ -744,6 +748,11 @@ struct SideNav : Widget {
         if (Widget::Animating()) return true;
         if (wide.Wants(Expanded() ? 1.0f : 0.0f) || bar.Wants(MarkY())) return true;
         if (barGrow != 1.0f) return true;
+        // **A throw, which the follower above cannot be asked for.** It moves both of its own numbers to
+        // the same place on every frame of the fling -- nothing is following anything -- so the line
+        // below would stop the loop after the first frame of one. This is the only thing that asks for
+        // the next frame while a throw is running.
+        if (flingFor > 0.0f) return true;
         if (scrolled != scrollTo) return true;
         // And the dim, which answers to the pane's state rather than to its geometry: a pane over the
         // page dims it and one back at the rail does not, and the fade between the two is the dim's
@@ -838,7 +847,25 @@ struct SideNav : Widget {
             // choice that was in sight all along is a bar answering a scroll nobody made.
             if (scrollTo != was) WakeBar();
         }
-        if (scrolled != scrollTo) motion::Follow(scrolled, scrollTo, dt, kGlide, 0.5f);
+        if (flingFor > 0.0f) {
+            flingSpent += dt;
+            const float t = flingSpent / flingFor;
+            float at = flingFrom + flingBy * fling::Position(t);
+            if (t >= 1.0f) {
+                at = flingFrom + flingBy;
+                flingFor = 0.0f;
+            }
+            // **No rubber band here.** The pane's range is a clamp and not a stretch: a rail with rows
+            // drawn past its own end is a rail with rows outside it, and the pane is not a page. A throw
+            // that runs into an end simply stops there.
+            if (at < 0.0f || at > ScrollMax()) {
+                at = std::clamp(at, 0.0f, ScrollMax());
+                flingFor = 0.0f;
+            }
+            BarScrolled(at, false);
+        } else if (scrolled != scrollTo) {
+            motion::Follow(scrolled, scrollTo, dt, kGlide, 0.5f);
+        }
 
         // The bar is a child, so the tree runs it -- but everything it is told is the pane's own
         // geometry, and the pane's width and its scroll are what are moving. It is placed here,
@@ -1151,6 +1178,31 @@ private:
     void BarScrolled(float to, bool glide) {
         scrollTo = (std::min)((std::max)(to, 0.0f), ScrollMax());
         if (!glide) scrolled = scrollTo;
+    }
+
+    // ---- a finger on the pane. --------------------------------------------------------------------
+    // **The pane is its own scroller.** Its rows are not children -- forty rows is one control drawing
+    // forty rows -- so there is nothing above it to hand a drag to, and nothing in the tree that could
+    // scroll it: the bar, the wheel and the arrows went through this pane's own methods already, and
+    // a finger has to arrive at the same place. What a finger gets that they do not is the rule the
+    // thumb already follows -- it stays under the hand rather than gliding after it -- which is what
+    // `BarScrolled(..., false)` is for.
+    bool Pans() const override { return ScrollMax() > 0.0f; }
+    void PanMove(float, float dy) override {
+        flingFor = 0.0f;      // caught again: whatever it was coasting on is not this hand's
+        BarScrolled(scrolled - dy, false);
+    }
+    void PanRelease(float, float vy) override {
+        // **The hand moving down walks the rows back up**, so the two are each other's negative -- and a
+        // throw is what the hand had, not what the pane gets. Under `fling::kSlowest` a nudge is not a
+        // throw; over `kFastest` it is not a thumb.
+        const float speed = -vy;
+        if (std::fabs(speed) < fling::kSlowest) return;
+        const float honest = std::clamp(std::fabs(speed), fling::kSlowest, fling::kFastest);
+        flingFrom = scrolled;
+        flingBy = std::copysign(fling::Distance(honest), speed);
+        flingFor = fling::Duration(honest);
+        flingSpent = 0.0f;
     }
     // Whether the point is over an arrow that exists. The arrows are the rail's, so a pane at
     // full width has none: there the line marks the cut and a click on it is a click on the row

@@ -220,14 +220,16 @@ because where the chosen row is on screen is the one thing about an open list th
 animation's to decide -- it is on the control from the first frame, and the two edges open outward
 from it.
 
-**The alignment is the premise, and the panel's edges are what serve it.** The panel is made
-of the whole rows that fit around the control's own line -- as many above the chosen row as
-the room over the control holds, as many below it as the room under it holds, and no more
-rows than the list has on that side -- so the panel is always one the room can place, and the
-chosen row is on the control's line whatever the list is chosen from. What gives way when the
-room runs out is the number of rows, never the line: a placement worked out from a room larger
-than the layout really gives is a panel the layout clamps, and a clamp takes the chosen row
-off the control by exactly what it clamped.
+**The room decides the panel's height, and the choice only decides what sits in it.** The panel is the
+whole number of rows the room holds -- its own height, not the rows the choice happened to leave above
+and below itself, because a choice near either end of the list leaves nothing below it and a panel made
+of that is a panel one row tall with the list scrolling inside it. The chosen row is still on the
+control's line every time the list opens, and because the height is whole rows and one height for the
+whole list, every notch of a wheel lands with a row on that line as well; the choice is where the list
+is scrolled to, and a placement that could not be reached would be a view clamped off the row it chose.
+What gives way when the room runs out is still the number of rows rather than the line: a placement
+worked out from a larger room than the layout really gives is a panel the layout clamps, and a clamp
+takes the chosen row off the control by exactly what it clamped.
 
 A notch of the wheel moves the choice one row and takes the view with it, by exactly that row:
 the panel stays where the choice put it and the rows travel under the mark, so the option that
@@ -363,12 +365,17 @@ Four styles, and the drawing is the same in all of them:
 |---|---|---|
 | `Fixed` | Part of the layout, and it never moves: `openW` is simply how wide it is. | The page is laid out past it. |
 | `Toggle` | The button opens and closes it, and it stays where it was put. | The page makes room for it again on every toggle, so the window lays itself out in `onToggle`. |
-| `Peek` | Resting the pointer on the rail opens it and leaving closes it, over the page. The button pins it open instead, and a pinned pane is a `Toggle`: the page lays itself out and keeps the room until it is closed again, which is what a person asking for a pane should get from it -- a pane that covers the content *and* has to be clicked shut is a pane with no reason to exist. Only the hover covers the page, and a hover is the pointer on its way somewhere else. The pointer has to rest for `peekIn` first -- crossing a rail on the way somewhere else is not asking for a pane -- and closing has no such delay, because a pane that lingers over the page after the pointer has left is in the way. This one is not WinUI: `NavigationView` has no hover, and Task Manager does not open on hover either. It is Visual Studio's auto-hide tool window. | The hover leaves the page where it is; once the button has pinned it, the page makes room, and goes on making it until the pane is back at the rail -- a retraction is the same pane leaving, not an overlay arriving. |
+| `Peek` | Resting the pointer on the rail opens it and leaving closes it, over the page. The button pins it open instead, and a pinned pane is a `Toggle`: the page lays itself out and keeps the room until it is closed again, which is what a person asking for a pane should get from it -- a pane that covers the content *and* has to be clicked shut is a pane with no reason to exist. Only the hover covers the page, and a hover is the pointer on its way somewhere else. The pointer has to rest for `peekIn` first -- crossing a rail on the way somewhere else is not asking for a pane -- and closing has no such delay, because a pane that lingers over the page after the pointer has left is in the way. This one is not WinUI: `NavigationView` has no hover, and Task Manager does not open on hover either. It is Visual Studio's auto-hide tool window. **A touch screen cannot ask for this one**: there is no pointer to rest on the rail, so a `Peek` pane never opens from under a finger -- its button still pins it open, which is a `Toggle` -- and it is left that way because the idea itself has not settled. | The hover leaves the page where it is; once the button has pinned it, the page makes room, and goes on making it until the pane is back at the rail -- a retraction is the same pane leaving, not an overlay arriving. |
 | `Minimal` | A rail of icons and nothing more: it never expands, so `SetOpen` and `Toggle` do nothing, and it draws no button of its own. | The page is laid out past the rail, and the pane never covers it. |
 
 Nothing chooses between those two answers: a pane that stays is one the page is laid out around,
 and a pane that comes and goes covers what it is over, because pushing a page around under a
-pointer that is only passing through is worse than covering it. There was a `place` field here
+pointer that is only passing through is worse than covering it. **A pane scrolls its own rows, and a
+finger gets what the wheel and the bar get**: the rows are not children -- forty rows is one control
+drawing forty rows -- so there is nothing in the tree that could scroll them, and the pane answers
+`Pans` and takes the drag itself. What a finger gets that the wheel does not is the rule a dragged
+thumb already follows, and the rows stay under the hand rather than gliding after it.
+There was a `place` field here
 and a rail-plus-overlay shape to match WinUI's `LeftCompact`; it came out of the example window
 because a pane the user asked to open and which then covers the content is not worth the third
 axis. WinUI earns that shape by picking it *for you* in a window too narrow to give up the room,

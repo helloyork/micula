@@ -39,11 +39,6 @@ struct ScrollView;
 // with nothing left in it rather than as the end of one. The half is Android's over-scroll damping.
 constexpr float kPanRubber   = 0.5f;
 constexpr float kPanOver     = 40.0f;
-// What is left of a fling's speed after a second. Not a number to argue with the eye: it is Apple's,
-// published as `UIScrollView.decelerationRate.normal` = 0.998 per millisecond, which is 0.135 a second
-// -- and the same 0.135 appears as `FrictionSimulation`'s coefficient in Flutter, so it is what most
-// scrollables on this platform ended up with. A fling has no duration; it has whatever the hand left it.
-constexpr float kPanFriction = 0.135f;
 constexpr float kPanSpring   = 0.01f;
 
 // The viewport's own layout: the column, where it is scrolled to, and the bar down the right-hand
@@ -70,8 +65,11 @@ struct ScrollView : View {
     float panFrom = 0.0f;
     float panHand = 0.0f;
     bool  held = false;
-    // What the hand was worth when it let go, in DIPs per second, and what is left of it.
-    float velocity = 0.0f;
+    // **The fling, as four numbers**: where the page was when the hand let go, how far the throw is
+    // worth, how long it takes, and how much of that has gone by. Ours rather than the recognizer's --
+    // see `PanRelease` -- and a distance and a duration rather than a decaying speed, for the reason
+    // given over `fling`.
+    float flingFrom = 0.0f, flingBy = 0.0f, flingFor = 0.0f, flingSpent = 0.0f;
 
     // The column a page adds to. `Add` below is the whole of the interface to it.
     View *content = nullptr;
@@ -171,7 +169,7 @@ struct ScrollView : View {
             held = true;
             panHand = 0.0f;
             panFrom = scroll;
-            velocity = 0.0f;
+            flingFor = 0.0f;      // caught again: whatever it was coasting on is not this hand's
         }
         panHand += dy;
         const float most = ScrollMax();
@@ -186,8 +184,15 @@ struct ScrollView : View {
     }
     void PanRelease(float, float vy) override {
         held = false;
-        // The hand moving down walks the content back up, so the two are each other's negative.
-        velocity = -vy;
+        // **The hand moving down walks the content back up**, so the two are each other's negative -- and
+        // a throw is what the hand had, not what the page gets.
+        const float speed = -vy;
+        if (std::fabs(speed) < fling::kSlowest) return;      // a nudge is not a throw
+        const float honest = std::clamp(std::fabs(speed), fling::kSlowest, fling::kFastest);
+        flingFrom = scroll;
+        flingBy = std::copysign(fling::Distance(honest), speed);
+        flingFor = fling::Duration(honest);
+        flingSpent = 0.0f;
     }
     // The fling, and the rubber band coming back. One tick for both because they are the same question --
     // is the page where it belongs -- and because the second must not run while the first is still going:
@@ -196,32 +201,34 @@ struct ScrollView : View {
         Widget::Tick(dt);
         const float most = ScrollMax();
         if (scroll < 0.0f || scroll > most) {
-            velocity = 0.0f;
+            flingFor = 0.0f;
             const float edge = scroll < 0.0f ? 0.0f : most;
             const float at = edge + (scroll - edge) * (float)std::pow(kPanSpring, dt);
             scroll = std::fabs(at - edge) < 0.5f ? edge : at;
             InvalidateLayout();
             return;
         }
-        if (std::fabs(velocity) <= 1.0f) {
-            velocity = 0.0f;
-            return;
-        }
-        float at = scroll + velocity * dt;
-        if (at < 0.0f || at > most) {
-            // The end of the page rather than a wall: the fling gets `kPanOver` of stretch out of it and
+        if (flingFor <= 0.0f) return;
+        flingSpent += dt;
+        const float t = flingSpent / flingFor;
+        float at = flingFrom + flingBy * fling::Position(t);
+        if (t >= 1.0f) {
+            // **The end is an end.** The curve arrives at its finish rather than inching towards it, and
+            // the page stops where the throw said it would.
+            at = flingFrom + flingBy;
+            flingFor = 0.0f;
+        }        if (at < 0.0f || at > most) {
+            // The end of the page rather than a wall: the throw gets `kPanOver` of stretch out of it and
             // gives the rest to the rubber band, which is what makes the bounce read as giving.
             at = std::clamp(at, -kPanOver, most + kPanOver);
-            velocity = 0.0f;
-        } else {
-            velocity *= (float)std::pow(kPanFriction, dt);
+            flingFor = 0.0f;
         }
         scroll = at;
         InvalidateLayout();
     }
     bool Animating() const override {
         if (Widget::Animating()) return true;
-        return std::fabs(velocity) > 1.0f || scroll < 0.0f || scroll > ScrollMax();
+        return flingFor > 0.0f || scroll < 0.0f || scroll > ScrollMax();
     }
 
     // A wheel turned over this, or over anything in it -- the window offers the notch to the widget

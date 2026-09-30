@@ -8,12 +8,23 @@ library can be: a minor version may break.
 
 ### Added
 
-- **A finger scrolls a page.** Past the point where a tap turns into a drag, a control that is not
-  holding the gesture stops being asked about it and the first container above it that pans --
-  `ScrollView` -- takes it: the content follows the hand instead of gliding after it, a pull past the
-  end of the page comes a little way and springs back, and letting go throws it, since the hand's own
-  speed is handed over as the fling. `Widget::Pans`, `PanMove` and `PanRelease` are the hooks, and the
-  container is decided once per gesture so a page inside a page does not pass the same hand up.
+- **A finger scrolls a page.** A control that is not holding the gesture stops being asked about it as
+  soon as the movement starts, and the first container above it that pans -- `ScrollView` -- takes it:
+  the content follows the hand instead of gliding after it, a pull past the end of the page comes a
+  little way and springs back, and letting go throws it. `Widget::Pans`, `PanMove` and `PanRelease` are
+  the hooks, and the container is decided once per gesture so a page inside a page does not pass the
+  same hand up. The navigation pane's rows are not children -- forty rows is one control drawing forty
+  rows -- so nothing in the tree could scroll them and the pane answers `Pans` itself, which gives it a
+  throw of its own; the pane has no rubber band, because a rail with rows drawn past its own end is a
+  rail with rows outside it.
+- **Windows decides what a hand did; Android decides what a throw is worth.** Which movement was a tap
+  and which was a drag is not judged here at all -- `InteractionContext` is asked, through `NInput.dll`,
+  so the slop is whatever the system's own recognizer says it is, and only the question of which
+  container a drag belongs to is left to the library. A machine without the recognizer falls back to the
+  eight-DIP rule (`kTouchSlop`). The fling is Android's: a distance and a duration off its own constants
+  -- `DECELERATION_RATE`, the two spline tensions, and the friction behind `ViewConfiguration.getScrollFriction` --
+  so a throw of 1000 DIPs a second travels about 190 DIPs in about half a second and then stops, rather
+  than leaving a page creeping for seconds the way a per-frame friction does.
 - **A finger and a pen are answered like a mouse.** Touch and pen arrive as `WM_POINTER` messages and
   go into the same press, move and release the mouse uses -- so a drop-down opens to a tap and a slider
   drags under a finger because they were written for a pointer -- and the window answers the pointer

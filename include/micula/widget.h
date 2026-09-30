@@ -13,6 +13,8 @@
 
 #include <uiautomationclient.h>     // the UIA_* control type ids
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -185,7 +187,7 @@ struct Widget {
     // `PanMove` is handed the movement of the hand since the last call, in client DIPs, and is expected
     // to follow it rather than glide toward it: under a finger, the content is the finger's. `PanRelease`
     // ends the gesture with the speed the hand had, in DIPs per second, which is what a fling is worth.
-    // See `ScrollView`, which is the one control that answers this today.
+    // See `ScrollView` and `SideNav`, the two containers that answer this today.
     virtual bool Pans() const { return false; }
     virtual void PanMove(float /*dx*/, float /*dy*/) {}
     virtual void PanRelease(float /*vx*/, float /*vy*/) {}
@@ -524,5 +526,82 @@ inline void UnplaceSubtree(Widget *w) {
     w->placed = false;
     for (auto &child : w->children) UnplaceSubtree(child.get());
 }
+
+// ---- the fling, in Android's numbers ---------------------------------------------------------------
+//
+// A throw has a distance and a duration, and both come off one curve whose constants belong to Android
+// -- `Scroller` and `OverScroller` in the AOSP, over `ViewConfiguration.getScrollFriction`. Borrowed
+// rather than invented for the same reason the recognizer was: the shape of a fling is pure feel, there
+// is nothing about it a library can be right about on its own, and these are the numbers a great many
+// thumbs have already been trained on.
+//
+// **The duration is the point of it.** The obvious fling -- keep the speed, multiply it down by a
+// friction every frame -- has no horizon: at a tenth a second, a page thrown at 1000 DIPs a second is
+// still creeping three and a half seconds later, and an eye can see a sixtieth of that. Android's curve
+// is over when its duration is up, and puts the tail in the tension at the end rather than in an
+// asymptote. Nothing owns one of these: a container that pans keeps three or four numbers of its own and
+// asks these for the rest -- see `ScrollView` and `SideNav`.
+namespace fling {
+// The deceleration exponent -- Android's `DECELERATION_RATE`.
+constexpr float kRate = 2.3582f;      // log(0.78) / log(0.9)
+// Where tension and deceleration cross, and how much tension at each end. The two control coefficients
+// are that cubic, from Android's own pair of tensions.
+constexpr float kInflexion = 0.35f;
+constexpr float kTensionIn = 0.5f;
+constexpr float kTensionOut = 1.0f;
+constexpr float kP1 = kTensionIn * kInflexion;
+constexpr float kP2 = 1.0f - kTensionOut * (1.0f - kInflexion);
+// Android's default coefficient of friction, and the physical coefficient it is weighed against: gravity
+// on a kilogram, the inches in a metre, and 160 pixels to the inch -- which in a world measured in DIPs
+// is one, so these are the numbers a 1x screen gets. The last 0.84 is Android's own tuning constant for
+// the second half of it, and is not the friction.
+constexpr float kFriction = 0.015f;
+constexpr float kPhysical = 9.80665f * 39.37f * 160.0f * 0.84f;
+constexpr float kDecel = kFriction * kPhysical;
+// **The two ends of a throw nobody can make**: under this nothing is thrown at all, and over it is not a
+// thumb. Android's own bounds, in DIPs a second.
+constexpr float kSlowest = 50.0f;
+constexpr float kFastest = 8000.0f;
+// How far a speed is worth, in DIPs. Android's spline function, with the logarithm taken once.
+inline float Distance(float speed) {
+    const float l = std::log(kInflexion * speed / kDecel);
+    return kDecel * std::exp(kRate / (kRate - 1.0f) * l);
+}
+// And how long the throw takes, in seconds.
+inline float Duration(float speed) {
+    const float l = std::log(kInflexion * speed / kDecel);
+    return std::exp(l / (kRate - 1.0f));
+}
+// Where in that distance the throw is, `t` being how much of the duration has gone by. Android builds a
+// hundred-sample table of the curve and walks it; this builds the same table once, with the same
+// three-way search, and reads it the same way.
+inline float Position(float t) {
+    constexpr int kN = 100;
+    static float curve[kN + 1];
+    static bool built = false;
+    if (!built) {
+        float lo = 0.0f;
+        for (int i = 0; i < kN; i++) {
+            const float alpha = (float)i / kN;
+            float hi = 1.0f, x = 0.0f, coef = 0.0f;
+            for (int step = 0; step < 32; step++) {
+                x = lo + (hi - lo) / 2.0f;
+                coef = 3.0f * x * (1.0f - x);
+                const float at = coef * ((1.0f - x) * kP1 + x * kP2) + x * x * x;
+                if (std::fabs(at - alpha) < 1e-5f) break;
+                if (at > alpha) hi = x;
+                else lo = x;
+            }
+            curve[i] = coef * ((1.0f - x) * kTensionIn + x) + x * x * x;
+        }
+        curve[kN] = 1.0f;
+        built = true;
+    }
+    const float u = std::clamp(t, 0.0f, 1.0f) * (float)kN;
+    const int i = (int)u;
+    if (i >= kN) return 1.0f;
+    return curve[i] + (u - (float)i) * (curve[i + 1] - curve[i]);
+}
+}  // namespace fling
 
 }  // namespace micula
