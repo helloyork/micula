@@ -146,7 +146,7 @@ void GeneralPage(ScrollView *sheet) {
         Theme((ThemeMode)i);
         // The palette a window paints from was built when it was made, so the mode alone changes
         // nothing until the window is told to build it again.
-        if (Window *w = sheet->window()) w->ReloadTheme();
+        if (Surface *w = sheet->surface()) w->ReloadTheme();
     }));
 
     // The footer: what happened last, and the two things a person can do about it.

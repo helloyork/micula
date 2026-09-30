@@ -100,7 +100,7 @@ struct ToggleSwitch : Widget {
         if (on == value) return;
         on = value;
         if (!tell) return;
-        StartAnimation(window());
+        StartAnimation(surface());
         if (onChange) onChange(on);
     }
     // The knob at `k` (0..1), and the state that follows from where it has got to.

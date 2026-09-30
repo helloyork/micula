@@ -139,7 +139,7 @@ struct ScrollBar : Widget {
             repeating = false;
             Step(false);
             // RepeatButton.Delay's default; RepeatTick takes over from here at its Interval.
-            repeatTimer.Start(window(), 250, [this] { RepeatTick(); });
+            repeatTimer.Start(surface(), 250, [this] { RepeatTick(); });
         }
         Poll();
     }
@@ -161,7 +161,7 @@ struct ScrollBar : Widget {
         if (grab == Part::None || grab == Part::Thumb) { repeatTimer.Stop(); return; }
         if (!repeating) {
             repeating = true;
-            repeatTimer.Start(window(), 50, [this] { RepeatTick(); });
+            repeatTimer.Start(surface(), 50, [this] { RepeatTick(); });
         }
         Step(true);
     }
@@ -245,7 +245,7 @@ struct ScrollBar : Widget {
             }
         }
         if (next != armedFor) {
-            Window *w = window();
+            Surface *w = surface();
             if (w && w->hwnd) {
                 armedFor = next;
                 if (next == 0) stateTimer.Stop();

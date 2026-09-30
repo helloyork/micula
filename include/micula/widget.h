@@ -23,6 +23,8 @@ namespace micula {
 
 struct Painter;
 struct Window;
+// The thing a tree is drawn into and handed to: a window, a menu, a tip. See window.h.
+struct Surface;
 struct Layer;
 
 // Where a widget's rectangle is measured from.
@@ -241,8 +243,8 @@ struct Widget {
     // ArrangeSubtree), and the walk is here, where `Layer` is not yet a complete type. A widget that
     // is not a layer is never asked, which is why the answer below is a whole box rather than an
     // error.
-    virtual D2D1_RECT_F Cover(const Room &room, const Widget &host) const {
-        (void)host;
+    virtual D2D1_RECT_F Cover(const Room &room, const Widget &hostLayout) const {
+        (void)hostLayout;
         return { 0.0f, 0.0f, room.width, room.height };
     }
     // Whether this widget is a **window onto its children** rather than a box they fit in: they are
@@ -293,13 +295,16 @@ struct Widget {
         if (layout) layout->Tick(dt);
     }
 
-    // ---- the window --------------------------------------------------------------------------
-    // Found by walking up. The root of a tree holds the window itself, which is how a subtree that
+    // ---- the surface ---------------------------------------------------------------------------
+    // Found by walking up. The root of a tree holds the surface itself, which is how a subtree that
     // was built before it was added still answers: the walk reaches the root and the root knows. A
-    // widget in no window at all answers null, which is the state a page builds in.
-    virtual Window *window() const { return parent ? parent->window() : win; }
-    // The window this node's root belongs to. Set on the root alone -- see Window::EnsureContent.
-    Window *win = nullptr;
+    // widget in no tree at all answers null, which is the state a page builds in.
+    //
+    // **A surface rather than a window**, because what a widget needs is the tree it is in and the
+    // hand that is on it -- and a menu's tree is one of those too.
+    virtual Surface *surface() const { return parent ? parent->surface() : host; }
+    // The surface this node's root belongs to. Set on the root alone -- see Window::EnsureContent.
+    Surface *host = nullptr;
     // Ask for another arrangement, and for a repaint.
     void InvalidateLayout();
     void Invalidate();

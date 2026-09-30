@@ -275,7 +275,7 @@ void SettingsPage(ScrollView *sheet) {
         ->Set(new Segmented({ L"System", L"Light", L"Dark" }, themeMode, [sheet](int i) {
             themeMode = i;
             Theme((ThemeMode)i);
-            if (Window *w = sheet->window()) w->ReloadTheme();
+            if (Surface *w = sheet->surface()) w->ReloadTheme();
         }));
 
     // The material is read when the window is made, like the theme, so asking for another one is the
@@ -285,7 +285,8 @@ void SettingsPage(ScrollView *sheet) {
         ->Set(new Segmented({ kBackdrops[0], kBackdrops[1], kBackdrops[2] }, windowBackdrop - 2,
                             [sheet](int i) {
             windowBackdrop = 2 + i;
-            if (Window *w = sheet->window()) {
+            Window *w = sheet->surface() ? sheet->surface()->AsWindow() : nullptr;
+            if (w) {
                 w->backdrop = (DWORD)windowBackdrop;
                 w->ApplyThemeToFrame();
             }

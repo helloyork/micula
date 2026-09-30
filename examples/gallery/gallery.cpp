@@ -141,7 +141,7 @@ struct Page {
         d->AddButton(L"关闭", 1, ButtonStyle::Accent);
         d->onResult = [this](int r) {
             if (r != 1) return;
-            if (Window *w = quit->window()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
+            if (Surface *w = quit->surface()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
         };
         return d;
     }
@@ -278,7 +278,7 @@ void Hit(Fonts &fonts, Widget *w, int depth, float ox, float oy) {
     const D2D1_RECT_F r = w->rect;
     const float cx = ox + (r.left + r.right) / 2;
     const float cy = oy + (r.top + r.bottom) / 2;
-    Widget *found = w->window()->HitTest(cx, cy);
+    Widget *found = w->surface()->HitTest(cx, cy);
     // A widget scrolled out of the container it lives in is not reachable and is not meant to be: its
     // own centre is outside the box it is seen through. That is a different answer from a click
     // landing on something else, which is the fault this is looking for, so the print says which.

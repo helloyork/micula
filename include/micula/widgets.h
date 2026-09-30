@@ -40,6 +40,7 @@
 #pragma once
 
 #include "window.h"
+#include "popup.h"
 
 #include "button.h"
 #include "card.h"

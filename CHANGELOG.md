@@ -314,9 +314,35 @@ library can be: a minor version may break.
   scrim, the key behaviour, the pane's own button and `nav=` rows -- as switches on the page the window
   opens on, with the same state on the command line, a theme switch on the page in its footer, and a
   `--dump` that prints the shell's own rectangles rather than a screenshot.
+- **`Popup`**: a top-level thing that draws and is not a window -- a menu, a tip, a flyout that has to
+  be able to leave the rectangle it came from. It is a real `WS_POPUP` window with no caption and no
+  client area under one, and everything above the handle is a `Surface`, so it is ticked and painted by
+  the same loop as the window it opens over. It is a window and not a `Layer` because a layer is drawn
+  inside its window: it cannot cross the window's edge, and a menu has to be able to exist with no
+  window behind it at all, which is what a tray menu is. `Show` places it in the DIPs of the monitor it
+  lands on rather than of the one it was opened from, and `activates` decides whether it takes the
+  foreground -- a tip that did would blink the caption of the window it belongs to. It has the tree a
+  window has (`Add`, `SetLayout`), the three things a hand does (`Surface::HandMessage`, so a menu
+  answers a finger the way every control already does), and none of what a caption or an automation
+  tree needs.
 
 ### Changed
 
+- **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and
+  what they share is all that is in `Surface`: the window handle, the composition surface it draws
+  into, the tree, the clock, the whole input path, the hit tests, the focus and the timers. The frame
+  loop therefore pumps surfaces -- `App::Add` takes a `Surface &` and `App` holds
+  `std::vector<Surface *> surfaces` -- which is what lets a menu be open over a window without stopping
+  it: both are ticked and painted by the same loop, on the same thread, and the window's animations go
+  on running underneath. Nothing a surface can answer for itself changed; what a *window* keeps is its
+  caption, its page hooks, its automation tree and the frame around its client area, which is why
+  `RootBox()` -- where a tree starts -- is the one thing the two answer differently.
+- **`Widget::window()` is `Widget::surface()`**, and `Window::Run()` is `Surface::Run()`: what a widget
+  reaches up to is the surface its tree is on, which is a menu's as much as a window's, and a
+  program with one surface to draw has the same shorthand it had with one window. A page that wants the
+  window itself asks `surface()->AsWindow()`, which is null inside a menu -- only the things that are a
+  window's (its backdrop, its automation tree) need it, and `ReloadTheme()` moved up to `Surface` so
+  that a page switching the theme does not have to be in a window to say so.
 - **`Window::ReloadTheme` and `Window::ApplyThemeToFrame` are public**, which is what the theme mode's
   own documentation already told a page to call: a palette is built when a window is made, so a
   settings page that says `Theme(...)` while the window is up has said nothing until the window is told

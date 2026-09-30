@@ -709,9 +709,9 @@ struct SideNav : Widget {
         // A press on the bar never arrives here: the bar is a child, and the tree hands it the press
         // before the pane -- which is also why the pane forwards no drag to it below.
         held = AtArrow(y, true) ? -1 : (AtArrow(y, false) ? 1 : 0);
-        if (held == 0 || !window()) return;
+        if (held == 0 || !surface()) return;
         ScrollBy((rowH + kRowGap) * (float)held);
-        repeat.Start(window(), 250, [this] { RepeatTick(); });
+        repeat.Start(surface(), 250, [this] { RepeatTick(); });
         Invalidate();
     }
     void OnRelease() override {
@@ -719,9 +719,9 @@ struct SideNav : Widget {
         repeat.Stop();
     }
     void RepeatTick() {
-        if (held == 0 || !enabled || !window()) { held = 0; repeat.Stop(); return; }
+        if (held == 0 || !enabled || !surface()) { held = 0; repeat.Stop(); return; }
         ScrollBy((rowH + kRowGap) * (float)held);
-        repeat.Start(window(), 50, [this] { RepeatTick(); });
+        repeat.Start(surface(), 50, [this] { RepeatTick(); });
         Invalidate();
     }
     // Space and Enter. With `followsFocus` the choice has already caught up with the ring, so

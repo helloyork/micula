@@ -89,7 +89,7 @@ inline bool SystemUsesDarkTheme() {
 // Which theme a window paints in: the machine's answer, or this program's own. Three states for the
 // same reason the animation switch has three, and the reason is not symmetry.
 //
-// `Window::ReloadTheme` is called when Windows broadcasts `ImmersiveColorSet` -- which is exactly the
+// `Surface::ReloadTheme` is called when Windows broadcasts `ImmersiveColorSet` -- which is exactly the
 // moment somebody changes a colour setting -- and it rebuilds the palette. Without a mode there is
 // nothing to tell "follow what the machine says" apart from "I have said dark, leave me alone", so
 // a page whose only statement about its theme was `pal = MakePalette(true)` went light the first time
@@ -626,7 +626,7 @@ inline Palette MakePalette(bool dark) {
 // without asking a window -- a menu can exist with no window to ask at all. What a *window* owns is
 // its own surface, its own focus and its own client area; the look of it belongs to the program.
 //
-// Both are made once and shared from then on. `RefreshPalette` is what `Window::ReloadTheme` calls
+// Both are made once and shared from then on. `RefreshPalette` is what `Surface::ReloadTheme` calls
 // after Windows says the colours changed -- the palette is a handful of colours and could be remade
 // per call, but the *same* ones have to come back for every window, so there is one of them.
 inline Palette &CurrentPalette() {

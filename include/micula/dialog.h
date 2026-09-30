@@ -227,7 +227,7 @@ struct Dialog : Layer {
     void Tick(float dt) override {
         Layer::Tick(dt);
         if (tookFocus) return;
-        Window *w = window();
+        Surface *w = surface();
         if (!w) return;              // not in one yet: this comes round again on the next frame
         tookFocus = true;
         if (Widget *first = DefaultButton()) w->SetFocusTo(first);

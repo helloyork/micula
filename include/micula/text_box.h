@@ -120,7 +120,7 @@ struct TextBox : Widget {
         if (layout) { layout->Release(); layout = nullptr; }
     }
     void Ensure() const {
-        Window *w = window();
+        Surface *w = surface();
         if (layout || !w || !w->fonts.dw || !w->fonts.body) return;
         w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
                                       100000.0f, 100.0f, &layout);
@@ -205,7 +205,7 @@ struct TextBox : Widget {
         size_t under = 0;
         const size_t at = IndexAt(x - InnerLeft() + scroll, &under);
         const DWORD now = (DWORD)GetMessageTime();
-        Window *w = window();
+        Surface *w = surface();
         const float slop = (float)GetSystemMetrics(SM_CXDOUBLECLK) / 2.0f /
                            (w ? w->scale() : 1.0f);
         const bool twice = lastPressTime != 0 && now - lastPressTime <= GetDoubleClickTime() &&
@@ -287,7 +287,7 @@ struct TextBox : Widget {
         const bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
         if (ctrl) {
-            HWND hwnd = window() ? window()->hwnd : nullptr;
+            HWND hwnd = surface() ? surface()->hwnd : nullptr;
             switch (vk) {
             case 'A': anchor = 0; caret = text.size(); return true;
             case 'C': if (HasSelection()) micula::SetClipboardText(hwnd, Selected());
@@ -419,7 +419,7 @@ struct TextBox : Widget {
         }
 
         if (active && enabled) {
-            Window *w = window();
+            Surface *w = surface();
             if (w && w->caretOn) {
                 const float x = inner.left + XOf(caret) - scroll;
                 p.Line(x, rect.top + 6, x, rect.bottom - 6, c.textPrimary, 1.0f);

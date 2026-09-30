@@ -55,8 +55,8 @@ uses, for a page that wants to ask it of itself.
 
 ## The app
 
-`Window::Run()` runs that one window. A program with more than one -- which is what a windowed popup
-needs -- makes an `App` and gives it the windows:
+`Surface::Run()` runs that one surface -- a window, usually. A program with more than one surface, which
+is what a menu or a tip is, makes an `App` and gives it the surfaces:
 
 ```cpp
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
@@ -64,41 +64,92 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
     MainWindow main;
     if (!main.Create(1040, 700, true, nullptr)) return 1;
     app.Add(main);
-    app.Add(tool);                 // as many as the program has
+    app.Add(menu);                 // a window, a menu, a tip: whatever draws
     return app.Run();
 }
 ```
 
 | Member | Description |
 |---|---|
-| `std::vector<Window *> windows` | What it pumps, in the order they were added. |
-| `void Add(Window &w)` | Adds a window to the loop. It may be added while the loop is running, which is what a window a page makes should do. |
-| `void Remove(Window &w)` | Takes one out. The loop ends when the last one is gone, and a window that is destroyed does this itself. |
+| `std::vector<Surface *> surfaces` | What it pumps, in the order they were added. |
+| `void Add(Surface &s)` | Adds a surface to the loop. It may be added while the loop is running, which is what a menu a page opens should do. |
+| `void Remove(Surface &s)` | Takes one out. The loop ends when the last one is gone, and a surface that is destroyed does this itself. |
 | `int Run()` | Runs until there is nothing left to run. Returns the exit code of the `WM_QUIT` that ended it. |
 | `void Quit(int code = 0)` | Ends the loop where it stands. |
 | `bool Running() const` | Whether `Run` is on the stack. |
 
-On `Window`, three things go with it:
+On `Surface`, two things go with it:
 
 | Member | Description |
 |---|---|
-| `App *app` | The app this window is in, or null. Set by `App::Add`. |
-| `virtual void OnClosed()` | The window has been destroyed, and this is the last thing it does about it. |
-| `int Run()` | `App app; app.Add(*this); return app.Run();` -- the same loop, for a program with one window. |
+| `App *app` | The app this surface is in, or null. Set by `App::Add`. |
+| `int Run()` | `App app; app.Add(*this); return app.Run();` -- the same loop, for a program with one surface. |
 
-- **One loop, one thread, as many windows as you like.** Every window in the app is ticked and
-painted by the same loop, on the thread that made them, so a window that did not start the loop
-still animates -- and nothing in the library has to be synchronised for it.
-- **The App does not have to outlive the windows**, and it is usually a local in `wWinMain`, which
-means it is destroyed *first*. A window still in it clears its own pointer, and the App's destructor
+And one more on `Window`, which is a window's rather than a surface's:
+
+| Member | Description |
+|---|---|
+| `virtual void OnClosed()` | The window has been destroyed, and this is the last thing it does about it. |
+
+- **One loop, one thread, as many surfaces as you like.** Every surface in the app is ticked and
+painted by the same loop, on the thread that made them, so a surface that did not start the loop
+still animates -- and nothing in the library has to be synchronised for it. A menu opening over a
+window therefore does not stop the window: the loop turns frames for both, and the window's
+animations go on running underneath.
+- **The App does not have to outlive the surfaces**, and it is usually a local in `wWinMain`, which
+means it is destroyed *first*. A surface still in it clears its own pointer, and the App's destructor
 clears whatever is left, so the order the two die in does not matter.
 - **Owning a window a page made.** A window cannot be deleted inside its own message, so `OnClosed`
 is where a page hears about it, and the usual shape is a `Post` to the window that made it -- see
-`Window::OnClosed` and `Window::Post`, and the `App` whose loop is what both windows are in.
-- **A window made while the loop is running** is brought up to it as it joins: its frame clock and
-its caret timer start there, and `WM_DESTROY` hands back its device and its fonts. The tail of
-`Run()` does that only for the windows still standing when the loop ends, which is the other way out
+`Window::OnClosed` and `Post`, and the `App` whose loop is what both windows are in.
+- **A surface made while the loop is running** is brought up to it as it joins: its frame clock and
+its caret timer start there, and `WM_DESTROY` hands back its device. The tail of
+`Run()` does that only for the surfaces still standing when the loop ends, which is the other way out
 -- a window a page opens and closes all day would otherwise take a D3D device with it every time.
+
+## Popups
+
+A menu, a tip, or a flyout that has to be able to leave the rectangle it came from. `Popup`
+is a `Surface` with a window of its own -- a real `WS_POPUP` one, with no caption and no client area
+under one -- rather than a `Layer`, because a layer is drawn inside its window and cannot cross its
+edge... and because a menu has to be able to exist with no window behind it at all, which is what a
+shell tray menu is.
+
+It joins the app like anything else, so it is drawn and ticked by the same loop: the window under it
+keeps animating while it is up, and a menu that animates itself is possible.
+
+```cpp
+struct SettingsMenu : micula::Popup {
+    const wchar_t *ClassName() const override { return L"MiculaSettingsMenu"; }
+    bool OnMessage(UINT m, WPARAM wp, LPARAM lp) override {
+        if (m == WM_KEYDOWN && wp == VK_ESCAPE) { Hide(); return true; }
+        return false;
+    }
+};
+
+SettingsMenu menu;
+menu.Add(new micula::Label(L"Settings"));
+menu.SetLayout(new micula::StackLayout());
+menu.Show(x, y, 220, 120);        // screen DIPs
+app.Add(menu);
+```
+
+| Member | Description |
+|---|---|
+| `virtual const wchar_t *ClassName() const` | The window class it is made with. Registered on demand, like a window's. |
+| `bool Show(int x, int y, int dipW, int dipH)` | Shows it with its corner at `x, y` screen DIPs and a client area of `dipW` x `dipH`. Topmost. Returns false if the window could not be made. |
+| `void Place(int x, int y)` | Moves it, in screen DIPs. |
+| `void Place(int x, int y, int dipW, int dipH)` | Moves it and resizes it. The tree is arranged into the new box and `OnPlaced` runs. |
+| `void Hide()` / `bool Shown()` | Takes it off the screen, and whether it is on it. The window and the tree stay where they are, so showing it again is one call. |
+| `bool activates` | Whether it is allowed to take the foreground. Set it before `Show`: a tip or a menu over an active window wants false, or the caption of the window it belongs to blinks. |
+| `virtual bool OnMessage(UINT, WPARAM, LPARAM)` | A message the popup answers itself -- the keys, the wheel, activation. The press, the move and the release are the surface's already. |
+| `virtual void OnPlaced()` | Shown, moved or resized: where a menu puts its tree. |
+| `View *EnsureContent()`, `T *Add(T *)`, `void SetLayout(Layout *)` | The tree, the same three a window has. |
+
+Both halves of the mouse and the finger path are shared with `Window` -- `Surface::HandMessage` is the
+one place a press is turned into a click -- so a menu answers a finger exactly as a window does.
+What it does *not* have is a caption, the page hooks, a frame the size of the screen, or an automation
+tree of its own: `UiaElement` is the window's.
 
 ## Accessibility
 

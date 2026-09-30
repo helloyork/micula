@@ -325,7 +325,7 @@ inline void NavigationView::Tick(float dt) {
     // Only where the box moved: this runs every frame the shell ticks, which is every frame of any
     // animation anywhere in the window, and a page standing still is arranged once.
     if (!SameRect(was, content->rect)) {
-        if (Window *w = window()) {
+        if (Surface *w = surface()) {
             micula::ArrangeSubtree(content, w->fonts);
             // **And placed, not glided.** A widget whose rectangle has moved is drawn on its way there,
             // which is what makes a card step down when something above it opens -- but a page

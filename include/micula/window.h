@@ -794,6 +794,10 @@ struct Layer : Widget {
 // The window used to walk its *widgets* instead and ask each one `OnTimer(id)`, which required
 // any owner to be in that list: a scroll bar inside a drop-down is not, so its timers arrived
 // nowhere at all -- silently -- and the drop-down carried a forwarder to work around it.
+//
+// **A timer belongs to a surface**, and it is the surface that owns the id and keeps the list: a menu
+// has as much right to a repeating callback as a window does. See `Surface::TakeTimerId`.
+struct Surface;
 class Timer {
 public:
     Timer() = default;
@@ -801,30 +805,459 @@ public:
     Timer &operator=(const Timer &) = delete;
     ~Timer();
     // Starts it, or moves it: `fn` runs `ms` from now, and again every `ms` -- a Windows timer
-    // repeats until it is stopped. Called on the window's thread, like everything else here.
-    void Start(Window *w, UINT ms, std::function<void()> fn);
+    // repeats until it is stopped. Called on the surface's thread, like everything else here.
+    void Start(Surface *s, UINT ms, std::function<void()> fn);
     // Ends it, and gives the id back. Safe to call from inside the callback.
     void Stop();
-    bool Running() const { return win != nullptr; }
+    bool Running() const { return host != nullptr; }
     // One `WM_TIMER`: true when the id was this timer's.
     bool Handle(UINT_PTR which);
 private:
-    Window *win = nullptr;
+    Surface *host = nullptr;
     UINT_PTR id = 0;
     std::function<void()> tick;
 };
 
-// ---------------------------------------------------------------- Window
-
-struct Window {
+// ---------------------------------------------------------------- Surface
+//
+// **A top-level thing that draws.** A window is one, and so is a menu or a tip, and what they have in
+// common is all that is here: a window handle, a composition surface to draw into, a tree of widgets
+// painted onto it, and the clock that decides when a frame runs. Everything that is *only* a window's
+// -- its caption, the furniture in its client area, the automation tree it publishes -- stays in
+// `Window`.
+//
+// The split exists because the application loop has to turn frames for more than one of them. A menu
+// opens over a window without stopping it, so a menu cannot be a modal loop of its own: it is another
+// surface, and `App` frames it the same way it frames the window underneath. See `App::Run`.
+//
+// **The device is not here, and neither is the look.** Direct3D, Direct2D and the composition device
+// belong to the process (`graphics.h`), and so do the palette and the fonts, which a surface reaches
+// through `pal` and `fonts`. What is per surface is the swap chain and the few objects that draw into
+// it -- which is all a second window costs.
+struct Surface {
     HWND hwnd = nullptr;
     UINT dpi  = 96;
-    // **The look is the process's, and this is a reference to it** -- see `CurrentPalette` and
-    // `CurrentFonts`. It used to be a value here, which was right for one window per process: a menu is
-    // a second window, it needs the same colours and the same text formats, and it must have them
-    // without asking a window that may not exist.
+    // The palette and the fonts are the process's, and these are references into them: a menu has the
+    // same colours and the same text formats as the window it opens over, without asking that window
+    // for them -- it may have no window to ask.
     Palette &pal = CurrentPalette();
     Fonts   &fonts = CurrentFonts();
+    // The app this surface is registered with, or null: the loop that turns its frames. Set by
+    // `App::Add`, cleared by `App::Remove` and by the App's own destructor -- which is what makes the
+    // order the two of them die in not matter. A surface with no app runs its own frames, see `Run`.
+    App *app = nullptr;
+
+    // **The surface, which is this one's own half of the stack**, torn down in the reverse of the
+    // order it is built in.
+    ID2D1DeviceContext   *dc    = nullptr;
+    IDXGISwapChain1      *swap  = nullptr;
+    ID2D1Bitmap1         *target = nullptr;
+    IDCompositionTarget  *compTarget = nullptr;
+    IDCompositionVisual  *compVisual = nullptr;
+    ID2D1SolidColorBrush *brush = nullptr;
+    // Pictures from disk keyed by path, and the caption's icon. Device-bound, so they live next to the
+    // surface that owns them and go with it in `ReleaseDevice` -- a bitmap that outlives its target is
+    // a crash rather than a blank tile.
+    //
+    // A failed load caches a null. A page that shows a grid of pictures asks for all of them on every
+    // paint, and a missing file would otherwise be a failed decode per picture per frame of every
+    // resize.
+    std::map<std::wstring, ID2D1Bitmap1 *> images;
+    ID2D1Bitmap1 *iconBitmap = nullptr;
+
+    // The tree, and the one widget a page builds into: the client area, which is WinUI's
+    // `Window::Content`. Everything a page adds is under it.
+    std::unique_ptr<Widget> content;
+    // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
+    // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
+    // because an arrangement is one walk from the root -- a widget whose parent has not been arranged
+    // has no rectangle whose subtree could be arranged on its own.
+    bool layoutDirty = true;
+
+    // The animation clock, and it is QueryPerformanceCounter rather than GetTickCount64 for a measured
+    // reason: GetTickCount64's resolution is the system tick, 15.6 ms, so every dt it can report is 0,
+    // 15.6 or 31.2 -- the quantisation is the same size as the frame, and the motion inherits it as a
+    // stutter. Measured before this changed: frame gaps of 2 to 35 ms, median 24.
+    LARGE_INTEGER qpcFreq = {};
+    LARGE_INTEGER qpcLast = {};
+    // True while the frame loop is the thing running, rather than GetMessage. Read by a page that needs
+    // to know whether a value it was handed should animate or land when it lays itself out.
+    bool animOn = false;
+    bool alive = true;
+
+    float scale() const { return dpi / 96.0f; }
+    float ClientW() const { RECT r; GetClientRect(hwnd, &r); return r.right / scale(); }
+    float ClientH() const { RECT r; GetClientRect(hwnd, &r); return r.bottom / scale(); }
+
+    // Whether any of this surface is on a screen at all: shown, not minimised, and not cloaked -- which
+    // is what the system reports for a window on another virtual desktop, or one a shell has put away.
+    // The frame loop asks this before it runs a frame; see `App::Run`, where the reason is.
+    //
+    // **Occlusion is not asked about and cannot be.** No query answers "is another window over this
+    // one", and the guesses are worse than the waste: sampling points with WindowFromPoint is wrong for
+    // a window that is partly covered, wrong for a layered one, and wrong for every window in a session
+    // that is not the foreground one.
+    bool Visible() const {
+        if (!hwnd || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+        DWORD cloaked = 0;
+        return FAILED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) ||
+               cloaked == 0;
+    }
+
+    // ---- input ------------------------------------------------------------------------------------
+    // Three hands and one path. What a press, a move and a release *do* -- which widget is under them,
+    // whether it takes the focus, what the widget's own callbacks are -- is written once and reached
+    // from both message handlers, because a control that answers a mouse and not a finger is a control
+    // with two behaviours to get wrong. What differs is only what a hand really differs in: a finger
+    // has no hover, it has to stay put to be a click, and a second finger takes the first one's click
+    // away. See `PressAt`, `MoveTo` and `ReleaseAt`.
+    enum class Hand { Mouse, Finger, Pen };
+    // **A gesture belongs to the hand that made it.** A mouse that moves while a finger is down must not
+    // un-press what the finger pressed, nor drag what the finger is dragging -- and the two are usually
+    // both on the machine, with the mouse resting somewhere else on the screen entirely.
+    Hand capturing = Hand::Mouse;
+    Widget *capture = nullptr;    // the widget the pointer went down on
+    Widget *focused = nullptr;
+    // The touch pointer being followed, or 0. A pen is one pointer by definition and needs no such
+    // thing; a finger does, because a second one is another pointer entirely.
+    UINT32 finger = 0;
+    // Where a press landed, in client DIPs: what a tap is measured against.
+    float pressX = 0.0f, pressY = 0.0f;
+    // **Where the pointer last was, whoever moved it.** Every coordinate the input path is handed is
+    // kept here as it arrives, because a control that asks the pointer -- an open list's hovered row, a
+    // pane's -- has to be answered with the last thing that happened, and under a finger that is not the
+    // mouse: a touch does not move the mouse, so `GetCursorPos` answers with a place nobody is pointing
+    // at. See `Widget::Cursor`.
+    float pointerX = 0.0f, pointerY = 0.0f;
+    // **And which hand put it there.** The position outlives the hand -- a finger that has lifted is
+    // still the last thing that happened -- but "something is over this control" is a question only a
+    // mouse answers. Set wherever `pointerX` is set. See `RefreshHover`.
+    Hand pointerHand = Hand::Mouse;
+    // **A drag no control has taken belongs to whatever above it scrolls.** See `Widget::Pans`. The
+    // widget is decided once, when the movement says it is not a tap, and it keeps the gesture until the
+    // hand lifts -- so a page that scrolled cannot leave the rest of the same movement to the container
+    // above it.
+    Widget *panning = nullptr;
+    float panLastY = 0.0f;
+    double panLastT = 0.0;
+    float panSpeedY = 0.0f;
+
+    // ---- what the system's recognizer says --------------------------------------------------------
+    // The recognizer for the hand that is down, or null. One per gesture rather than one per surface: a
+    // hand that has been recognised is over, and a fresh context has no state to inherit from it.
+    icapi::Handle gesture = nullptr;
+    UINT32 gestureId = 0;
+    // The last frame that went in, handed back while the page coasts: the recognizer answers only while
+    // frames keep arriving, and after the hand is gone those frames are this one, over and over.
+    POINTER_INFO gestureFrame = {};
+    // What it has said since the last time anyone acted on it. The callback runs inside `Process`, where
+    // the tree must not be touched, so it records and the frame that carried it acts. See `GestureApply`.
+    float gestureDx = 0.0f, gestureDy = 0.0f;
+    bool gestureTap = false;      // the hand meant a click
+    bool gestureDragging = false; // and it is a drag from here on, which no longer counts as a press
+    bool gestureDone = false;     // the system has said CANCEL: nothing more is coming at all
+    bool gestureLooked = false;   // the container above has been asked once, and asked only once
+    int gestureIdle = 0;          // frames fed to the system in a row that came back with nothing
+
+    // The recognizer and the three things done with it: one is opened as a hand goes down, given every
+    // frame that hand produces and every frame of the coast after it, and destroyed once it has stopped
+    // answering. All of it is the surface's, because a menu is touched as much as a window is.
+    static void WINAPI Output(void *clientData, const icapi::Output *out);
+    void GestureSay(const icapi::Output *out);
+    bool GestureApply();
+    void GestureBegin(UINT32 pointerId, const POINTER_INFO &info);
+    bool GestureFeed(const POINTER_INFO &info);
+    void GestureFinish();
+
+    // Set when the keyboard was used to move focus. Windows only paints focus rings after somebody has
+    // pressed Tab, and copying that is the difference between a window that looks calm on arrival and
+    // one covered in rectangles.
+    bool showFocusRing = false;
+    bool caretOn = true;
+
+    // ---- the surface --------------------------------------------------------------------------------
+    // The device is the process's (see `graphics.h`); what is built here is what is this surface's own:
+    // the context that draws, the brush everything is drawn with, and the target that puts it on screen.
+    bool CreateDevice();
+    bool CreateSizedResources();
+    void ReleaseSizedResources();
+    void ReleaseDevice();
+    void ReleaseImages();
+    void Resize();
+
+    // ---- timers -----------------------------------------------------------------------------------
+    // The timers this surface is running, and the ids they took -- see Timer, which is where both the
+    // ids and the dispatch come from. Declared before the tree because a control's timer takes itself
+    // out of this list as it stops, which happens while the controls are being destroyed.
+    std::vector<Timer *> timers;
+    std::vector<UINT_PTR> timerIds;
+    UINT_PTR TakeTimerId();
+    void GiveTimerId(UINT_PTR id);
+    // **The caret's blink, and it is the surface's rather than a window's**: a caret belongs to the
+    // focused widget, and the focus is the surface's, so a field in a menu blinks the same as a field
+    // in a window. Started in `BeginPump`.
+    Timer caretTimer;
+
+    // ---- hit testing, and where a widget's space begins -------------------------------------------
+    // These were the window's and were always about a tree rather than about a window: what is under a
+    // point, where a widget's own space starts, and whether a layer is on its way out.
+    //
+    // A layer that is on its way out, if there is one. The surface takes no clicks while there is:
+    // what is being dismissed is not a place to be pressed again, the controls on it are on their way
+    // to being gone, and the tree under it was not clickable a moment ago either.
+    Layer *LeavingLayer();
+    Layer *LeavingIn(Widget *w);
+    // The last child that covers the point, depth first -- the reverse of the order it is painted in, so
+    // whatever is drawn on top is whatever the click reaches.
+    Widget *HitTest(float x, float y);
+    Widget *HitTestIn(Widget *w, float x, float y);
+    // Where a widget's own space begins, in the surface's coordinates: the accumulated origins of its
+    // ancestors. `LocalPoint` is a point taken into that space.
+    D2D1_POINT_2F OriginOf(const Widget *w) const;
+    D2D1_POINT_2F LocalPoint(const Widget *w, float x, float y) const {
+        const D2D1_POINT_2F o = OriginOf(w);
+        return D2D1::Point2F(x - o.x, y - o.y);
+    }
+
+    // ---- the pointer, and what it does ------------------------------------------------------------
+    // The whole input path, shared: a press finds the control under it and remembers it, a move drives
+    // whatever that control is doing, a release decides whether it was a click. A menu needs all three,
+    // so none of it is a window's business in particular.
+    void PressAt(float x, float y, Hand hand);
+    bool MoveTo(float x, float y, Hand hand, bool contact);
+    void ReleaseAt(Hand hand);
+    Widget *PanTargetFor(Widget *w);
+    // One widget is hovered and every other one is not. A walk rather than a loop over a list, and the
+    // point of doing it from the frame rather than from a mouse message is that the widget which is *not*
+    // under the pointer has to be told so whether or not it ever heard about a move: the tree can change
+    // shape under a pointer that has not moved at all.
+    bool RefreshHover();
+    bool SetHover(Widget *w, Widget *over);
+    // The pointer moved: the widget under it hears about it, and so does any widget whose watched region
+    // outside itself contains it (see Widget::ExternalRegion). Returns true when something under the
+    // pointer wants a repaint per move.
+    bool SendMove(Widget *w, float x, float y, Widget *over);
+    // Everything puts away what it is showing -- an open list, a peeked pane. A walk rather than a
+    // broadcast to a list, and a broadcast because a control cannot see a click it did not get.
+    void DismissIn(Widget *w);
+
+    // The keyboard focus, and the one thing a surface cannot answer for itself: what the automation tree
+    // is told about it. `Window` overrides `FocusMoved` to raise the focus event; a surface that
+    // publishes no automation tree has nothing to say and does not override it.
+    void SetFocusTo(Widget *w);
+    virtual void FocusMoved() {}
+
+    // The layer calls the keyboard goes through first -- the last visible one in the tree, which is the
+    // same one the hit test reaches -- and the walk that puts everything away except one. Both are the
+    // tree's rather than a window's: a menu needs the second to dismiss itself.
+    Layer *TopLayer();
+    Layer *TopLayerIn(Widget *w);
+    void CollectTab(Widget *w, std::vector<Widget *> &out);
+    void CollectLayers(Widget *w, std::vector<Layer *> &out);
+    void DismissOthers(Widget *except, float x, float y);
+
+    // **The gesture that was in progress cannot finish**: the capture went to another window, the
+    // system took it back for a modal state of its own, or this surface lost the activation. Nothing
+    // else here notices. WM_LBUTTONUP is delivered to whoever holds the capture, and from that moment
+    // on that is no longer this surface, so the release is synthesised rather than waited for.
+    //
+    // Without it a drag has no end at all: a scroll bar with a repeat timer running keeps scrolling,
+    // a slider keeps its knob grabbed, and a button that was held down stays looking held. The capture
+    // is dropped before OnRelease runs, because a widget is free to lay the page out again there and
+    // this must not re-enter on the way.
+    void CancelCapture();
+
+    // ---- a message, and the three things a hand does -------------------------------------------------
+    //
+    // **The input path, whole, and the reason it is a message handler rather than a set of calls.** A
+    // window and a menu answer a press the same way -- which widget is under it, whether the hand
+    // meant a click, what a drag belongs to -- and the coordinates have to be converted on the way in,
+    // because a touch arrives in screen pixels and a mouse in client pixels, and a pen comes through
+    // the door a finger does. Written once here rather than twice in two message procedures.
+    //
+    // Returns true when the message was this surface's to answer. The mouse and the finger cases are
+    // answered rather than handed on, and that is the whole of how the promotion is stopped: Windows
+    // delivers a touch as a pointer message first and only turns it into a mouse button if the window
+    // *ignores* the pointer.
+    bool HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp);
+
+    // Mark the whole surface for a repaint. The frame loop paints outside `WM_PAINT` while something is
+    // moving, so a request for a frame is not a request to Windows for one -- see `Frame`. And while it
+    // *is* animating, invalidating as well buys nothing and costs a frame: the region it sets is handed
+    // back by the next PeekMessage as a WM_PAINT, which draws the surface a second time in the same
+    // frame, from the state before the tick. See `Paint` and the WM_PAINT case.
+    void Invalidate() { if (hwnd && !animOn) InvalidateRect(hwnd, nullptr, FALSE); }
+
+    // ---- the tree -----------------------------------------------------------------------------------
+    //
+    // The geometry convention, stated once because three passes depend on it: **a widget's `rect` is in
+    // its parent's space, and it draws in that space** -- so a control keeps drawing against its own
+    // rectangle, exactly as it did when a page placed it by hand. Descending into a widget's children
+    // moves the origin to that widget's top left, which is where their rectangles are measured from: a
+    // subtree that moves is a translation, and nothing inside it has to know.
+    //
+    // **Where the tree starts is the one thing the two surfaces answer differently.** A window's client
+    // area begins under a caption it draws itself; a menu's begins at its own edge. So the box is the
+    // subclass's answer and the walk is the same walk -- one arrangement, from the root down, with the
+    // walk itself in `ArrangeSubtree`.
+    virtual D2D1_RECT_F RootBox() const { return { 0.0f, 0.0f, ClientW(), ClientH() }; }
+    void ArrangeTree() {
+        layoutDirty = false;
+        if (!content) return;
+        const D2D1_RECT_F box = RootBox();
+        // **A surface that changed size is not a layout change worth animating.** The border is under
+        // the pointer, every frame of the drag is the new size, and a tree gliding toward a box that
+        // keeps moving trails it by however fast the pointer is going. So the arrangement that follows a
+        // resize *places* what it arranged, and every other arrangement glides as usual.
+        const bool resized = !SameRect(box, content->rect);
+        content->rect = box;
+        // Placed, and drawn where it is, every time. The root is not a child of any layout, so nothing
+        // glides it -- and a drawn rectangle left behind by the old size would say "something is
+        // moving" for the rest of the surface's life, with the frame loop turning frames for a tree that
+        // is standing still.
+        content->drawn = content->rect;
+        content->placed = true;
+        micula::ArrangeSubtree(content.get(), fonts);
+        if (resized) micula::PlaceSubtree(content.get());
+    }
+
+    // ---- a frame ----------------------------------------------------------------------------------
+    //
+    // **One frame, whatever the surface is.** Called from the loop in `App::Run` while anything wants
+    // one: arrange what owes an arrangement, settle the hover, tick the tree, and drop the layers that
+    // have finished leaving. What a surface does *around* that is its own -- a window fades its caption
+    // buttons and weighs them when the loop asks whether anything is moving -- which is what the
+    // virtuals below are for, and all they are for.
+    void Frame() {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        float dt = (float)((double)(now.QuadPart - qpcLast.QuadPart) /
+                           (double)qpcFreq.QuadPart);
+        qpcLast = now;
+        // Clamped only at the top, and generously: a frame that took 100 ms is a frame
+        // the machine really did take that long over, and the animation should be 100 ms
+        // further along rather than pretending otherwise. What must not happen is a
+        // whole animation in one step after the surface was behind a modal dialog.
+        if (dt < 0.0f) dt = 0.0f;
+        if (dt > 0.1f) dt = 0.1f;
+        // Arrange first, because everything after this reads rectangles: this is where a change made
+        // by the message just handled becomes geometry, and the tick below is what glides the tree
+        // toward it. Nothing else arranges -- a child added, a layout replaced and a widget hidden
+        // all set the one flag, and it is cleared here.
+        if (layoutDirty) ArrangeTree();
+        // Then hover, from where the cursor is rather than from the last mouse message: a
+        // rearrangement can have moved something under a pointer that has not moved at all.
+        RefreshHover();
+        Tick(dt);
+        // And the page's own frame, which is a hook rather than part of `Tick`: a control's animation
+        // is the tree's business and a page's is the page's.
+        OnTick(dt);
+        // A layer that has finished leaving is dropped here rather than from inside its own Tick:
+        // the callback that told the page has long returned, the tick loop above is done walking the
+        // list, and nothing is left that can be looking at it.
+        DropGoneLayers();
+    }
+
+    // Everything the surface animates on its own account: every control's pointer states, and a fling
+    // the recognizer left behind. A window adds its caption buttons -- see `Window::Animating`.
+    //
+    // A control the page has scrolled out of sight is not counted. Nothing it does can be seen,
+    // so nothing it does is a reason to run a frame -- and a page scrolled past a control that
+    // animates for ever, an indeterminate progress bar being the one that does, would otherwise
+    // keep the loop turning for as long as that page was open. It is the same test `pass` uses to
+    // skip *drawing* one, which is the whole point: what is not drawn is not animated either. The
+    // animation is not lost, only paused -- scrolling back brings it into the strip and this
+    // answers yes again, and the control lands where it was going.
+    virtual bool Animating() const {
+        // A fling keeps the loop turning on its own account: the recognizer has nothing left to say
+        // until somebody asks it again, and the page is still moving until it does.
+        if (gesture && !finger) return true;
+        return content && content->Animating();
+    }
+    // Does the *page* want the timer kept alive -- a progress bar, a spinner, a page arriving? The
+    // controls' own animations are `Animating` above and are not this question; a subclass overriding
+    // this does not have to know about them. The loop runs while either of the two says so.
+    virtual bool AnimationWanted() const { return false; }
+    // ~16 ms while anything is moving. `dt` is real elapsed seconds, clamped; a page that animates
+    // something of its own advances it by that rather than by a constant.
+    virtual void OnTick(float /*dt*/) {}
+
+    virtual void Tick(float dt) {
+        if (content) content->Tick(dt);
+        // **And this is what carries a fling.** The hand is gone, so no message is coming to hand the
+        // recognizer a frame -- and it has nothing to say until it is given one. The last frame goes
+        // back in, over and over, and what comes out of it is the coast: the same deltas `PanMove` was
+        // being given while the finger was still down, made by the system instead of by a hand.
+        if (gesture && !finger) {
+            const bool moving = GestureFeed(gestureFrame);
+            // **The recognizer goes quiet before it is finished.** A fling does not answer on the frame
+            // the hand left it -- it answers once it has started to coast, a frame or two later -- so
+            // silence is only the end of the gesture after it has gone on for a while.
+            if (gestureDone) GestureFinish();
+            else if (moving) gestureIdle = 0;
+            else if (++gestureIdle > 8) GestureFinish();
+        }
+    }
+
+    // ---- what a subclass adds to a frame ------------------------------------------------------------
+    //
+    // **One paint, whatever is drawn in it.** The device, the arrangement it may owe, the walk that
+    // draws the tree and the present at the end are the same for every surface; what is not is the
+    // background it clears to, anything of its own that has to happen before the drawing, and whatever
+    // it paints over the tree -- a window's caption, and nothing at all for a menu.
+    virtual D2D1_COLOR_F Backdrop() const { return D2D1::ColorF(0, 0, 0, 0); }
+    virtual void BeforeDraw() {}
+    virtual void PaintFurniture(const Painter &) {}
+    virtual void Paint();
+
+    // A surface's own two. The surface itself is built by whoever shows it -- `Window::Create` for a
+    // window -- and the device goes with the last frame it was going to draw. See `EndPump`.
+    virtual void BeginPump();
+    virtual void EndPump();
+    // Run this surface, and only this one. The shorthand for a program with one thing to draw, which
+    // is what most programs have -- and what a menu opened by a program with no window of its own
+    // needs. See App for the rest.
+    int Run();
+
+    // The theme changed: the palette is the process's, so a page says so once and every surface paints
+    // again. A window puts its frame right as well. See `Window::ReloadTheme`.
+    virtual void ReloadTheme() { RefreshPalette(); Invalidate(); }
+    // The window this is, when it is one. A widget inside a menu has a surface and no window, and only
+    // the few things that are a window's -- its backdrop, its automation tree -- need to ask.
+    virtual Window *AsWindow() { return nullptr; }
+
+    // The layers that have finished leaving: one that has left is dropped whole, subtree and all.
+    // Called from `Frame`, after the tick, so that the tree is not taken apart while it is walked.
+    void DropGoneLayers();
+    void DropGoneIn(Widget *w);
+
+    // ---- a message, and whatever it does ----------------------------------------------------------
+    // Widgets a callback took out of the tree but which are not freed until the message they were
+    // removed inside has returned: the page was told while this message was being handled, and a page
+    // that kept a pointer to what it removed has a live object to read until the callback ends.
+    // Outside dispatch nothing is held: there is no closure running to protect.
+    std::vector<std::unique_ptr<Widget>> retired;
+    int dispatchDepth = 0;
+    // True while the surface is taking its tree down, which is the one time a removal must not happen:
+    // a control that owns a layer outside its own subtree would be unlinking a sibling from a vector
+    // that is being destroyed.
+    bool tearingDown = false;
+
+    // One message, and any nested ones -- a modal dialog, a drop-down running its own loop -- that
+    // happen inside it. Only the outermost frees, because the closure being protected belongs to the
+    // outermost.
+    struct Dispatch {
+        Surface *host;
+        explicit Dispatch(Surface *s) : host(s) { host->dispatchDepth++; }
+        ~Dispatch();
+        Dispatch(const Dispatch &) = delete;
+        Dispatch &operator=(const Dispatch &) = delete;
+    };
+};
+
+// ---------------------------------------------------------------- Window
+
+struct Window : Surface {
     // False on Windows 11 before 22H2, and on anything that refuses the attribute.
     // The page paints an opaque background instead of letting the material through.
     bool micaActive = false;
@@ -847,7 +1280,7 @@ struct Window {
     // is made -- `Theme(...)` says which, and `backdrop` above is the material -- so a page that
     // changes either while the window is up is a page that has changed nothing until one of these
     // runs. This is what a settings page does with a theme switch on it.
-    void ReloadTheme();
+    void ReloadTheme() override;
     void ApplyThemeToFrame();
     void MeasureFrame() {
         if (!hwnd || IsIconic(hwnd) || IsZoomed(hwnd)) return;
@@ -857,30 +1290,8 @@ struct Window {
         frameExtra = { (wr.right - wr.left) - cr.right, (wr.bottom - wr.top) - cr.bottom };
     }
 
-    // **The surface, which is this window's own half of the stack.** The device underneath it --
-    // Direct3D's, the DXGI device, both factories and the composition device -- belongs to the process
-    // and is shared, so that a second window (a menu, a tip) can be made at all: see `graphics.h`. What
-    // is per window is the swap chain and everything hanging off it, and it is torn down in the reverse
-    // of the order it is built in.
-    ID2D1DeviceContext   *dc    = nullptr;
-    IDXGISwapChain1      *swap  = nullptr;
-    ID2D1Bitmap1         *target = nullptr;
-    IDCompositionTarget  *compTarget = nullptr;
-    IDCompositionVisual  *compVisual = nullptr;
-    ID2D1SolidColorBrush *brush = nullptr;
-
     // The caption we draw. `hot` and `down` are 0/1/2 for minimise, maximise, close.
     HICON         appIcon = nullptr;
-    ID2D1Bitmap1 *iconBitmap = nullptr;
-
-    // Pictures loaded from disk, keyed by path. Device-bound, so they live next to
-    // the device that owns them and die with it in ReleaseDevice -- a bitmap that
-    // outlives its target is a crash rather than a blank tile.
-    //
-    // A failed load caches a null. A page that shows a grid of pictures asks for all of
-    // them on every paint, and a missing file would otherwise be a failed decode per
-    // picture per frame of every resize.
-    std::map<std::wstring, ID2D1Bitmap1 *> images;
     int  captionHot = -1;
     int  captionDown = -1;
     // The three buttons' hover fades. Windows' own caption tints under the pointer
@@ -888,133 +1299,14 @@ struct Window {
     float captionT[3] = { 0.0f, 0.0f, 0.0f };
     bool active = true;
 
-    // The timers this window is running, and the ids they took -- see Timer, which is where both
-    // the ids and the dispatch come from. Declared before `widgets` because a control's timer
-    // takes itself out of this list as it stops, which happens while the controls are being
-    // destroyed.
-    std::vector<Timer *> timers;
-    std::vector<UINT_PTR> timerIds;
-    UINT_PTR TakeTimerId();
-    void GiveTimerId(UINT_PTR id);
-    // The window's own two, from the same pool: the caret's blink, and the frame loop's stand-in
-    // while Windows is running a modal size or move loop of its own.
-    Timer caretTimer, frameTimer;
+    // The window's own: the stand-in for the frame loop while Windows runs a modal size or move loop
+    // of its own. See `Surface::BeginPump` for the clocks and the caret.
+    Timer frameTimer;
 
-    // The tree, and the one widget a page builds into: the client area, which is WinUI's
-    // `Window::Content`. Everything a page adds is under it. The window's own furniture -- the
-    // caption and its three buttons -- is still painted by the window rather than being a child of
-    // it, which is a later pass.
-    std::unique_ptr<Widget> content;
-    // ---- who is pointing -------------------------------------------------------------------------
-    // Three hands and one path. What a press, a move and a release *do* -- which widget is under
-    // them, whether it takes the focus, what the widget's own callbacks are -- is written once and
-    // reached from the two message handlers, because a control that answers a mouse and not a finger
-    // is a control with two behaviours to get wrong. What differs is only what a hand really differs
-    // in: a finger has no hover, it has to stay put to be a click, and a second finger takes the
-    // first one's click away. See `PressAt`, `MoveTo` and `ReleaseAt`.
-    enum class Hand { Mouse, Finger, Pen };
-    // **A gesture belongs to the hand that made it.** A mouse that moves while a finger is down must
-    // not un-press what the finger pressed, nor drag what the finger is dragging -- which is not a
-    // corner case: the two are usually both on the machine, and the mouse is usually somewhere else on
-    // the screen, so without this a tap would end as soon as the pointer twitched and a slider dragged
-    // by a finger would follow the mouse instead.
-    Hand capturing = Hand::Mouse;
-    Widget *capture = nullptr;    // the widget the pointer went down on
-    Widget *focused = nullptr;
-    // The touch pointer being followed, or 0. A pen is one pointer by definition and needs no such
-    // thing; a finger does, because a second one is another pointer entirely.
-    UINT32 finger = 0;
-    // Where a press landed, in client DIPs: what a tap is measured against.
-    float pressX = 0.0f, pressY = 0.0f;
-    // **Where the pointer last was, whoever moved it.** Every coordinate the input path is handed is
-    // kept here as it arrives, because a control that asks the pointer -- an open list's hovered row, a
-    // pane's -- has to be answered with the last thing that happened, and under a finger that is not the
-    // mouse: a touch does not move the mouse, so `GetCursorPos` answers with a place nobody is pointing
-    // at. See `Widget::Cursor`.
-    float pointerX = 0.0f, pointerY = 0.0f;
-    // **And which hand put it there.** The position outlives the hand -- a finger that has lifted is
-    // still the last thing that happened -- but "something is over this control" is a question only a
-    // mouse answers. Set wherever `pointerX` is set. See `RefreshHover`.
-    Hand pointerHand = Hand::Mouse;
-    // **A drag no control has taken belongs to whatever above it scrolls.** See `Widget::Pans`. The
-    // widget is decided once, when the finger has wandered far enough to say it is not tapping, and it
-    // keeps the gesture until the hand lifts -- so a page that scrolled cannot leave the rest of the
-    // same movement to the container above it.
-    Widget *panning = nullptr;
-    float panLastY = 0.0f;
-    double panLastT = 0.0;
-    float panSpeedY = 0.0f;
-    void PressAt(float x, float y, Hand hand);
-    bool MoveTo(float x, float y, Hand hand, bool contact);
-    void ReleaseAt(Hand hand);
-    Widget *PanTargetFor(Widget *w);
-    // ---- what the system's recognizer says, and what is done about it --------------------------------
-    // The recognizer for the hand that is down, or null. One per gesture rather than one per window: a
-    // hand that has been recognized is over, and a fresh context has no state to inherit from it.
-    icapi::Handle gesture = nullptr;
-    UINT32 gestureId = 0;
-    // The last frame that went in, handed back while the page coasts: the recognizer answers only while
-    // frames keep arriving, and after the hand is gone those frames are this one, over and over.
-    POINTER_INFO gestureFrame = {};
-    // What it has said since the last time anyone acted on it. The callback runs inside `Process`, where
-    // the tree must not be touched, so it records and the frame that carried it acts. See `GestureApply`.
-    float gestureDx = 0.0f, gestureDy = 0.0f;
-    bool gestureTap = false;      // the hand meant a click
-    bool gestureDragging = false; // and it is a drag from here on, which no longer counts as a press
-    bool gestureDone = false;     // the system has said CANCEL: nothing more is coming at all
-    bool gestureLooked = false;   // the container above has been asked once, and asked only once
-    int gestureIdle = 0;          // frames fed to the system in a row that came back with nothing
-    static void WINAPI Output(void *clientData, const icapi::Output *out);
-    void GestureSay(const icapi::Output *out);
-    bool GestureApply();
-    void GestureBegin(UINT32 pointerId, const POINTER_INFO &info);
-    bool GestureFeed(const POINTER_INFO &info);    void GestureFinish();
-    // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
-    // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
-    // because an arrangement is one walk from the root -- a widget whose parent has not been
-    // arranged has no rectangle whose subtree could be arranged on its own.
-    bool layoutDirty = true;
-    // Set when the keyboard was used to move focus. Windows only paints focus rings
-    // after somebody has pressed Tab, and copying that is the difference between a
-    // window that looks calm on arrival and one covered in rectangles.
-    bool showFocusRing = false;
-    bool caretOn = true;
-
-    // The animation clock, and it is QueryPerformanceCounter rather than GetTickCount64
-    // for a measured reason: GetTickCount64's resolution is the system tick, 15.6 ms, so
-    // every dt it can report is 0, 15.6 or 31.2 -- the quantisation is the same size as
-    // the frame, and the motion inherits it as a stutter. Measured before this changed:
-    // frame gaps of 2 to 35 ms, median 24.
-    LARGE_INTEGER qpcFreq = {};
-    LARGE_INTEGER qpcLast = {};
-    // True while the frame loop is the thing running, rather than GetMessage. Read by a
-    // page that needs to know whether a value it was handed should animate or land
-    // (motion::Track::To or Track::Set) when it lays itself out.
-    bool animOn = false;
     // True while Windows is running a modal loop of its own for a drag of the border or the
     // caption, during which the frame loop cannot run and WM_PAINT is the only painting
     // there is. See WM_ENTERSIZEMOVE.
     bool inSizeMove = false;
-    bool alive = true;
-
-    float scale() const { return dpi / 96.0f; }
-    float ClientW() const { RECT r; GetClientRect(hwnd, &r); return r.right / scale(); }
-    float ClientH() const { RECT r; GetClientRect(hwnd, &r); return r.bottom / scale(); }
-
-    // Whether any of this window is on a screen at all: shown, not minimised, and not cloaked --
-    // which is what the system reports for a window on another virtual desktop, or one a shell has
-    // put away. The frame loop asks this before it runs a frame; see Run, where the reason is.
-    //
-    // **Occlusion is not asked about and cannot be.** No query answers "is another window over
-    // this one", and the guesses are worse than the waste: sampling points with WindowFromPoint is
-    // wrong for a window that is partly covered, wrong for a layered one, and wrong for every
-    // window in a session that is not the foreground one.
-    bool Visible() const {
-        if (!hwnd || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
-        DWORD cloaked = 0;
-        return FAILED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) ||
-               cloaked == 0;
-    }
 
     virtual ~Window();
 
@@ -1026,13 +1318,6 @@ struct Window {
     // what a page used to draw there is widgets now, a `Heading` and a `Card` among them.
     virtual void OnDefaultAction() {}              // Enter
     virtual void OnCancel() { PostMessageW(hwnd, WM_CLOSE, 0, 0); }   // Esc
-    // ~16 ms while anything is moving. `dt` is real elapsed seconds, clamped; a page
-    // that animates something of its own advances it by that rather than by a constant.
-    virtual void OnTick(float /*dt*/) {}
-    // Does the *page* want the timer kept alive -- a progress bar, a spinner, a page
-    // arriving? The controls' own animations are Animating() below and are not this
-    // question; a subclass overriding this does not have to know about them.
-    virtual bool AnimationWanted() const { return false; }
     virtual bool OnAppMessage(UINT, WPARAM, LPARAM) { return false; }
     // The smallest the window may be dragged to, in DIPs. Zero means no limit.
     //
@@ -1044,26 +1329,15 @@ struct Window {
 
     // --- lifetime ---------------------------------------------------------------
     bool Create(int dipW, int dipH, bool canResize, HICON icon);
-    // Run this window, and only this window. The shorthand for a program with one window, which is
-    // what most programs have and what every example here has a use for -- see App for the rest.
-    int  Run();
-
-    // The app this window is registered with, or null. Set by App::Add, cleared by App::Remove and
-    // by the App's own destructor -- which is what makes the order the two of them die in not
-    // matter: the App is usually a local in wWinMain and the windows are usually locals after it,
-    // so it is the App that goes first.
-    App *app = nullptr;
 
     // The window has been destroyed, and this is the last thing it does about it. For a page that
     // made a window of its own and has to drop it: deleting a window inside its own message is not
     // something to do, so the usual answer is to `Post` to the window that made it.
     virtual void OnClosed() {}
 
-    // Called by App as a window joins the loop and as it leaves it. These were the first and the
-    // last things this window's own loop did, which was the same thing only because there was
-    // ever one window in it.
-    void BeginPump();
-    void EndPump();
+    // What a window adds to the loop's other end: the frame timer that stands in for the loop while
+    // Windows runs a modal size or move loop of its own. See `Surface::EndPump` for the rest.
+    void EndPump() override;
 
     // ---- UI Automation ------------------------------------------------------------------------
     // The element a client is handed for this window, and the widget behind an element's uid --
@@ -1111,96 +1385,27 @@ struct Window {
     // and it is not worth twenty accessors.
     friend struct UiaElement;
     int uidNext = 0;
-    // While the frame loop is animating it draws every frame itself and clears the update
-    // region after each one, so invalidating as well buys nothing -- and it costs a frame:
-    // the region it sets is handed back by the next PeekMessage as a WM_PAINT, which paints
-    // the window a second time in the same frame. See Window::Run and the WM_PAINT case.
-    void Invalidate() { if (hwnd && !animOn) InvalidateRect(hwnd, nullptr, FALSE); }
 
-    // Everything the window animates on its own account: every control's pointer states
-    // and the three caption buttons. Distinct from AnimationWanted(), which is the
-    // page's own answer -- the frame loop runs while either of them says so.
-    //
-    // A control the page has scrolled out of sight is not counted. Nothing it does can be seen,
-    // so nothing it does is a reason to run a frame -- and a page scrolled past a control that
-    // animates for ever, an indeterminate progress bar being the one that does, would otherwise
-    // keep the loop turning for as long as that page was open. It is the same test `pass` uses to
-    // skip *drawing* one, which is the whole point: what is not drawn is not animated either. The
-    // animation is not lost, only paused -- scrolling back brings it into the strip and this
-    // answers yes again, and the control lands where it was going.
-    bool Animating() const {
+    // The three caption buttons' own fades, on top of everything the surface counts. Distinct from
+    // AnimationWanted(), which is the page's own answer -- the frame loop runs while any of the three
+    // says so, and none of them knows about the others. See `Surface::Animating`.
+    bool Animating() const override {
         for (int i = 0; i < 3; i++)
             if (captionT[i] != (captionHot == i ? 1.0f : 0.0f)) return true;
-        // A fling keeps the loop turning on its own account: the recognizer has nothing left to say
-        // until somebody asks it again, and the page is still moving until it does.
-        if (gesture && !finger) return true;
-        return content && content->Animating();
+        return Surface::Animating();
     }
-    void Tick(float dt) {
+    void Tick(float dt) override {
         for (int i = 0; i < 3; i++)
             motion::Ramp(&captionT[i], captionHot == i ? 1.0f : 0.0f, dt, motion::kFaster);
-        if (content) content->Tick(dt);
-        // **And this is what carries a fling.** The hand is gone, so no message is coming to hand the
-        // recognizer a frame -- and it has nothing to say until it is given one. The last frame goes
-        // back in, over and over, and what comes out of it is the coast: the same deltas `PanMove` was
-        // being given while the finger was still down, made by the system instead of by a hand.
-        if (gesture && !finger) {
-            const bool moving = GestureFeed(gestureFrame);
-            // **The recognizer goes quiet before it is finished.** A fling does not answer on the frame
-            // the hand left it -- it answers once it has started to coast, a frame or two later -- so
-            // silence is only the end of the gesture after it has gone on for a while.
-            if (gestureDone) GestureFinish();
-            else if (moving) gestureIdle = 0;
-            else if (++gestureIdle > 8) GestureFinish();
-        }
+        Surface::Tick(dt);
     }
-
-    // One frame's worth of time, and what it is spent on. Called from the loop in Run().
-    void Frame() {
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-        float dt = (float)((double)(now.QuadPart - qpcLast.QuadPart) /
-                           (double)qpcFreq.QuadPart);
-        qpcLast = now;
-        // Clamped only at the top, and generously: a frame that took 100 ms is a frame
-        // the machine really did take that long over, and the animation should be 100 ms
-        // further along rather than pretending otherwise. What must not happen is a
-        // whole animation in one step after the window was behind a modal dialog.
-        if (dt < 0.0f) dt = 0.0f;
-        if (dt > 0.1f) dt = 0.1f;
-        // Arrange first, because everything after this reads rectangles: this is where a change made
-        // by the message just handled becomes geometry, and the tick below is what glides the tree
-        // toward it. Nothing else arranges -- a child added, a layout replaced and a widget hidden
-        // all set the one flag, and it is cleared here.
-        if (layoutDirty) ArrangeTree();
-        // Then hover, from where the cursor is rather than from the last mouse message: a
-        // rearrangement can have moved something under a pointer that has not moved at all.
-        RefreshHover();
-        Tick(dt);
-        OnTick(dt);
-        // A layer that has finished leaving is dropped here rather than from inside its own Tick:
-        // the callback that told the page has long returned, the tick loop above is done walking the
-        // list, and nothing is left that can be looking at it.
-        DropGoneLayers();
-    }
-
-    // Hover, recomputed from where the cursor actually is rather than from the last
-    // mouse message.
-    //
-    // Needed because the widget list is rebuilt more often than the mouse moves: an
-    // expander opening, a page switching, a button relabelling itself and every saved
-    // setting all call Layout(), and the control under a *stationary* pointer is then a
-    // new object with hover false -- which used to make the highlight vanish under the
-    // cursor and now would fade it out, which is worse. Called from the tick, where a
-    // rebuild has just happened.
-    bool RefreshHover();
 
     // The root widget, made on first use. A page adds to the window, so this is what it is adding
     // to; `Add` here is the same call it has always been.
     View *EnsureContent() {
         if (!content) {
             content.reset(new View());
-            content->win = this;
+            content->host = this;
         }
         return static_cast<View *>(content.get());
     }
@@ -1228,72 +1433,24 @@ struct Window {
     // which is the widget touching itself. So a widget replaced while a message is
     // being dispatched is moved here rather than deleted, and this list is emptied
     // when that message has returned. Outside dispatch nothing is held: there is no
-    // closure running to protect.
-    std::vector<std::unique_ptr<Widget>> retired;
-    int dispatchDepth = 0;
-    // True while the window is taking its tree down, which is the one time a removal must not happen:
-    // a control that owns a layer outside its own subtree would be unlinking a sibling from a vector
-    // that is being destroyed. See ~Window and Widget::Remove.
-    bool tearingDown = false;
-
-    // One window message, and any nested ones -- a modal dialog, a drop-down running
-    // its own loop -- that happen inside it. Only the outermost frees, because the
-    // closure being protected belongs to the outermost.
-    struct Dispatch {
-        Window *w;
-        explicit Dispatch(Window *win) : w(win) { w->dispatchDepth++; }
-        ~Dispatch();
-        Dispatch(const Dispatch &) = delete;
-        Dispatch &operator=(const Dispatch &) = delete;
-    };
+    // closure running to protect. See `Surface::retired`.
 
     // --- internals --------------------------------------------------------------
-    bool CreateDevice();
-    // A layer that is on its way out, if there is one. The window takes no clicks while there is:
-    // what is being dismissed is not a place to be pressed again, the controls on it are on their
-    // way to being gone, and the page under it was not clickable a moment ago either.
-    Layer *LeavingLayer();
-    // Drops the layers that have finished leaving, subtree and all. Called from Frame, after the
-    // tick, so that the tree is not taken apart while it is being walked.
-    void DropGoneLayers();
-    bool CreateSizedResources();
-    void ReleaseSizedResources();
-    void ReleaseDevice();
-    void Resize();
-    void Paint();
-    void PaintCaption(const Painter &p);
-
-    // ---- the tree --------------------------------------------------------------------------
-    //
-    // The geometry convention, stated once because three passes depend on it: **a widget's `rect`
-    // is in its parent's space, and it draws in that space** -- so a control keeps drawing against
-    // its own rectangle, exactly as it did when a page placed it by hand. Descending into a
-    // widget's children moves the origin to that widget's top left, which is where their rectangles
-    // are measured from: a subtree that moves is a translation, and nothing inside it has to know.
-    //
-    // One arrangement, from the root down, and the walk itself is `ArrangeSubtree`: the window's own
-    // part of it is the root's box -- the client area below the caption -- and the fonts every
-    // measurement comes out of.
-    void ArrangeTree() {
-        layoutDirty = false;
-        if (!content) return;
-        const D2D1_RECT_F box = { 0.0f, kCaptionH, ClientW(), ClientH() };
-        // **A window that changed size is not a layout change worth animating.** The border is under the
-        // pointer, every frame of the drag is the new size, and a tree gliding toward a box that keeps
-        // moving trails it by however fast the pointer is going -- hundreds of DIPs, at the speed
-        // somebody drags a border. So the arrangement that follows a resize *places* what it arranged,
-        // and every other arrangement glides as usual. See PlaceSubtree.
-        const bool resized = !SameRect(box, content->rect);
-        content->rect = box;
-        // Placed, and drawn where it is, every time. The root is not a child of any layout, so
-        // nothing glides it and a window that was resized is not an animation -- and a drawn
-        // rectangle left behind by the old size would say "something is moving" for the rest of the
-        // window's life, with the frame loop turning frames for a page that is standing still.
-        content->drawn = content->rect;
-        content->placed = true;
-        micula::ArrangeSubtree(content.get(), fonts);
-        if (resized) micula::PlaceSubtree(content.get());
+    // Where a window's tree starts: under the caption the window draws for itself. See `RootBox`.
+    D2D1_RECT_F RootBox() const override { return { 0.0f, kCaptionH, ClientW(), ClientH() }; }
+    // A window's half of `Surface::Paint`: the material the surface clears to, what a client is told
+    // about the tree, and the caption over it.
+    D2D1_COLOR_F Backdrop() const override {
+        // Transparent when the material is there, opaque when it is not. This one call is the
+        // difference between a Mica window and a grey one.
+        return micaActive ? D2D1::ColorF(0, 0, 0, 0) : pal.windowBg;
     }
+    void BeforeDraw() override { UiaAnnounce(); }
+    void PaintFurniture(const Painter &p) override;
+    void PaintCaption(const Painter &p);
+    Window *AsWindow() override { return this; }
+
+    // ---- the tree (see `Surface::ArrangeTree`) ----------------------------------------------------
 
     // Paint the tree. `ox, oy` is where the space `w->rect` is measured in sits in the client area:
     // the accumulated offsets of its ancestors. The walk below is called under that translation, which
@@ -1331,56 +1488,29 @@ struct Window {
     // treat as an error: a preview that has not been generated yet is a normal state,
     // not a fault. Needs COM initialised on this thread, because WIC is COM.
     ID2D1Bitmap1 *Image(const std::wstring &path, UINT maxW);
-    void ReleaseImages();
     LRESULT CaptionHitTest(POINT screen) const;
-    // The control under a point, in client DIPs. Walks the tree, and the reverse of the order it is
-    // painted in, so whatever is drawn on top is whatever the click reaches.
-    Widget *HitTest(float x, float y);
-    Widget *HitTestIn(Widget *w, float x, float y);
-    // Where a widget's own space begins in the client area: the accumulated origins of its
-    // ancestors, which is the translation the paint walk reaches it with. A control that reads the
-    // pointer or asks how much room it has wants that same answer, and this is the one place it is
-    // worked out.
-    D2D1_POINT_2F OriginOf(const Widget *w) const;
-    // The layer calls the keyboard goes through first: the last visible one in the tree, which is
-    // the same one the hit test reaches.
-    Layer *TopLayer();
-    Layer *TopLayerIn(Widget *w);
-    void CollectTab(Widget *w, std::vector<Widget *> &out);
-    void CollectLayers(Widget *w, std::vector<Layer *> &out);
-    void DropGoneIn(Widget *w);
-    bool SetHover(Widget *w, Widget *over);
-    void DismissIn(Widget *w);
     // The pointer moved: the widget under it hears about it, and so does any widget whose watched
     // region outside itself contains it (see Widget::ExternalRegion). Returns true when something
     // under the pointer wants a repaint per move.
     bool SendMove(Widget *w, float x, float y, Widget *over);
-    // The same point, in the space of a widget's own rectangle: what every input callback is handed.
-    D2D1_POINT_2F LocalPoint(const Widget *w, float x, float y) const {
-        const D2D1_POINT_2F o = OriginOf(w);
-        return D2D1::Point2F(x - o.x, y - o.y);
-    }
-    Layer *LeavingIn(Widget *w);
     // Everything but `except` puts away what it is showing -- an open list, a peeked pane. From
     // a copy of the list, because a dismissal is allowed to lay the page out again and the list
     // itself may not survive that. See `retired`.
     // A click on nothing, or on something raised: everything the click was not over is told, so
     // that a drop-down left open closes. The point is in window DIPs, the space a layer's own
     // rectangle is in.
-    void DismissOthers(Widget *except, float x, float y);
     // The last raised control that is a layer, which is where Esc, Enter and the Tab ring go
     // first. See Widget::AsLayer.
     void MoveFocus(int delta);
-    void SetFocusTo(Widget *w);
-    // Ends a gesture the pointer is no longer allowed to finish, and hands the widget
-    // the release it will otherwise never see. See the WM_CAPTURECHANGED handler.
-    void CancelCapture();
+    // **The one part of the focus that is a window's**: what a screen reader is told. `Surface` moves the
+    // focus and calls this; a surface with no automation tree of its own leaves it empty.
+    void FocusMoved() override { UiaFocusChanged(); }
     void PlaceImeAtCaret();
 
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l);
 };
 
-inline UINT_PTR Window::TakeTimerId() {
+inline UINT_PTR Surface::TakeTimerId() {
     // From the bottom up, and 1 is left out: `SetTimer` refuses 0, and a program that sets a timer
     // of its own is likelier to have picked 1 than 2. Timers are few, so a scan is a scan.
     for (UINT_PTR id = 2;; id++) {
@@ -1390,30 +1520,30 @@ inline UINT_PTR Window::TakeTimerId() {
     }
 }
 
-inline void Window::GiveTimerId(UINT_PTR id) {
+inline void Surface::GiveTimerId(UINT_PTR id) {
     for (size_t i = 0; i < timerIds.size(); i++)
         if (timerIds[i] == id) { timerIds.erase(timerIds.begin() + i); return; }
 }
 
-inline void Timer::Start(Window *w, UINT ms, std::function<void()> fn) {
-    if (!w || !w->hwnd) return;
-    if (win && win != w) Stop();   // a timer belongs to one window at a time
-    if (!win) {
-        win = w;
-        id = w->TakeTimerId();
-        w->timers.push_back(this);
+inline void Timer::Start(Surface *s, UINT ms, std::function<void()> fn) {
+    if (!s || !s->hwnd) return;
+    if (host && host != s) Stop();   // a timer belongs to one surface at a time
+    if (!host) {
+        host = s;
+        id = s->TakeTimerId();
+        s->timers.push_back(this);
     }
     this->tick = std::move(fn);
-    SetTimer(w->hwnd, id, ms, nullptr);   // an id that is already set is simply re-armed
+    SetTimer(s->hwnd, id, ms, nullptr);   // an id that is already set is simply re-armed
 }
 
 inline void Timer::Stop() {
-    if (!win) return;
-    if (win->hwnd) KillTimer(win->hwnd, id);
-    for (size_t i = 0; i < win->timers.size(); i++)
-        if (win->timers[i] == this) { win->timers.erase(win->timers.begin() + i); break; }
-    win->GiveTimerId(id);
-    win = nullptr;
+    if (!host) return;
+    if (host->hwnd) KillTimer(host->hwnd, id);
+    for (size_t i = 0; i < host->timers.size(); i++)
+        if (host->timers[i] == this) { host->timers.erase(host->timers.begin() + i); break; }
+    host->GiveTimerId(id);
+    host = nullptr;
     id = 0;
     tick = nullptr;
 }
@@ -1455,15 +1585,15 @@ inline void Window::ReloadTheme() {
     // moment somebody opened the personalisation settings.
     //
     // **The palette is the process's**, so this is a refresh rather than an assignment: every window
-    // reads the same one, and each of them hears this message for itself.
-    RefreshPalette();
+    // reads the same one, and each of them hears this message for itself. That half is the surface's
+    // -- a menu has to repaint as well -- and what a window adds is its frame.
+    Surface::ReloadTheme();
     ApplyThemeToFrame();
-    Invalidate();
 }
 
 // ---------------------------------------------------------------- device
 
-inline bool Window::CreateDevice() {
+inline bool Surface::CreateDevice() {
     if (dc) return true;
 
     // **The device is the process's, not this window's** -- see `graphics.h` for why. All that is left
@@ -1506,7 +1636,7 @@ inline bool Window::CreateDevice() {
     return CreateSizedResources();
 }
 
-inline bool Window::CreateSizedResources() {
+inline bool Surface::CreateSizedResources() {
     if (!swap || !dc) return false;
     IDXGISurface *surface = nullptr;
     if (FAILED(swap->GetBuffer(0, __uuidof(IDXGISurface), (void **)&surface)) || !surface)
@@ -1526,14 +1656,14 @@ inline bool Window::CreateSizedResources() {
     return true;
 }
 
-inline void Window::ReleaseSizedResources() {
+inline void Surface::ReleaseSizedResources() {
     if (dc) dc->SetTarget(nullptr);
     if (target) { target->Release(); target = nullptr; }
 }
 
 // The icon bitmap belongs to the device context, so it goes when that does.
 
-inline void Window::Resize() {
+inline void Surface::Resize() {
     if (!swap) return;
     RECT rc; GetClientRect(hwnd, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
@@ -1542,14 +1672,14 @@ inline void Window::Resize() {
     CreateSizedResources();
 }
 
-inline void Window::ReleaseImages() {
+inline void Surface::ReleaseImages() {
     for (std::map<std::wstring, ID2D1Bitmap1 *>::iterator it = images.begin();
          it != images.end(); ++it)
         if (it->second) it->second->Release();
     images.clear();
 }
 
-inline void Window::ReleaseDevice() {
+inline void Surface::ReleaseDevice() {
     ReleaseSizedResources();
     ReleaseImages();
     if (iconBitmap) { iconBitmap->Release(); iconBitmap = nullptr; }
@@ -1615,42 +1745,30 @@ inline void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
     p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
-inline void Window::Paint() {
+// **One paint, and the device is made here if it is not there.** Called from the loop in `App::Run`
+// while something is moving, and from a subclass's WM_PAINT when nothing is -- which is why the
+// arrangement is asked for again here: the loop is what normally arranges, and in that case there is
+// no loop. Idempotent either way: a paint that follows a frame finds the flag already clear.
+inline void Surface::Paint() {
     if (!CreateDevice() || !target) return;
-    // A paint the frame loop did not run -- the first one, and every one Windows asks for while it is
-    // running a size or move loop of its own -- arranges for itself, because the loop is what
-    // normally does it and there is no loop here. Idempotent: a paint that follows a frame finds the
-    // flag already clear.
     if (layoutDirty) ArrangeTree();
-    // And then said, before anything is drawn and after the tree is the tree that is about to be
-    // drawn: a change is a comparison between this frame's controls and the last frame's, so it is
-    // announced once and the drawing has nothing to do with it. See `UiaAnnounce`.
-    UiaAnnounce();
+    // After the tree is the tree that is about to be drawn, and before anything is: a window tells a
+    // client what changed here, because this is the one moment every change has to pass through. See
+    // `Window::UiaAnnounce`.
+    BeforeDraw();
     Painter p;
     p.rt = dc; p.br = brush; p.font = &fonts; p.pal = &pal;
 
     dc->BeginDraw();
-    // Transparent when the material is there, opaque when it is not. This one call is
-    // the difference between a Mica window and a grey one.
-    dc->Clear(micaActive ? D2D1::ColorF(0, 0, 0, 0) : pal.windowBg);
+    // Transparent when the material is there, opaque when it is not. This one call is the difference
+    // between a Mica window and a grey one. See `Backdrop`.
+    dc->Clear(Backdrop());
     // The page is the tree now: one walk from the root, which is the client area below the caption.
     // What the flat-list passes here used to carry is now where it belongs -- furniture before the
     // page is child order, the page-wide clip is a container's own clip, and the arrival opacity is
     // what a `Layer` is drawn through. See docs/layout.md.
     PaintTree(p, content.get(), 0.0f, 0.0f);
-#if MICULA_DEBUG_LAYOUT
-    if (debug::layout && content) {
-        // Blue: the page's own clip, which is what a container's overflow will narrow when there is
-        // one. Drawn from the client area, before the walk that draws the rest.
-        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
-        p.StrokeRound({ 0.0f, kCaptionH, ClientW(), ClientH() }, 0.0f, Rgb(0x0A84FF, 0.85f));
-        PaintGuides(p, content.get(), 0.0f, 0.0f);
-    }
-#endif
-    // Last, so a page that draws to the top of its own area cannot run under the
-    // caption -- which is now client area like any other, and has nothing but paint
-    // order protecting it.
-    PaintCaption(p);
+    PaintFurniture(p);
     const HRESULT hr = dc->EndDraw();
     if (SUCCEEDED(hr)) {
         swap->Present(1, 0);
@@ -1671,6 +1789,25 @@ inline void Window::Paint() {
         ReleaseDevice();
         Invalidate();
     }
+}
+
+// **What a window paints over the tree**: the caption, and the boxes the debug build draws so that a
+// layout can be looked at. Called from `Surface::Paint` with the device context open and the tree
+// already drawn.
+inline void Window::PaintFurniture(const Painter &p) {
+#if MICULA_DEBUG_LAYOUT
+    if (debug::layout && content) {
+        // Blue: the page's own clip, which is what a container's overflow will narrow when there is
+        // one. Drawn from the client area, before the walk that draws the rest.
+        p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
+        p.StrokeRound({ 0.0f, kCaptionH, ClientW(), ClientH() }, 0.0f, Rgb(0x0A84FF, 0.85f));
+        PaintGuides(p, content.get(), 0.0f, 0.0f);
+    }
+#endif
+    // Last, so a page that draws to the top of its own area cannot run under the
+    // caption -- which is now client area like any other, and has nothing but paint
+    // order protecting it.
+    PaintCaption(p);
 }
 
 // The app icon, as an **opacity mask** rather than as a picture. Converted once, kept.
@@ -1870,9 +2007,9 @@ inline LRESULT Window::CaptionHitTest(POINT screen) const {
     return HTCLIENT;
 }
 
-inline Layer *Window::LeavingLayer() { return LeavingIn(content.get()); }
+inline Layer *Surface::LeavingLayer() { return LeavingIn(content.get()); }
 
-inline Layer *Window::LeavingIn(Widget *w) {
+inline Layer *Surface::LeavingIn(Widget *w) {
     if (!w) return nullptr;
     if (Layer *l = w->AsLayer()) {
         if (l->Leaving()) return l;
@@ -1882,7 +2019,7 @@ inline Layer *Window::LeavingIn(Widget *w) {
     return nullptr;
 }
 
-inline Widget *Window::HitTest(float x, float y) {
+inline Widget *Surface::HitTest(float x, float y) {
     // One fade's worth of "no": while a layer is on its way out, nothing answers the pointer. What
     // is being dismissed is not a place to be pressed again, the controls on it are on their way to
     // being gone, and the page under it was not clickable a moment ago either.
@@ -1901,7 +2038,7 @@ inline Widget *Window::HitTest(float x, float y) {
 // the two walks agreeing about it is the whole of what makes a click land on what is under the
 // pointer. Leaving it out is what made every click read as thirty-two DIPs below where it was made:
 // the page's own origin is the caption bar, and nothing was taking it off.
-inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
+inline Widget *Surface::HitTestIn(Widget *w, float x, float y) {
     const D2D1_RECT_F self = w->placed ? w->drawn : w->rect;
     x -= self.left;
     y -= self.top;
@@ -1933,7 +2070,7 @@ inline Widget *Window::HitTestIn(Widget *w, float x, float y) {
 // Where a widget's own space begins in the client area: the accumulated origins of the widgets
 // above it. The root's rectangle is in client coordinates -- that is what the arrange pass gives it
 // -- so the walk starts at the widget's parent.
-inline D2D1_POINT_2F Window::OriginOf(const Widget *w) const {
+inline D2D1_POINT_2F Surface::OriginOf(const Widget *w) const {
     float x = 0.0f, y = 0.0f;
     for (const Widget *at = w ? w->parent : nullptr; at; at = at->parent) {
         const D2D1_RECT_F r = at->placed ? at->drawn : at->rect;
@@ -1943,7 +2080,7 @@ inline D2D1_POINT_2F Window::OriginOf(const Widget *w) const {
     return D2D1::Point2F(x, y);
 }
 
-inline void Window::DismissOthers(Widget *except, float x, float y) {
+inline void Surface::DismissOthers(Widget *except, float x, float y) {
     std::vector<Layer *> layers;
     CollectLayers(content.get(), layers);
     // Three things survive a click. What the click was over, and the widgets above it. What is
@@ -1968,7 +2105,7 @@ inline void Window::DismissOthers(Widget *except, float x, float y) {
     }
 }
 
-inline void Window::CollectLayers(Widget *w, std::vector<Layer *> &out) {
+inline void Surface::CollectLayers(Widget *w, std::vector<Layer *> &out) {
     if (!w) return;
     for (const auto &child : w->children) {
         if (!child->visible) continue;
@@ -1979,11 +2116,11 @@ inline void Window::CollectLayers(Widget *w, std::vector<Layer *> &out) {
 
 // The layer the window's keyboard goes to first: the last of the raised controls that is one,
 // which is the same one the pointer would reach -- the hit test walks the list this way round.
-inline Layer *Window::TopLayer() {
+inline Layer *Surface::TopLayer() {
     return content ? TopLayerIn(content.get()) : nullptr;
 }
 
-inline Layer *Window::TopLayerIn(Widget *w) {
+inline Layer *Surface::TopLayerIn(Widget *w) {
     for (auto it = w->children.rbegin(); it != w->children.rend(); ++it) {
         Widget *child = it->get();
         if (!child->visible) continue;
@@ -2002,7 +2139,7 @@ inline void Layer::Close() {
     // caret is left in a control that is on its way out. Everything else the layer owns is its own
     // subtree, which fades with it and is dropped with it -- what used to be marked with
     // `leavingWith` and hunted for in a flat list.
-    if (Window *w = window()) {
+    if (Surface *w = surface()) {
         if (w->focused && Holds(w->focused)) w->SetFocusTo(nullptr);
     }
     if (Animations()) {
@@ -2016,11 +2153,11 @@ inline void Layer::Close() {
     if (onDismiss) onDismiss();
 }
 
-inline void Window::DropGoneLayers() {
+inline void Surface::DropGoneLayers() {
     if (content) DropGoneIn(content.get());
 }
 
-inline void Window::DropGoneIn(Widget *w) {
+inline void Surface::DropGoneIn(Widget *w) {
     for (size_t i = 0; i < w->children.size(); ) {
         Widget *child = w->children[i].get();
         Layer *l = child->AsLayer();
@@ -2036,13 +2173,13 @@ inline void Window::DropGoneIn(Widget *w) {
         if (capture && child->Holds(capture)) capture = nullptr;
         // Retired rather than deleted while a message is being dispatched: the page was told inside
         // a callback of its own, and a page that kept a pointer to the layer has a live object to
-        // read until that message returns. See Window::retired.
+        // read until that message returns. See Surface::retired.
         if (dispatchDepth > 0) retired.emplace_back(std::move(w->children[i]));
         w->children.erase(w->children.begin() + (ptrdiff_t)i);
     }
 }
 
-inline bool Window::RefreshHover() {
+inline bool Surface::RefreshHover() {
     POINT pt = {};
     if (!GetCursorPos(&pt)) return false;
     // Nothing changes state while a layer is on its way out. The pointer cannot reach anything (see
@@ -2073,7 +2210,7 @@ inline bool Window::RefreshHover() {
 // point of doing it from the tick is that the widget which is *not* under the pointer has to be told
 // so whether or not it ever heard about a move: a page can change shape under a pointer that has not
 // moved at all.
-inline bool Window::SetHover(Widget *w, Widget *over) {
+inline bool Surface::SetHover(Widget *w, Widget *over) {
     bool changed = false;
     for (const auto &child : w->children) {
         const bool now = (child.get() == over);
@@ -2096,7 +2233,7 @@ inline bool Window::SetHover(Widget *w, Widget *over) {
 // what the hit test would have chosen at that point, or a control is told about moves that are not
 // over it. `x, y` are in the space `w`'s rect is measured in; the point goes into `w`'s own space
 // here, once, and the children are then handed points in theirs.
-inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
+inline bool Surface::SendMove(Widget *w, float x, float y, Widget *over) {
     const D2D1_RECT_F self = w->placed ? w->drawn : w->rect;
     x -= self.left;
     y -= self.top;
@@ -2124,7 +2261,7 @@ inline bool Window::SendMove(Widget *w, float x, float y, Widget *over) {
 // Everything puts away what it is showing -- an open list, a peeked pane. A walk rather than a
 // broadcast to a list, and the reason it is a broadcast at all is that a control cannot see a click
 // or a deactivation it did not get.
-inline void Window::DismissIn(Widget *w) {
+inline void Surface::DismissIn(Widget *w) {
     for (const auto &child : w->children) {
         child->Dismiss();
         child->hover = false;
@@ -2132,17 +2269,8 @@ inline void Window::DismissIn(Widget *w) {
     }
 }
 
-// The gesture that was in progress cannot finish: the capture went to another window,
-// the system took it back for a modal state of its own, or this window lost the
-// activation. Nothing else here notices. WM_LBUTTONUP is delivered to whoever holds the
-// capture, and from that moment on that is no longer this window, so the release is
-// synthesised rather than waited for.
-//
-// Without it a drag has no end at all: a scroll bar with a repeat timer running keeps
-// scrolling, a slider keeps its knob grabbed, and a button that was held down stays
-// looking held. The capture is dropped before OnRelease runs, because a widget is free
-// to lay the page out again there and this must not re-enter on the way.
-inline void Window::CancelCapture() {
+// The gesture that was in progress cannot finish: see `Surface::CancelCapture`.
+inline void Surface::CancelCapture() {
     Widget *w = capture;
     finger = 0;
     // The gesture is abandoned rather than finished, so nothing carries on from it: a page left to
@@ -2155,6 +2283,102 @@ inline void Window::CancelCapture() {
     Invalidate();
 }
 
+// The input path, whole. See the note on the declaration for what this is and why it is one function.
+inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    const float s = scale();
+    const float mx = (float)GET_X_LPARAM(lp) / s;
+    const float my = (float)GET_Y_LPARAM(lp) / s;
+    switch (m) {
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
+        TrackMouseEvent(&tme);
+        if (MoveTo(mx, my, Hand::Mouse, true)) Invalidate();
+        return true;
+    }
+    case WM_MOUSELEAVE:
+        if (content) SetHover(content.get(), nullptr);
+        Invalidate();
+        return true;
+    case WM_LBUTTONDOWN:
+        PressAt(mx, my, Hand::Mouse);
+        return true;
+    case WM_LBUTTONUP:
+        ReleaseAt(Hand::Mouse);
+        return true;
+    // ---- a finger, and a pen ----------------------------------------------------------------------
+    //
+    // The coordinates are the pointer's own: screen pixels, physical, which is a different space from
+    // the one the mouse messages arrive in -- converted here rather than trusted, because a touch
+    // that landed a few pixels off would be a gesture that grabbed the wrong sub-region of a control.
+    case WM_POINTERDOWN:
+    case WM_POINTERUPDATE:
+    case WM_POINTERUP: {
+        const UINT32 id = GET_POINTERID_WPARAM(wp);
+        POINTER_INFO info;
+        if (!GetPointerInfo(id, &info)) return true;
+        const bool touching = info.pointerType == PT_TOUCH;
+        if (!touching && info.pointerType != PT_PEN) return true;
+        POINT p = { info.ptPixelLocation.x, info.ptPixelLocation.y };
+        ScreenToClient(h, &p);
+        const float x = (float)p.x / s, y = (float)p.y / s;
+        const bool contact = (info.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
+        const Hand hand = touching ? Hand::Finger : Hand::Pen;
+        if (m == WM_POINTERDOWN) {
+            GestureBegin(id, info);
+            if (!touching) {
+                PressAt(x, y, hand);
+            } else if (finger == 0) {
+                finger = id;
+                PressAt(x, y, hand);
+            } else if (capture) {
+                // **A second finger takes the first one's click away**, and leaves the gesture: what
+                // one finger would have been a click on is not what the hand is doing any more, but
+                // the page is still being held by it.
+                capture->pressed = false;
+            }
+        } else if (m == WM_POINTERUPDATE) {
+            GestureFeed(info);
+            if (!touching || finger == id) MoveTo(x, y, hand, contact);
+        } else if (!touching) {
+            GestureFeed(info);
+            ReleaseAt(hand);
+        } else if (finger == id) {
+            GestureFeed(info);
+            finger = 0;
+            ReleaseAt(hand);
+            // **The gesture outlives the hand here.** A fling's remaining frames come after this one,
+            // and `Tick` is what keeps asking for them; `GestureFinish` is decided there, not here.
+        }
+        return true;
+    }
+    // **Not the end of a gesture.** The system moves a pointer's capture on its own account as soon as
+    // one is down, so this arrives at the beginning of every touch -- and treating it as "the capture
+    // is gone" cancels the press that was just made, which is a tap that does nothing and a list that
+    // cannot be dragged. A gesture that really loses the capture this surface holds goes through
+    // `WM_CAPTURECHANGED` like any other, and that is where it ends. Answered rather than handed on,
+    // for the same reason as the three above: a message a window says it handles is a message the
+    // system does not promote.
+    case WM_POINTERCAPTURECHANGED:
+        return true;
+    // The capture went away without a button-up: alt-tab, a system modal, another
+    // application taking the mouse. Windows revokes it and no WM_LBUTTONUP is ever
+    // coming, so a gesture left running here is one that never ends. The button stays
+    // dark under a window that is not even active any more -- and worse, `capture` still
+    // points at the control, so the next time the pointer crosses this window the move
+    // goes straight to OnDrag and the slider follows it with no button held.
+    case WM_CAPTURECHANGED:
+        CancelCapture();
+        return true;
+    case WM_CANCELMODE:
+        // The same thing, announced before the capture is taken rather than after.
+        // Released here so that the two handlers cannot disagree about who holds it.
+        if (capture) ReleaseCapture();
+        CancelCapture();
+        return true;
+    }
+    return false;
+}
+
 // ---- the three things a pointer does, whichever hand it is -----------------------------------------
 //
 // The messages differ and the meaning does not: a mouse, a finger and a pen all say "down here",
@@ -2163,7 +2387,7 @@ inline void Window::CancelCapture() {
 // the widget's callbacks are, what a click means -- is written here once and reached from two message
 // handlers, and the hand decides only what a hand really decides. See `Hand`, and the two handlers in
 // `Proc`.
-inline void Window::PressAt(float x, float y, Hand hand) {
+inline void Surface::PressAt(float x, float y, Hand hand) {
     pressX = x;
     pressY = y;
     pointerX = x;
@@ -2223,7 +2447,7 @@ inline void Window::PressAt(float x, float y, Hand hand) {
 
 // Returns whether anything about what the pointer is over changed, which is the window's reason to
 // draw a frame -- the same contract the two walks it drives already have.
-inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
+inline bool Surface::MoveTo(float x, float y, Hand hand, bool contact) {
     // **A mouse is not where a finger is.** While one is down, the pointer a page can ask about is the
     // finger -- see `Widget::Cursor` -- so a mouse that happens to be somewhere else on the screen does
     // not move it. This is not a corner case: it is the usual one, and a control reading the last thing
@@ -2304,7 +2528,7 @@ inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
     return changed || tracks;
 }
 
-inline void Window::ReleaseAt(Hand hand) {
+inline void Surface::ReleaseAt(Hand hand) {
     if (hand != capturing) return;
     Widget *w = capture;
     Widget *pan = panning;
@@ -2341,7 +2565,7 @@ inline void Window::ReleaseAt(Hand hand) {
 
 // The first thing above `w` that scrolls, or null. `w` itself is not asked: a press that landed on it
 // has just said, by not tracking the pointer, that it does not want the drag.
-inline Widget *Window::PanTargetFor(Widget *w) {
+inline Widget *Surface::PanTargetFor(Widget *w) {
     for (Widget *up = w->parent; up; up = up->parent)
         if (up->Pans()) return up;
     return nullptr;
@@ -2352,11 +2576,11 @@ inline Widget *Window::PanTargetFor(Widget *w) {
 // Three interactions and no more: a tap, a drag, and a manipulation whose translation is what we scroll
 // by. Nothing here decides anything -- the answers are recorded by the callback, which runs inside
 // `Process` where the tree is not to be touched, and acted on by the frame that carried them.
-inline void WINAPI Window::Output(void *clientData, const icapi::Output *out) {
-    static_cast<Window *>(clientData)->GestureSay(out);
+inline void WINAPI Surface::Output(void *clientData, const icapi::Output *out) {
+    static_cast<Surface *>(clientData)->GestureSay(out);
 }
 
-inline void Window::GestureSay(const icapi::Output *out) {
+inline void Surface::GestureSay(const icapi::Output *out) {
     if (out->interactionId == icapi::kManipulation) {
         // Screen pixels in, client DIPs out: the frames this was fed were the pointer's own, and the
         // page is measured in the space every other point handed to a control is in.
@@ -2373,7 +2597,7 @@ inline void Window::GestureSay(const icapi::Output *out) {
 
 // What the answers amount to. Called right after a frame goes in, and again on every frame of a fling.
 // Says whether anything came back at all -- a recognizer that answers nothing is one that is finished.
-inline bool Window::GestureApply() {
+inline bool Surface::GestureApply() {
     bool moved = false;
     // **The first movement is what makes it a drag**, and that is the whole of what is needed: whether
     // the hand meant a click is not decided here at all -- `gestureTap` is the recognizer's answer at
@@ -2417,7 +2641,7 @@ inline bool Window::GestureApply() {
     return moved;
 }
 
-inline void Window::GestureBegin(UINT32 pointerId, const POINTER_INFO &info) {
+inline void Surface::GestureBegin(UINT32 pointerId, const POINTER_INFO &info) {
     const icapi::Api &ic = icapi::Get();
     if (!ic.Ready() || gesture) return;
     if (FAILED(ic.Create(&gesture)) || !gesture) { gesture = nullptr; return; }
@@ -2428,7 +2652,7 @@ inline void Window::GestureBegin(UINT32 pointerId, const POINTER_INFO &info) {
         { icapi::kDrag, icapi::kEnable },
     };
     ic.Configure(gesture, 3, config);
-    ic.Callback(gesture, &Window::Output, this);
+    ic.Callback(gesture, &Surface::Output, this);
     ic.AddPointer(gesture, pointerId);
     gestureId = pointerId;
     gestureLooked = false;
@@ -2436,7 +2660,7 @@ inline void Window::GestureBegin(UINT32 pointerId, const POINTER_INFO &info) {
     GestureFeed(info);
 }
 
-inline bool Window::GestureFeed(const POINTER_INFO &info) {
+inline bool Surface::GestureFeed(const POINTER_INFO &info) {
     if (!gesture) return false;
     gestureFrame = info;
     // **A frame is not a moment, and a speed cannot be read off one point.** What decides whether a
@@ -2462,7 +2686,7 @@ inline bool Window::GestureFeed(const POINTER_INFO &info) {
 // frame the same way for as long as it is feeding an inertia, and answers nothing once it has stopped.
 // So a gesture ends when the system says `CANCEL`, or when feeding it has stopped producing anything.
 // Destroying the context at the release would throw the fling away with the finger.
-inline void Window::GestureFinish() {
+inline void Surface::GestureFinish() {
     if (!gesture) return;
     if (panning) panning->PanRelease(0.0f, 0.0f);
     panning = nullptr;
@@ -2479,26 +2703,26 @@ inline void Window::GestureFinish() {
 // one walk of the whole tree, and there is no per-widget dirty flag to keep honest.
 
 inline void Widget::InvalidateLayout() {
-    if (Window *w = window()) w->layoutDirty = true;
+    if (Surface *w = surface()) w->layoutDirty = true;
 }
 
 inline void Widget::Invalidate() {
-    if (Window *w = window()) w->Invalidate();
+    if (Surface *w = surface()) w->Invalidate();
 }
 
 inline void Widget::Remove(Widget *child) {
     // A tree on its way down takes every node with it, and this is the one moment a removal is not a
     // removal: the parent's vector of children is what is running this, and erasing from it is a write
-    // into memory it no longer owns. See Window::tearingDown.
-    if (Window *w = window()) {
+    // into memory it no longer owns. See Surface::tearingDown.
+    if (Surface *w = surface()) {
         if (w->tearingDown) return;
     }
     for (size_t i = 0; i < children.size(); i++) {
         if (children[i].get() != child) continue;
         // Deferred while a message is being dispatched, and that is the whole of it: a control is
         // allowed to take itself out from inside its own callback, and the closure running that
-        // callback lives in the block this would free. See Window::retired.
-        Window *w = window();
+        // callback lives in the block this would free. See Surface::retired.
+        Surface *w = surface();
         if (w && w->dispatchDepth > 0) {
             w->retired.emplace_back(std::move(children[i]));
             children.erase(children.begin() + i);
@@ -2510,15 +2734,15 @@ inline void Widget::Remove(Widget *child) {
 }
 
 inline D2D1_POINT_2F Widget::Cursor() const {
-    Window *w = window();
+    Surface *w = surface();
     if (!w) return D2D1::Point2F(0.0f, 0.0f);
-    // The window's own memory of the pointer rather than the cursor's position: see `Window::pointerX`.
+    // The surface's own memory of the pointer rather than the cursor's position: see `Surface::pointerX`.
     const D2D1_POINT_2F o = w->OriginOf(this);
     return D2D1::Point2F(w->pointerX - o.x, w->pointerY - o.y);
 }
 
 inline D2D1_RECT_F Widget::VisibleArea() const {
-    Window *w = window();
+    Surface *w = surface();
     if (!w || !w->content) return D2D1_RECT_F{ 0, 0, 0, 0 };
     // **Every container above it that is a window onto its children, intersected**, with the page's own
     // box as the one it starts from. The nearest of them alone is a box that something above it may
@@ -2552,18 +2776,18 @@ inline D2D1_RECT_F Widget::VisibleArea() const {
 }
 
 inline bool Widget::ShowFocusRing() const {
-    Window *w = window();
+    Surface *w = surface();
     return focus && w && w->showFocusRing;
 }
 
-inline void Window::SetFocusTo(Widget *w) {
+inline void Surface::SetFocusTo(Widget *w) {
     if (focused == w) return;
     if (focused) { focused->focus = false; focused->OnBlur(); }
     focused = w;
     if (focused) { focused->focus = true; focused->OnFocus(); }
     caretOn = true;
     Invalidate();
-    UiaFocusChanged();
+    FocusMoved();
 }
 
 inline void Window::MoveFocus(int delta) {
@@ -2590,7 +2814,7 @@ inline void Window::MoveFocus(int delta) {
 // were added -- a page no longer has to keep anything in step. A layer that is on its way out is not
 // in it: its ring is on its way to being gone, and Tab in the middle of a dismissal belongs to the
 // page that is about to be the only thing there.
-inline void Window::CollectTab(Widget *w, std::vector<Widget *> &out) {
+inline void Surface::CollectTab(Widget *w, std::vector<Widget *> &out) {
     for (const auto &child : w->children) {
         if (!child->visible || !child->enabled) continue;
         if (Layer *l = child->AsLayer()) {
@@ -2774,7 +2998,7 @@ inline double MonotonicSeconds() {
 
 // ---------------------------------------------------------------- App
 
-// The application: a message loop, and the windows it pumps.
+// The application: a message loop, and the surfaces it pumps.
 //
 // An ordinary object, local to wWinMain, rather than the singleton a framework usually has -- and
 // the reason is not tidiness. `inline` functions with a `static` in them are one per *module*, so a
@@ -2797,6 +3021,10 @@ inline double MonotonicSeconds() {
 // anything still in it -- and it does not have to be added before the loop starts, which is what a
 // windowed popup will want.
 //
+// **What it pumps is a `Surface`**, so a menu or a tip is pumped the same way a window is: that is
+// the whole reason the two share a base class. A menu opening over a window therefore does not stop
+// it -- the loop turns frames for both, and the window's animations go on running underneath.
+//
 // `Run` returns when the last window in the list is gone, or when something posts WM_QUIT.
 struct App {
     App() = default;
@@ -2804,14 +3032,14 @@ struct App {
     App &operator=(const App &) = delete;
     ~App();
 
-    // The windows this loop pumps, in the order they were added.
-    std::vector<Window *> windows;
+    // The surfaces this loop pumps, in the order they were added.
+    std::vector<Surface *> surfaces;
 
-    // Add a window. It joins the loop at the next message that is asked for.
-    void Add(Window &w);
+    // Add a surface. It joins the loop at the next message that is asked for.
+    void Add(Surface &w);
     // Take one out. The loop stops when the last one goes, which is what closing the last window of
     // an application looks like from here.
-    void Remove(Window &w);
+    void Remove(Surface &w);
     // Run until there is nothing left to run.
     int  Run();
     // End the loop where it stands, with that exit code, whatever is still open.
@@ -2819,15 +3047,15 @@ struct App {
     bool Running() const { return running; }
 
 private:
-    // Window is the other half of this: the loop is written in terms of what a window knows about
-    // its own frame -- the clocks, the `animOn` flag, the dispatch guard -- and none of that is
-    // worth a public API.
-    friend struct Window;
+    // Surface is the other half of this: the loop is written in terms of what a surface knows about
+    // itself -- the clocks, the `animOn` flag, the dispatch guard -- and none of that is worth a
+    // public API.
+    friend struct Surface;
 
     bool running = false;
 
-    // Any window that wants frames, with each window's own `animOn` kept in step: it is what
-    // Invalidate() asks before deciding whether to set an update region. See Window::Invalidate.
+    // Any surface that wants frames, with each one's own `animOn` kept in step: it is what
+    // Invalidate() asks before deciding whether to set an update region. See Surface::Invalidate.
     bool Moving();
     // One message, inside the guard of the window it is for -- found from the handle rather than
     // from the list, because a message can arrive for a window that is in no app at all.
@@ -2837,30 +3065,30 @@ private:
 inline App::~App() {
     // The App is usually a local in wWinMain and the windows are usually locals after it, so it is
     // the App that goes first. Nothing else would notice that a pointer it kept had died.
-    for (Window *w : windows) w->app = nullptr;
+    for (Surface *w : surfaces) w->app = nullptr;
 }
 
-inline void App::Add(Window &w) {
+inline void App::Add(Surface &w) {
     if (w.app == this) return;
     w.app = this;
-    windows.push_back(&w);
-    // A window that joins a loop that is already running needs everything App::Run sets up for the
+    surfaces.push_back(&w);
+    // A surface that joins a loop that is already running needs everything App::Run sets up for the
     // ones that were there when it started, and it is not the clock that is the subtle half: the
-    // frequency is asked for there and nowhere else, so a window added later divides every frame by
+    // frequency is asked for there and nowhere else, so a surface added later divides every frame by
     // zero -- an infinite dt that the clamp turns into a tenth of a second, on *every* frame, which
     // is most of an 83 ms transition gone before the first repaint. The caret's timer is the other
     // half, and it is the one that would have been noticed eventually.
     if (running) w.BeginPump();
 }
 
-inline void App::Remove(Window &w) {
-    for (size_t i = 0; i < windows.size(); i++) {
-        if (windows[i] != &w) continue;
-        windows.erase(windows.begin() + i);
+inline void App::Remove(Surface &w) {
+    for (size_t i = 0; i < surfaces.size(); i++) {
+        if (surfaces[i] != &w) continue;
+        surfaces.erase(surfaces.begin() + i);
         break;
     }
     w.app = nullptr;
-    if (running && windows.empty()) PostQuitMessage(0);
+    if (running && surfaces.empty()) PostQuitMessage(0);
 }
 
 inline void App::Quit(int code) {
@@ -2870,26 +3098,26 @@ inline void App::Quit(int code) {
 
 inline bool App::Moving() {
     bool any = false;
-    for (Window *w : windows) {
-        // **A tree that owes an arrangement is a window with a frame to run.** The frame is where a
+    for (Surface *w : surfaces) {
+        // **A tree that owes an arrangement is a surface with a frame to run.** The frame is where a
         // change made by the message just handled becomes geometry and then paint -- "a child added, a
         // layout replaced and a widget hidden all set the one flag, and it is cleared here", as
-        // `Window::Frame` puts it -- so a window that owes one and is not animating has to be a window
+        // `Surface::Frame` puts it -- so a surface that owes one and is not animating has to be one
         // the loop turns for, or the change waits for whatever else happens to paint. Which can be two
         // seconds: a dragged scroll bar leaves the view where it was, because a bar that is already out
         // is not animating, and the scroll is applied when the bar's auto-hide timer next comes up.
         const bool on = w->Visible() &&
                         (w->layoutDirty || w->Animating() || w->AnimationWanted());
-        // A window that is *starting* to move picks its clock up here, which is where the one-window
-        // loop did it for its window and only its window. Without it, that window's first frame
-        // carries however long it spent sitting still while another window kept the loop awake -- and
+        // A surface that is *starting* to move picks its clock up here, which is where the one-window
+        // loop did it for its window and only its window. Without it, that surface's first frame
+        // carries however long it spent sitting still while another one kept the loop awake -- and
         // Frame() clamps that to a tenth of a second, which is most of an animation: the pane the
         // person just opened is nearly there before the second frame. The re-base in Run covers the
         // first animation of the whole loop, which is exactly why every one after it was wrong.
         if (on && !w->animOn) QueryPerformanceCounter(&w->qpcLast);
-        // A window that is not moving still has to keep its own flag honest: false means its
+        // A surface that is not moving still has to keep its own flag honest: false means its
         // Invalidate() sets an update region and its WM_PAINT does the drawing, which is how a
-        // window that is not animating is meant to be repainted.
+        // surface that is not animating is meant to be repainted.
         w->animOn = on;
         if (on) any = true;
     }
@@ -2897,12 +3125,12 @@ inline bool App::Moving() {
 }
 
 inline void App::PumpMessage(MSG *msg) {
-    Window *target = reinterpret_cast<Window *>(GetWindowLongPtrW(msg->hwnd, GWLP_USERDATA));
+    Surface *target = reinterpret_cast<Surface *>(GetWindowLongPtrW(msg->hwnd, GWLP_USERDATA));
     if (!target) { DispatchMessageW(msg); return; }
     // The guard is the *target's*, and that is the whole point of looking it up: a page on the
-    // second window that lays itself out in a callback would otherwise free the widgets its own
-    // callback is standing on, which is the crash Window::retired exists to prevent.
-    Window::Dispatch frame(target);
+    // second surface that lays itself out in a callback would otherwise free the widgets its own
+    // callback is standing on, which is the crash Surface::retired exists to prevent.
+    Surface::Dispatch frame(target);
     DispatchMessageW(msg);
 }
 
@@ -2920,51 +3148,57 @@ inline Window::~Window() {
 
 // What used to be the first and the last thing the one window's loop did, now per window because
 // there can be more than one.
-inline void Window::BeginPump() {
-    // GetCaretBlinkTime's own default period. The window owns this timer the way a control owns
+inline void Surface::BeginPump() {
+    // The frequency is the process's and is asked for once per surface, which costs a call and keeps
+    // this readable: every frame divides by it.
+    QueryPerformanceFrequency(&qpcFreq);
+    QueryPerformanceCounter(&qpcLast);
+    // GetCaretBlinkTime's own default period. The surface owns this timer the way a control owns
     // its own; see Timer.
     caretTimer.Start(this, 530, [this] {
-        // Only repaint when there is a caret to blink. A window that invalidates twice a second
-        // forever is a window that keeps a laptop's GPU awake.
+        // Only repaint when there is a caret to blink. A surface that invalidates twice a second
+        // forever is a surface that keeps a laptop's GPU awake.
         if (focused && focused->CaretPoint(nullptr)) {
             caretOn = !caretOn;
             Invalidate();
         }
     });
-    QueryPerformanceFrequency(&qpcFreq);
-    QueryPerformanceCounter(&qpcLast);
 }
 
-// Nothing is left to fire at, and the window is about to go back to its page: the caret's and the
-// frame loop's timers are stopped here rather than in their destructors, which run with no hwnd
-// left. The *surface* goes with them, so that a window that comes back through Run() builds it again
-// rather than keeping a swap chain nobody can see.
+// Nothing is left to fire at, and the surface is about to go back to whoever showed it: the caret's
+// and the frame loop's timers are stopped here rather than in their destructors, which run with no
+// hwnd left. The *device* goes with them, so that something that comes back through Run() builds its
+// surface again rather than keeping a swap chain nobody can see.
 //
-// **The palette and the fonts do not.** They are the process's rather than this window's, and are the
+// **The palette and the fonts do not.** They are the process's rather than this surface's, and are the
 // one thing here that survives -- a window closing is not a reason to take the theme away from the
 // menu that is still open, or from the window that is still running.
-inline void Window::EndPump() {
+inline void Surface::EndPump() {
     caretTimer.Stop();
-    frameTimer.Stop();
     ReleaseDevice();
 }
 
-inline int Window::Run() {
-    // The one-window application this shorthand is: see App for the rest. `solo` rather than `app`
-    // because the window has a member of that name, which is where it goes when this returns.
+inline void Window::EndPump() {
+    frameTimer.Stop();
+    Surface::EndPump();
+}
+
+inline int Surface::Run() {
+    // The one-surface application this shorthand is: see App for the rest. `solo` rather than `app`
+    // because the surface has a member of that name, which is where it goes when this returns.
     App solo;
     solo.Add(*this);
     return solo.Run();
 }
 
 // The loop, which is the loop it always was with three things changed. The frame decision is made
-// for every window rather than for one, so a window that did not start the loop animates anyway. A
-// message is dispatched inside *its own* window's guard. And the loop ends when the last window in
+// for every surface rather than for one, so a surface that did not start the loop animates anyway. A
+// message is dispatched inside *its own* surface's guard. And the loop ends when the last surface in
 // the list is gone rather than when WM_DESTROY arrives from any of them.
 inline int App::Run() {
-    if (windows.empty()) return 0;
+    if (surfaces.empty()) return 0;
     running = true;
-    for (Window *w : windows) w->BeginPump();
+    for (Surface *w : surfaces) w->BeginPump();
     const frameclock::Fn clock = frameclock::Resolve();
     // Only created where it is needed. Null on a pre-1803 build too, where the wait
     // falls back to Sleep for the same remainder.
@@ -2979,28 +3213,28 @@ inline int App::Run() {
     MSG msg = {};
     int exitCode = 0;
     while (alive) {
-        // A page's frame, one after another, and each window's own clock for it: the frequency is the
-    // process's and is asked for once, here, rather than per window.
-    LARGE_INTEGER freq = {};
-    QueryPerformanceFrequency(&freq);
-    const LONGLONG qpcFreq = freq.QuadPart;
-    // A window nobody can see runs no frames. Something animating in it -- an indeterminate
+        // A frame for each surface, one after another, and each surface's own clock for it: the
+        // frequency is the process's and is asked for once, here, rather than per surface.
+        LARGE_INTEGER freq = {};
+        QueryPerformanceFrequency(&freq);
+        const LONGLONG qpcFreq = freq.QuadPart;
+        // A surface nobody can see runs no frames. Something animating in it -- an indeterminate
         // progress bar is the one that never stops -- would otherwise paint the whole frame at the
         // display's rate into a surface nobody is looking at, and a minimised window is where that
         // is pure waste: there is not even a "later" for it, the frames are simply thrown away.
         //
         // Nothing is lost when it does run again: animOn is cleared here and the clock is picked up
         // when it comes back on, so an animation resumes where it was rather than jumping forward
-        // by however long the window spent out of sight. See Visible.
+        // by however long the surface spent out of sight. See Visible.
         const bool moving = Moving();
         if (!moving) {
             if (GetMessageW(&msg, nullptr, 0, 0) <= 0) { exitCode = (int)msg.wParam; break; }
             TranslateMessage(&msg);
             PumpMessage(&msg);
-            // The clocks are only picked up again here: a window that sat idle for a minute must not
-            // hand the first frame a minute's worth of dt. Every window, because any of them can be
-            // the next one to start moving.
-            for (Window *w : windows) QueryPerformanceCounter(&w->qpcLast);
+            // The clocks are only picked up again here: a surface that sat idle for a minute must not
+            // hand the first frame a minute's worth of dt. Every one, because any of them can be the
+            // next to start moving.
+            for (Surface *w : surfaces) QueryPerformanceCounter(&w->qpcLast);
             // And the stretch is over, which is the rest of what `started` means: it is what asks
             // the monitor for its rate, and a rate asked for once per process is the rate of
             // whichever monitor the first animation happened to be on.
@@ -3010,14 +3244,14 @@ inline int App::Run() {
         if (!started) {
             started = true;
             QueryPerformanceCounter(&paceMark);
-            // Asked once per stretch of animation rather than per frame: a window dragged to a
+            // Asked once per stretch of animation rather than per frame: a surface dragged to a
             // monitor with a different rate mid-animation is paced at the old rate for the rest of a
-            // transition that lasts a fraction of a second. The slowest rate of the windows that are
-            // moving is the one taken, because the wait below is one wait for all of them -- a window
-            // on a faster display simply gets a couple of frames it did not need.
+            // transition that lasts a fraction of a second. The slowest rate of the surfaces that are
+            // moving is the one taken, because the wait below is one wait for all of them -- one on a
+            // faster display simply gets a couple of frames it did not need.
             if (!clock) {
                 period = 0;
-                for (Window *w : windows) {
+                for (Surface *w : surfaces) {
                     if (!w->animOn) continue;
                     const LONGLONG rate = frameclock::RefreshPeriod(w->hwnd);
                     period = period == 0 ? rate : (std::min)(period, rate);
@@ -3030,12 +3264,12 @@ inline int App::Run() {
             PumpMessage(&msg);
         }
         if (!alive) break;
-        for (Window *w : windows) {
+        for (Surface *w : surfaces) {
             if (!w->animOn) continue;
-            { Window::Dispatch frame(w); w->Frame(); }
+            { Surface::Dispatch frame(w); w->Frame(); }
             w->Paint();
             // Painted outside WM_PAINT, so the update region has to be cleared by hand or the next
-            // PeekMessage hands back a WM_PAINT for a window that was just drawn.
+            // PeekMessage hands back a WM_PAINT for a surface that was just drawn.
             ValidateRect(w->hwnd, nullptr);
         }
         if (clock) {
@@ -3063,7 +3297,7 @@ inline int App::Run() {
     if (PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) exitCode = (int)quit.wParam;
     // Whatever is left is going back to a page that is about to be its owner again, so it tidies up
     // after itself -- see EndPump. The waitable timer is the loop's own and goes here.
-    for (Window *w : windows) w->EndPump();
+    for (Surface *w : surfaces) w->EndPump();
     if (pace) CloseHandle(pace);
     return exitCode;
 }
@@ -4221,12 +4455,12 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     if (!self) return DefWindowProcW(h, m, wp, lp);
 
     // Nothing a widget callback replaces is really freed until this message returns.
-    // See `Window::retired`.
-    Window::Dispatch frame(self);
+    // See `Surface::retired`.
+    Surface::Dispatch frame(self);
 
+    // The scale, for the two messages that convert their own coordinates: the wheel arrives in screen
+    // pixels. Everything else uses `Surface::HandMessage`, which converts its own.
     const float s = self->scale();
-    const float mx = (float)GET_X_LPARAM(lp) / s;
-    const float my = (float)GET_Y_LPARAM(lp) / s;
 
     // A deferred call, from Post below. Compared rather than given a case label: a registered
     // message id is not a constant. Inside the dispatch opened above, so a callback that lays
@@ -4395,107 +4629,27 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // somewhere is put on its target by the next frame, which is already running.
         RefreshAnimations();
         return 0;
-    case WM_MOUSEMOVE: {
-        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
-        TrackMouseEvent(&tme);
-        if (self->MoveTo(mx, my, Window::Hand::Mouse, true)) self->Invalidate();
-        return 0;
-    }
+    case WM_MOUSEMOVE:
     case WM_MOUSELEAVE:
-        if (self->content) self->SetHover(self->content.get(), nullptr);
-        self->Invalidate();
-        return 0;
     case WM_LBUTTONDOWN:
-        self->PressAt(mx, my, Window::Hand::Mouse);
-        return 0;
     case WM_LBUTTONUP:
-        self->ReleaseAt(Window::Hand::Mouse);
-        return 0;
     // ---- a finger, and a pen ----------------------------------------------------------------------
     //
     // Handled rather than handed on, and that is the whole of how the promotion is stopped: Windows
     // delivers a touch as a pointer message first and only turns it into a mouse button if the window
     // *ignores* the pointer -- passes it to DefWindowProc. Answering 0 here is what makes one finger
     // one press instead of two. A pen never had a promotion to lose, and comes through the same door
-    // because it is the same three things.
-    //
-    // The coordinates are the pointer's own: screen pixels, physical, which is a different space from
-    // the one the mouse messages arrive in -- converted here rather than trusted, because a touch
-    // that landed a few pixels off would be a gesture that grabbed the wrong sub-region of a control.
+    // because it is the same three things. See `Surface::HandMessage`, where all of it lives: a menu
+    // answers a press exactly as this does.
     case WM_POINTERDOWN:
     case WM_POINTERUPDATE:
-    case WM_POINTERUP: {
-        const UINT32 id = GET_POINTERID_WPARAM(wp);
-        POINTER_INFO info;
-        if (!GetPointerInfo(id, &info)) return 0;
-        const bool touching = info.pointerType == PT_TOUCH;
-        if (!touching && info.pointerType != PT_PEN) return 0;
-        POINT p = { info.ptPixelLocation.x, info.ptPixelLocation.y };
-        ScreenToClient(h, &p);
-        const float x = (float)p.x / s, y = (float)p.y / s;
-        const bool contact = (info.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
-        const Window::Hand hand = touching ? Window::Hand::Finger : Window::Hand::Pen;
-        if (m == WM_POINTERDOWN) {
-            self->GestureBegin(id, info);
-            if (!touching) {
-                self->PressAt(x, y, hand);
-            } else if (self->finger == 0) {
-                self->finger = id;
-                self->PressAt(x, y, hand);
-            } else if (self->capture) {
-                // **A second finger takes the first one's click away**, and leaves the gesture: what
-                // one finger would have been a click on is not what the hand is doing any more, but
-                // the page is still being held by it.
-                self->capture->pressed = false;
-            }
-        } else if (m == WM_POINTERUPDATE) {
-            self->GestureFeed(info);
-            if (!touching || self->finger == id) self->MoveTo(x, y, hand, contact);
-        } else if (!touching) {
-            self->GestureFeed(info);
-            self->ReleaseAt(hand);
-        } else if (self->finger == id) {
-            self->GestureFeed(info);
-            self->finger = 0;
-            self->ReleaseAt(hand);
-            // **The gesture outlives the hand here.** A fling's remaining frames come after this one,
-            // and `Tick` is what keeps asking for them; `GestureFinish` is decided there, not here.
-        }
-        return 0;
-    }
-    // **Not the end of a gesture.** The system moves a pointer's capture on its own account as soon as
-    // one is down, so this arrives at the beginning of every touch -- and treating it as "the capture
-    // is gone" cancels the press that was just made, which is a tap that does nothing and a list that
-    // cannot be dragged. A gesture that really loses the capture this window holds goes through
-    // `WM_CAPTURECHANGED` like any other, and that is where it ends. Answered rather than handed on,
-    // for the same reason as the three above: a message a window says it handles is a message the
-    // system does not promote.
+    case WM_POINTERUP:
+    // **Not the end of a gesture**, whichever surface it arrives at: the system moves a pointer's
+    // capture on its own account as soon as one is down, so answering it is what keeps a press alive.
     case WM_POINTERCAPTURECHANGED:
-        return 0;
-    // The capture went away without a button-up: alt-tab, a system modal, another
-    // application taking the mouse. Windows revokes it and no WM_LBUTTONUP is ever
-    // coming, so a gesture left running here is one that never ends. The button stays
-    // dark under a window that is not even active any more -- and worse, `capture` still
-    // points at the control, so the next time the pointer crosses this window the move
-    // goes straight to OnDrag and the slider follows it with no button held.
-    //
-    // Ended as a release that is not a click. A drag has already put its value on screen
-    // and in memory, so OnRelease is what stops a settings file from disagreeing with
-    // both; OnClick is the half that must not happen, because the gesture was abandoned
-    // rather than finished.
-    //
-    // No ReleaseCapture here: it is already gone, and calling it inside this message is
-    // what the documentation warns against. Nor does this double up with the case above
-    // -- that clears `capture` before it releases, so the WM_CAPTURECHANGED it causes
-    // arrives to find nothing left to end.
     case WM_CAPTURECHANGED:
-        self->CancelCapture();
-        return 0;
     case WM_CANCELMODE:
-        // The same thing, announced before the capture is taken rather than after.
-        // Released here so that the two handlers cannot disagree about who holds it.
-        if (self->capture) ReleaseCapture();
-        self->CancelCapture();
+        self->HandMessage(h, m, wp, lp);
         return 0;
     case WM_GETMINMAXINFO: {
         int mw = 0, mh = 0;
@@ -4723,16 +4877,16 @@ inline UINT InvokeMessage() {
 //
 // There is nothing left to start: Run() asks `Animating() || AnimationWanted()` at the
 // top of every turn, so a state change made anywhere is picked up by the next one. What
-// it does still have to do is get the loop *to* its next turn -- if the window is
+// it does still have to do is get the loop *to* its next turn -- if the loop is
 // blocked in GetMessage, invalidating is what returns from it.
-inline void StartAnimation(Window *w) {
+inline void StartAnimation(Surface *w) {
     if (w) w->Invalidate();
 }
 
 // The end of one window message. Nothing a widget callback was standing on is really
-// freed until here; see `Window::retired`.
-inline Window::Dispatch::~Dispatch() {
-    if (--w->dispatchDepth == 0) w->retired.clear();
+// freed until here; see `Surface::retired`.
+inline Surface::Dispatch::~Dispatch() {
+    if (--host->dispatchDepth == 0) host->retired.clear();
 }
 
 // Per-monitor v2, set from code as well as from the manifest.
