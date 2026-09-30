@@ -352,11 +352,21 @@ for it to know that this program had an opinion.
 | Drag of the border or the caption | `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE`. Windows runs a modal loop of its own, in which the frame loop cannot run, so the window paints from a 16 ms timer for the duration: the resize is live and animations keep running. |
 | Scroll | Nothing is laid out: the controls move through `ContentTransform()` and the frame loop repaints them. |
 | Settings change | `ReloadTheme()` when the machine switched between light and dark, and the animation switch is re-read -- see [Animations](drawing.md#animations). |
+| Touch, pen | `WM_POINTERDOWN`, `WM_POINTERUPDATE` and `WM_POINTERUP` -- handled rather than passed to `DefWindowProc`, which is what keeps Windows from also promoting each touch to a mouse button. What arrives is the same press, move and release a mouse gets, with the three differences a hand really has: a finger has no hover and no cursor, eight DIPs of travel (`kTouchSlop`) turns a tap into a drag, and a second finger takes the first one's click away. A pen hovers while it is in the air and presses when it is not. |
 
 Messages not consumed reach `OnAppMessage` and then `DefWindowProc`: `WM_CLOSE`,
 `WM_COMMAND`, `WM_APP` messages, `WM_ACTIVATE`, right and middle mouse buttons, timers
 and wheel notches no control took. Mouse and keyboard messages in the table above,
 `WM_SETTINGCHANGE`, `WM_SIZE` and `WM_PAINT` are consumed.
+
+**One path for three hands.** What a press, a move and a release *do* is the window's own -- which
+widget is under the pointer, whether it takes the focus, what the widget's callbacks are -- and the
+mouse messages and the pointer messages both end there, so a control that answers one of them answers
+all of them. A gesture belongs to the hand that began it, which is why a mouse moving while a finger is
+down neither un-presses the finger's tap nor drags what the finger is dragging.
+
+*Not yet: a finger cannot scroll a page -- dragging, inertia and the bounce at the ends of a list are
+the next step.*
 
 ## Scrolling
 

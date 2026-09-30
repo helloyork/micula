@@ -8,6 +8,14 @@ library can be: a minor version may break.
 
 ### Added
 
+- **A finger and a pen are answered like a mouse.** Touch and pen arrive as `WM_POINTER` messages and
+  go into the same press, move and release the mouse uses -- so a drop-down opens to a tap and a slider
+  drags under a finger because they were written for a pointer -- and the window answers the pointer
+  messages rather than passing them on, which is what keeps Windows from also turning every touch into
+  a mouse button. Only what a hand really differs in is left over: a finger has no hover and no cursor,
+  eight DIPs of travel turns a tap into a drag, a second finger takes the first one's click away, and a
+  gesture belongs to the hand that began it -- the mouse moving under a finger neither un-presses it nor
+  drags it. A pen goes through the same path and hovers while it is in the air.
 - **A change is told, not only drawn.** `UIA_PropertyChangedEventId` now carries the four things a
   screen reader follows -- what a control says, a slider's number, whether something is open, where a
   page is scrolled to -- and which of a set is chosen is told with `SelectionItem.IsSelected` on the

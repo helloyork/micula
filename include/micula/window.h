@@ -280,6 +280,10 @@ constexpr float kCaptionBtnW = 46.0f;
 // How close to an edge counts as a resize grip. The frame is gone as far as the client
 // area is concerned, so this is synthesised in WM_NCHITTEST.
 constexpr float kResizeGrip  = 6.0f;
+// How far a finger may wander and still be a tap, in DIPs: about what a fingertip is worth of error,
+// and less than any gesture the window will recognize later. A mouse has no such number -- it is a
+// machine pointing at a pixel -- and a pen has a small one, but this is not it.
+constexpr float kTouchSlop   = 8.0f;
 
 // ---------------------------------------------------------------- Painter
 
@@ -786,8 +790,30 @@ struct Window {
     // caption and its three buttons -- is still painted by the window rather than being a child of
     // it, which is a later pass.
     std::unique_ptr<Widget> content;
-    Widget *capture = nullptr;    // the widget the mouse went down on
+    // ---- who is pointing -------------------------------------------------------------------------
+    // Three hands and one path. What a press, a move and a release *do* -- which widget is under
+    // them, whether it takes the focus, what the widget's own callbacks are -- is written once and
+    // reached from the two message handlers, because a control that answers a mouse and not a finger
+    // is a control with two behaviours to get wrong. What differs is only what a hand really differs
+    // in: a finger has no hover, it has to stay put to be a click, and a second finger takes the
+    // first one's click away. See `PressAt`, `MoveTo` and `ReleaseAt`.
+    enum class Hand { Mouse, Finger, Pen };
+    // **A gesture belongs to the hand that made it.** A mouse that moves while a finger is down must
+    // not un-press what the finger pressed, nor drag what the finger is dragging -- which is not a
+    // corner case: the two are usually both on the machine, and the mouse is usually somewhere else on
+    // the screen, so without this a tap would end as soon as the pointer twitched and a slider dragged
+    // by a finger would follow the mouse instead.
+    Hand capturing = Hand::Mouse;
+    Widget *capture = nullptr;    // the widget the pointer went down on
     Widget *focused = nullptr;
+    // The touch pointer being followed, or 0. A pen is one pointer by definition and needs no such
+    // thing; a finger does, because a second one is another pointer entirely.
+    UINT32 finger = 0;
+    // Where a press landed, in client DIPs: what a tap is measured against.
+    float pressX = 0.0f, pressY = 0.0f;
+    void PressAt(float x, float y, Hand hand);
+    bool MoveTo(float x, float y, Hand hand, bool contact);
+    void ReleaseAt(Hand hand);
     // The tree owes an arrangement: set by Widget::InvalidateLayout and by anything that changes a
     // widget's size or a layout's spec, cleared by the arrange pass. One flag for the whole tree,
     // because an arrangement is one walk from the root -- a widget whose parent has not been
@@ -1939,11 +1965,139 @@ inline void Window::DismissIn(Widget *w) {
 // to lay the page out again there and this must not re-enter on the way.
 inline void Window::CancelCapture() {
     Widget *w = capture;
+    finger = 0;
     if (!w) return;
     capture = nullptr;
     w->pressed = false;
     if (w->enabled) w->OnRelease();
     Invalidate();
+}
+
+// ---- the three things a pointer does, whichever hand it is -----------------------------------------
+//
+// The messages differ and the meaning does not: a mouse, a finger and a pen all say "down here",
+// "moved to here" and "up", and a control that answers one of them should be answering all three. So
+// the window's own part of that -- which widget is under the pointer, whether it takes the focus, what
+// the widget's callbacks are, what a click means -- is written here once and reached from two message
+// handlers, and the hand decides only what a hand really decides. See `Hand`, and the two handlers in
+// `Proc`.
+inline void Window::PressAt(float x, float y, Hand hand) {
+    pressX = x;
+    pressY = y;
+    capturing = hand;
+    Widget *w = HitTest(x, y);
+    // Everything else puts away whatever it was showing. This is what closes an open
+    // drop-down when the click lands somewhere else -- including on nothing, which is
+    // the case the control itself can never see.
+    DismissOthers(w, x, y);
+    // Those dismissals can lay the page out again -- a pane that closes tells the page, and
+    // a page that lays itself out is a different list of widgets. What the pointer was over
+    // is then a control that has been retired, freed when this message returns, and a press
+    // taken on it would leave the capture pointing at memory that is going: the mouse-up
+    // after it is the crash. So the hit test is made again, on the page that is there now.
+    w = HitTest(x, y);
+    // Clicking anywhere takes the focus ring away again: it is a keyboard
+    // affordance, and a mouse user who has just clicked a button does not want the
+    // rectangle left behind on it.
+    showFocusRing = false;
+    if (w) {
+        SetCapture(hwnd);
+        capture = w;
+        w->pressed = true;
+        // **A click either lands the focus or puts it away.** A control that can be operated from
+        // the keyboard takes it; anything else on the page -- the page itself, a card, a line of
+        // text -- is the blank part of the page, and a field that kept the focus while somebody
+        // clicked there would eat the next keystroke. This is what commits a field whose text was
+        // edited and left. In the flat list the page was not a widget, so "not focusable" and
+        // "nothing" were one answer and one line of code served both; every box on a page is a
+        // widget now, and the hit test has something to say about all of them.
+        //
+        // **A layer is the exception**, and it is why this is not simply the `else` branch: it
+        // covers the page, so a click inside one -- a question's dim, the row of a list a drop-down
+        // opened -- belongs to the layer, and what is on a layer has its own focus. A click between
+        // its rows must not take the ring off whatever the page put there.
+        Layer *const top = TopLayer();
+        if (w->Focusable()) SetFocusTo(w);
+        else if (!top || !top->Holds(w)) SetFocusTo(nullptr);
+        // From the message rather than from GetCursorPos, and the difference is not
+        // theoretical: the pointer can have moved between the click being queued and
+        // this running, and a press position that disagrees with the hit test by a
+        // pixel is a gesture that grabbed the wrong sub-region of its own control. In the
+        // widget's own space, which is the space its `rect` is in.
+        const D2D1_POINT_2F at = LocalPoint(w, x, y);
+        w->OnPress(at.x, at.y);
+    } else if (!LeavingLayer()) {
+        // Nothing at all, and no layer on its way out to have swallowed the click -- and a layer
+        // that is leaving *is* what swallows it: the hit test answers with nothing while one is
+        // going, which is what stops the click that dismissed a flyout from also landing on the
+        // page it was over. That click is the layer's; this one is the blank page's.
+        SetFocusTo(nullptr);
+    }
+    Invalidate();
+}
+
+// Returns whether anything about what the pointer is over changed, which is the window's reason to
+// draw a frame -- the same contract the two walks it drives already have.
+inline bool Window::MoveTo(float x, float y, Hand hand, bool contact) {
+    // **A finger has no hover.** Nothing is "over" a control that a hand is touching, and a control
+    // that lit up as the hand went by would be lighting up for nothing, so a touch clears whatever was
+    // hovering rather than putting something new there. A mouse always hovers and a pen hovers while it
+    // is in the air, which is what `contact` is for.
+    const bool hovering = hand != Hand::Finger;
+    Widget *over = capture ? capture : HitTest(x, y);
+    const bool changed = content ? SetHover(content.get(), hovering ? over : nullptr) : false;
+
+    // Only the hand that made the press drives what it is doing. See `capturing`.
+    if (capture && hand == capturing) {
+        // In the capture's own space, so a control dragged while something above it is still
+        // moving does not un-press itself -- and from the message, so the point that decides
+        // whether it is still pressed is the point it is being dragged with.
+        const D2D1_POINT_2F at = LocalPoint(capture, x, y);
+        bool down = contact && Inside(capture->rect, at.x, at.y);
+        // **A finger that has wandered is not holding a click any more**, even while it is still over
+        // the control: eight DIPs of travel is what separates a tap from a drag, and without this a
+        // page scrolled with a finger would end as a click on the row it started on. The drag itself
+        // goes on regardless -- a slider is dragged exactly this way, and it is the control's own
+        // answer about tracking the pointer that says whether it wants to be.
+        if (down && hand == Hand::Finger &&
+            (std::fabs(x - pressX) > kTouchSlop || std::fabs(y - pressY) > kTouchSlop))
+            down = false;
+        capture->pressed = down;
+        capture->OnDrag(at.x, at.y);
+    }
+
+    const bool tracks = content ? SendMove(content.get(), x, y, over) : false;
+    // A cursor is a mouse's business: a finger has none, and one that appeared under a finger would
+    // be a lie about where the pointer is.
+    if (hand == Hand::Mouse)
+        SetCursor(LoadCursorW(nullptr, !over             ? kCursorArrow
+                                     : over->TextCursor() ? kCursorIBeam
+                                     : over->HandCursor() ? kCursorHand
+                                                          : kCursorArrow));
+    return changed || tracks;
+}
+
+inline void Window::ReleaseAt(Hand hand) {
+    if (hand != capturing) return;
+    Widget *w = capture;
+    capture = nullptr;
+    ReleaseCapture();
+    if (w) {
+        // A release that is a click: the pointer is still on the control, and the
+        // control was not being dragged. `pressed` alone used to say both, and stops
+        // saying the second the moment a widget keeps it through a drag that has left
+        // its rectangle -- a slider let go three rows away is not a click on whatever
+        // it was let go over.
+        const bool click = w->pressed;
+        w->pressed = false;
+        Invalidate();
+        if (w->enabled) w->OnRelease();
+        // OnClick last, and after the state is already tidy: a click can replace
+        // the entire widget list (that is what "next page" is), and touching `w`
+        // after that is a use-after-free. OnRelease goes before it for the same
+        // reason -- by the time OnClick has returned, `w` may not exist.
+        if (click && w->enabled) w->OnClick();
+    }
 }
 
 // ---- the three calls that belong to the window, which is what widget.h has only declared --------
@@ -3802,105 +3956,72 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
         TrackMouseEvent(&tme);
-        Widget *over = self->capture ? self->capture : self->HitTest(mx, my);
-        const bool changed = self->content ? self->SetHover(self->content.get(), over) : false;
-
-        if (self->capture) {
-            // In the capture's own space, so a control dragged while something above it is still
-            // moving does not un-press itself -- and from the message, so the point that decides
-            // whether it is still pressed is the point it is being dragged with.
-            const D2D1_POINT_2F at = self->LocalPoint(self->capture, mx, my);
-            const bool down = Inside(self->capture->rect, at.x, at.y);
-            self->capture->pressed = down;
-            self->capture->OnDrag(at.x, at.y);
-        }
-
-        const bool tracks = self->content ? self->SendMove(self->content.get(), mx, my, over) : false;
-        SetCursor(LoadCursorW(nullptr, !over            ? kCursorArrow
-                                     : over->TextCursor() ? kCursorIBeam
-                                     : over->HandCursor() ? kCursorHand
-                                                          : kCursorArrow));
-        if (changed || tracks) self->Invalidate();
+        if (self->MoveTo(mx, my, Window::Hand::Mouse, true)) self->Invalidate();
         return 0;
     }
     case WM_MOUSELEAVE:
         if (self->content) self->SetHover(self->content.get(), nullptr);
         self->Invalidate();
         return 0;
-    case WM_LBUTTONDOWN: {
-        Widget *w = self->HitTest(mx, my);
-        // Everything else puts away whatever it was showing. This is what closes an open
-        // drop-down when the click lands somewhere else -- including on nothing, which is
-        // the case the control itself can never see.
-        self->DismissOthers(w, mx, my);
-        // Those dismissals can lay the page out again -- a pane that closes tells the page, and
-        // a page that lays itself out is a different list of widgets. What the pointer was over
-        // is then a control that has been retired, freed when this message returns, and a press
-        // taken on it would leave the capture pointing at memory that is going: the mouse-up
-        // after it is the crash. So the hit test is made again, on the page that is there now.
-        w = self->HitTest(mx, my);
-        // Clicking anywhere takes the focus ring away again: it is a keyboard
-        // affordance, and a mouse user who has just clicked a button does not want the
-        // rectangle left behind on it.
-        self->showFocusRing = false;
-        if (w) {
-            SetCapture(h);
-            self->capture = w;
-            w->pressed = true;
-            // **A click either lands the focus or puts it away.** A control that can be operated from
-            // the keyboard takes it; anything else on the page -- the page itself, a card, a line of
-            // text -- is the blank part of the page, and a field that kept the focus while somebody
-            // clicked there would eat the next keystroke. This is what commits a field whose text was
-            // edited and left. In the flat list the page was not a widget, so "not focusable" and
-            // "nothing" were one answer and one line of code served both; every box on a page is a
-            // widget now, and the hit test has something to say about all of them.
-            //
-            // **A layer is the exception**, and it is why this is not simply the `else` branch: it
-            // covers the page, so a click inside one -- a question's dim, the row of a list a drop-down
-            // opened -- belongs to the layer, and what is on a layer has its own focus. A click between
-            // its rows must not take the ring off whatever the page put there.
-            Layer *const top = self->TopLayer();
-            if (w->Focusable()) self->SetFocusTo(w);
-            else if (!top || !top->Holds(w)) self->SetFocusTo(nullptr);
-            // From the message rather than from GetCursorPos, and the difference is not
-            // theoretical: the pointer can have moved between the click being queued and
-            // this running, and a press position that disagrees with the hit test by a
-            // pixel is a gesture that grabbed the wrong sub-region of its own control. In the
-            // widget's own space, which is the space its `rect` is in.
-            const D2D1_POINT_2F at = self->LocalPoint(w, mx, my);
-            w->OnPress(at.x, at.y);
-        } else if (!self->LeavingLayer()) {
-            // Nothing at all, and no layer on its way out to have swallowed the click -- and a layer
-            // that is leaving *is* what swallows it: the hit test answers with nothing while one is
-            // going, which is what stops the click that dismissed a flyout from also landing on the
-            // page it was over. That click is the layer's; this one is the blank page's.
-            self->SetFocusTo(nullptr);
-        }
-        self->Invalidate();
+    case WM_LBUTTONDOWN:
+        self->PressAt(mx, my, Window::Hand::Mouse);
         return 0;
-    }
-    case WM_LBUTTONUP: {
-        Widget *w = self->capture;
-        self->capture = nullptr;
-        ReleaseCapture();
-        if (w) {
-            // A release that is a click: the pointer is still on the control, and the
-            // control was not being dragged. `pressed` alone used to say both, and stops
-            // saying the second the moment a widget keeps it through a drag that has left
-            // its rectangle -- a slider let go three rows away is not a click on whatever
-            // it was let go over.
-            const bool click = w->pressed;
-            w->pressed = false;
-            self->Invalidate();
-            if (w->enabled) w->OnRelease();
-            // OnClick last, and after the state is already tidy: a click can replace
-            // the entire widget list (that is what "next page" is), and touching `w`
-            // after that is a use-after-free. OnRelease goes before it for the same
-            // reason -- by the time OnClick has returned, `w` may not exist.
-            if (click && w->enabled) w->OnClick();
+    case WM_LBUTTONUP:
+        self->ReleaseAt(Window::Hand::Mouse);
+        return 0;
+    // ---- a finger, and a pen ----------------------------------------------------------------------
+    //
+    // Handled rather than handed on, and that is the whole of how the promotion is stopped: Windows
+    // delivers a touch as a pointer message first and only turns it into a mouse button if the window
+    // *ignores* the pointer -- passes it to DefWindowProc. Answering 0 here is what makes one finger
+    // one press instead of two. A pen never had a promotion to lose, and comes through the same door
+    // because it is the same three things.
+    //
+    // The coordinates are the pointer's own: screen pixels, physical, which is a different space from
+    // the one the mouse messages arrive in -- converted here rather than trusted, because a touch
+    // that landed a few pixels off would be a gesture that grabbed the wrong sub-region of a control.
+    case WM_POINTERDOWN:
+    case WM_POINTERUPDATE:
+    case WM_POINTERUP: {
+        const UINT32 id = GET_POINTERID_WPARAM(wp);
+        POINTER_INFO info;
+        if (!GetPointerInfo(id, &info)) return 0;
+        const bool touching = info.pointerType == PT_TOUCH;
+        if (!touching && info.pointerType != PT_PEN) return 0;
+        POINT p = { info.ptPixelLocation.x, info.ptPixelLocation.y };
+        ScreenToClient(h, &p);
+        const float x = (float)p.x / s, y = (float)p.y / s;
+        const bool contact = (info.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
+        const Window::Hand hand = touching ? Window::Hand::Finger : Window::Hand::Pen;
+        if (m == WM_POINTERDOWN) {
+            if (!touching) {
+                self->PressAt(x, y, hand);
+            } else if (self->finger == 0) {
+                self->finger = id;
+                self->PressAt(x, y, hand);
+            } else if (self->capture) {
+                // **A second finger takes the first one's click away**, and leaves the gesture: what
+                // one finger would have been a click on is not what the hand is doing any more, but
+                // the page is still being held by it.
+                self->capture->pressed = false;
+            }
+        } else if (m == WM_POINTERUPDATE) {
+            if (!touching || self->finger == id) self->MoveTo(x, y, hand, contact);
+        } else if (!touching) {
+            self->ReleaseAt(hand);
+        } else if (self->finger == id) {
+            self->finger = 0;
+            self->ReleaseAt(hand);
         }
         return 0;
     }
+    // The pointer's version of losing the capture, which is the same thing said in the other
+    // vocabulary: the gesture cannot finish, so it ends here rather than waiting for a release that
+    // belongs to somebody else now.
+    case WM_POINTERCAPTURECHANGED:
+        self->finger = 0;
+        self->CancelCapture();
+        return 0;
     // The capture went away without a button-up: alt-tab, a system modal, another
     // application taking the mouse. Windows revokes it and no WM_LBUTTONUP is ever
     // coming, so a gesture left running here is one that never ends. The button stays
