@@ -278,6 +278,49 @@ library can be: a minor version may break.
 - `Widget::owner`, `persistent`, `z`, `scrolls`, `leavingWith`, and the two rectangle lists a control
   used to find its own hit test and its own clip in. The tree answers all four questions.
 
+### Fixed
+
+- **A clipping container is clipped where it is *drawn*, not a glide past it.** The clip box came from
+  the widget's `drawn` rectangle, but it is pushed in the space the paint walk's transform has just put
+  on -- and that space is the parent's with the widget's own glide already taken out of it, because the
+  transform is what carries a widget painting at `rect` to `drawn`. The box therefore landed one glide
+  further along than the thing it clipped: a list sliding under its own panel showed a whole row past
+  the panel's edge, and the row at the other edge was cut through the middle of its text. Only a
+  gliding `ScrollView` could show it, and the only one there is is a flyout's panel on the frames a
+  choice moves -- which is exactly when a list is being read.
+- **A `DropDown` opens with its chosen row on the control's line.** The room the panel is placed from
+  is worked out as the page's own box in the page's space -- the same rectangle the flyout's layout is
+  handed -- and the rows above and below the chosen one are as many whole rows as that room has, so the
+  alignment has the first say and the panel's edges are what give way. Worked out from a room ~10 DIP
+  too generous, the panel was clamped against the box's bottom edge and took the choice off the control
+  by that much.
+- **The panel of a `DropDown` is a whole number of rows, and its mark answers the gesture.** A panel
+  cut off in the middle of a row is a row half drawn and half of the next one's business -- at the edge
+  the eye is on when a list opens, and again at every clamp -- so the height is rounded down to whole
+  rows. The accent mark is placed by the control rather than by an arrangement while the list under it
+  is scrolled, from the column's *drawn* rectangle: an arrangement runs before the tick that moved the
+  list, so a mark left to one is drawn at the scroll of the frame before, which reads as an indicator
+  trailing the list it belongs to.
+- **The mark of a `DropDown` is on its row whatever moved the list.** It was placed by the wheel's own
+  scroll -- a flag only that gesture raised -- so a thumb dragged on the list's scroll bar left it
+  standing where it was until something else happened to put it right. What the mark asks is now asked
+  of the list instead: a placement speaks for the mark only while the list is where the placement left
+  it.
+- **A step is the same placement as opening.** Where a step used to move the view only when it had to,
+  it now moves it by the row the choice moved by, so the panel stays where the choice put it and the
+  rows travel under the mark. The other way round, the chosen row ends up on some other row of the
+  panel, the panel has to move to put it back on the control, and near an end of the list the room
+  clamps it -- which took the choice 10 DIP off the control's line with 17 rows of room to spare. One
+  piece of arithmetic for both also means one place where the view a placement asks for is sent into a
+  panel that can take it: the first send is clamped against the viewport the panel has *then*, and the
+  panel is being placed for a height it does not have yet.
+- **A tree that owes an arrangement is a window with a frame to run.** The frame loop turns only for a
+  window that is moving -- something animating, or asking for one -- and the arrangement of a change
+  made by the message just handled happens inside a frame. A change made while nothing was animating
+  therefore waited for whatever else happened to paint: a scroll bar dragged on an open list that was
+  already woken by the pointer moved the view *two seconds* later, when the bar's auto-hide timer
+  happened to repaint the window.
+
 ## [0.8.1] - 2026-09-29
 
 ### Changed

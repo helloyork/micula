@@ -146,6 +146,23 @@ struct DropDown : Widget {
     bool open = false;
     Flyout *flyout = nullptr;
     ScrollView *scroll = nullptr;
+    // **The scroll the panel's placement was made for**, in DIPs -- what the placement *asks* for, which
+    // is not always what a `ScrollTo` can give at the moment it asks. Two things read it. A list since
+    // aimed somewhere else is a list moving under a mark that is no longer on the row it says it is, and
+    // `Tick` compares this against where the list is to ask that; and while the ask is still owed (see
+    // `placedOwed`) the mark is the placement's own line rather than the row's.
+    float placedView = 0.0f;
+    // Whether the scroll above is one to glide to: false opens a list (it is *placed* where the choice
+    // is) and true follows a choice (a change to be seen). `ScrollTo` again after it has taken is a
+    // no-op, which is what makes re-sending it safe. See `Press`.
+    bool placedGlides = false;
+    // **Whether that scroll has been sent into a panel that could take it.** A placement is made for a
+    // height the panel does not have yet -- `SetOpen` presses before the flyout has ever been arranged,
+    // and a choice near an end of the list makes the panel shorter than it was -- so the scroll it asks
+    // for is clamped against a viewport that is about to be somebody else's. The number is the same one;
+    // what is new is the panel, so it is sent once more on the first frame the panel has a box, and that
+    // is the whole of the second pass. See `Tick`.
+    bool placedOwed = false;
     DropDownList *list = nullptr;
     DropMark *mark = nullptr;
 
@@ -218,15 +235,21 @@ struct DropDown : Widget {
     // is the thing it builds.
 
     void SetOpen(bool o);
-    // Where the panel goes and what the view shows, from the choice. Called when the list opens and
-    // whenever the choice moves, and that is the whole of what either of them is.
-    void Press();
-    // The view moved as little as will do to keep the chosen row inside the panel, and the panel with
-    // it where it still can. Snapping the choice to the panel's first row -- what opening does -- is
-    // right while a list is opening, where the panel covers the control and the two names are meant to
-    // be in the same place. It is wrong afterwards: a keyboard walk down a list should not throw away
-    // wherever the reader had got to.
-    void Follow();
+    // **The panel, placed from the choice**, which is the whole of what a drop-down's geometry is: the
+    // chosen row lands on the control's own line, the panel is made of the whole rows that fit around
+    // that line, and the view shows the list from the row the panel's first one is on.
+    //
+    // `glide` is the whole of the difference between the two callers -- opening *places* the list where
+    // the choice is, a step glides it, because a panel that slid in from wherever it was is an opening
+    // nobody asked for and a choice that changes is a change to be seen -- and there is one piece of
+    // arithmetic because there is one alignment. A placement worked out any other way is a panel the
+    // room clamps, and a clamp takes the chosen row off the control by exactly what it clamped.
+    void Press(bool glide = false);
+    // The choice moved and the panel follows it: the same placement, glided. One function rather than
+    // two because a second opinion about where the panel goes is what puts the chosen row on a row of
+    // the panel the room did not leave it: the view then has to move, the panel moves with it, and the
+    // clamp ends the walk with the choice off the control's line. See `Press`.
+    void Follow() { Press(true); }
 
     // The choice, from a click on a row or from the keyboard, and whether it moved. A step that ran off
     // an end of the list is the option it started from, and the callers read that as nowhere to go.
@@ -259,15 +282,7 @@ struct DropDown : Widget {
     bool Wheel(float notches) {
         if (options.empty()) return true;
         if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-            // Shift asks for the list to be *scrolled* rather than chosen from: the same wheel over the
-            // same list, aimed at the panel instead of at the choice. A list that fits has nothing to
-            // scroll, and there the gesture does nothing at all -- which is better than a wheel that
-            // quietly takes an option because Shift was not understood.
-            if (scroll && scroll->ScrollMax() > 0.0f) {
-                const float lines = SystemWheelLines();
-                const float step = lines > 0.0f ? lines : 6.0f;
-                scroll->ScrollTo(scroll->scroll - notches * step * RowH(), true);
-            }
+            ScrollBy(notches);
             return true;
         }
         const int dir = notches > 0.0f ? -1 : 1;
@@ -275,6 +290,75 @@ struct DropDown : Widget {
         // either moves the choice or has come all the way round to where it was.
         if (!Step(dir) && !wrapAround && mark) mark->Knock(dir);
         return true;
+    }
+
+    // Shift asks for the list to be *scrolled* rather than chosen from: the same wheel over the same
+    // list, aimed at the panel's view instead of at the choice. A list that fits has nothing to scroll,
+    // and there the gesture does nothing at all -- which is better than a wheel that quietly took an
+    // option because Shift was not understood. The choice does not move, so neither does the panel: the
+    // mark travels with its row instead, over the frames the view is moving. See `Tick`.
+    void ScrollBy(float notches) {
+        if (!scroll || scroll->ScrollMax() <= 0.0f) return;
+        const float lines = SystemWheelLines();
+        const float step = lines > 0.0f ? lines : 6.0f;
+        scroll->ScrollTo(scroll->scroll - notches * step * RowH(), true);
+    }
+
+    // The mark follows the row it is on while the list under it is scrolling: the view moved the chosen
+    // row without moving the choice, and a mark left behind is a mark on somebody else's row. The panel
+    // is not placed from this -- it stays where the choice put it, which is what makes a scroll a scroll
+    // and a choice a swap -- and the work is the frames of a scroll, not every frame the window is awake
+    // for: a list that is where the panel was placed for it is left alone. See `Tick`.
+    //
+    // Placed here rather than through an arrangement, which is the whole of why it is exact: an
+    // arrangement runs *before* the tick that moved the list, so a mark left to one is drawn at the
+    // scroll of the frame before, which reads as an indicator trailing the list it belongs to.
+    void Tick(float dt) override {
+        Widget::Tick(dt);
+        if (!open || !flyout || !scroll || !scroll->content) return;
+        // **The scroll the placement asked for, sent again into a panel that can take it.** `ScrollTo`
+        // clamps against the viewport the panel has at that moment, and a placement is made for a height
+        // the panel does not have yet: one opened before the flyout was ever arranged, and one near an
+        // end of the list, where the panel is made *shorter* than it was and the view asked for is one
+        // the old height had no room for. The number is the same one -- it is the panel that is new --
+        // and one more send, on the first frame the panel has a box, is the whole of it.
+        if (placedOwed && flyout->panel && Height(flyout->panel->rect) > 0.0f) {
+            placedOwed = false;
+            scroll->ScrollTo(placedView, placedGlides);
+            // **Exactly**, not on its way: the list is travelling to where the placement put it, the
+            // mark is already there, and this is the frame a list opens on -- a mark gliding from
+            // wherever the last one left it is a first frame showing something else.
+            flyout->PlaceMarker(true);
+            return;
+        }
+        // **The mark is on its row unless the panel was placed for the row.** A placement is only true
+        // of the list it was made with: once the view has been aimed elsewhere -- a dragged thumb, Shift
+        // and the wheel -- the chosen row is somewhere else on screen and the mark goes with it. Asked of
+        // the list rather than of the gesture: a flag set by the wheel's own scroll is a flag a dragged
+        // scroll bar never raises, and the mark then stands still until the next wheel happens to put it
+        // right. See `placedView`.
+        if (scroll->scroll == placedView) return;
+        // **From where the list is *drawn*, not from where it is going.** A scroll is a glide: `scroll`
+        // is the target the view was given, and the column travels toward it over the frames after that.
+        // A mark placed from the target therefore jumps the whole distance on the first frame and waits
+        // there while the rows slide up to it, which reads as the indicator having gone on ahead. The
+        // column's own drawn rectangle is the same number once it has arrived, and the one the rows are
+        // painted at while it has not.
+        const D2D1_RECT_F &column =
+            scroll->content->placed ? scroll->content->drawn : scroll->content->rect;
+        // Less the panel's own lag, for the same reason from the other end: the rows are painted from
+        // where the panel is *drawn*, and `PlaceMarker` writes the mark from where it was arranged.
+        const float lag = flyout->panel && flyout->panel->placed
+                              ? flyout->panel->drawn.top - flyout->panel->rect.top
+                              : 0.0f;
+        flyout->markerLine = kPad + RowH() * (float)selected + column.top + RowH() / 2.0f - lag;
+        flyout->PlaceMarker(true);
+    }
+
+    // The mark is the panel's own line again: called wherever the choice has placed the panel, so that
+    // a mark left following the list -- a dragged thumb -- is back on the row the panel is placed for.
+    void Settle() {
+        if (flyout) flyout->markerLine = flyout->panelLine;
     }
 
     // --- input -------------------------------------------------------------------------------------
@@ -420,7 +504,10 @@ struct DropDownList : Widget {
 
     bool TracksPointer() const override { return true; }
 
-    // The whole list, so that the scroll view has something to scroll.
+    // The whole list, so that the scroll view has something to scroll. **Its own height and no less**: a
+    // list whose measured height were the rows that fit would be a list exactly as tall as the panel over
+    // it, and a scroll view with nothing to scroll -- which is a list that cannot be moved at all. Whole
+    // rows are the panel's business: see `Flyout::rowH`.
     micula::Want Measure(const Room &room) const override {
         float text = 0.0f;
         if (room.fonts)
@@ -505,42 +592,61 @@ inline void DropDown::SetOpen(bool o) {
     mark = flyout->Widget::Add(new DropMark());
     flyout->marker = mark;
     flyout->markerH = RowH();
+    flyout->rowH = RowH();
+    flyout->rowPad = kPad;
 
     Press();
     page->Add(flyout);
 }
 
-inline void DropDown::Press() {
+inline void DropDown::Press(bool glide) {
     if (!scroll || !flyout) return;
-    // The room the page shows this through, and the panel's height in it: the list's own height, no
-    // taller than that. The panel's place and the view's offset come out of the two of them together,
-    // which is why the arithmetic is in one place.
-    const float room = (std::max)(0.0f, Height(VisibleArea()) - 2.0f * FlyoutLayout::kGap);
-    const float full = 2 * kPad + RowH() * (float)options.size();
-    const float panel = (std::min)(full, room);
-    const float most = (std::max)(0.0f, full - panel);
-
-    // The chosen row at the panel's own first row, as far as the list's ends allow: a choice within a
-    // panel's height of either end stops there, and the chosen row comes to rest as the panel's first
-    // or last row rather than over the control.
-    const float view = std::clamp(RowH() * (float)selected, 0.0f, most);
-    scroll->ScrollTo(view, false);
+    const float rowH = RowH();
+    const int n = (int)options.size();
     const D2D1_RECT_F here = InPage();
-    flyout->panelLine = kPad + RowH() * (float)selected - view + RowH() / 2;
-    flyout->anchorLine = (here.top + here.bottom) / 2;
-    flyout->InvalidateLayout();
-}
-
-inline void DropDown::Follow() {
-    if (!scroll || !flyout) return;
-    const float rowTop = kPad + RowH() * (float)selected;
-    const float h = Height(scroll->rect);
-    const float lo = (std::min)(rowTop + RowH() - h, rowTop);
-    scroll->ScrollTo(std::clamp(scroll->scroll, lo, rowTop), true);
-    // The panel's own line, which is where the mark goes: when the panel can still bring the chosen
-    // row to the control this is the same line as before, the panel travels a row, and the mark is
-    // already where it is going -- which is the whole of what a choice looks like.
-    flyout->panelLine = kPad + RowH() * (float)selected - scroll->scroll + RowH() / 2;
+    const float anchor = (here.top + here.bottom) / 2.0f;
+    // **The room, worked out the way the flyout will get it**: the page's own box, in the page's own
+    // space, which is the box a layer is covered with -- the same rectangle `FlyoutLayout::Arrange` is
+    // handed. Everything here is in that space already (`InPage`), so the two agree to the DIP, and a
+    // panel that fits this room is a panel the layout has no reason to move: a room that is even 10 DIP
+    // too generous is a panel clamped up against the box's bottom edge, which takes the chosen row off
+    // the control by exactly that much.
+    const Widget *root = this;
+    while (root->parent) root = root->parent;
+    const float roomTop = FlyoutLayout::kGap + kPad;
+    const float roomBottom = Height(root->rect) - FlyoutLayout::kGap - kPad;
+    const float line = anchor - rowH / 2.0f;             // where the chosen row's own top edge has to be
+    const float fitAbove = (std::floor)((line - roomTop) / rowH);
+    const float fitBelow = (std::floor)((roomBottom - line - rowH) / rowH);
+    // **The alignment first and the edges second.** The chosen row is `above` rows down the panel and the
+    // panel is placed by the line that puts it on the control; so the rows above it are as many whole rows
+    // as the room over the control has, and the rows below as many as the room under it has. A split fixed
+    // at half the panel instead -- which is what this did -- is a panel that reaches further than the room
+    // on one side, gets clamped by it, and takes the choice off the control with it.
+    const float above = std::clamp(fitAbove, 0.0f, (float)selected);
+    const float below = std::clamp(fitBelow, 0.0f, (float)(n - 1 - selected));
+    // **The view is the placement, not a second opinion about it.** The chosen row's own row inside the
+    // panel is the one the rows above it leave it, so the view shows the list from exactly there: the
+    // panel is placed once and does not move while the choice walks it, and every step is the rows
+    // travelling under a mark that stays on the control -- which is the whole of what the alignment
+    // buys. A view that moved only when it had to would leave the chosen row on some other row of the
+    // panel, and the panel would have to move to put it back on the control: the popup then slides a row
+    // at a time until the room clamps it, and the choice is off the control by what it was clamped.
+    const float viewRows = (float)selected - above;
+    // Placed rather than glided when the list opens, so that the frame it opens on is a list already
+    // showing the chosen row -- and **before** the scroll, not after: the column's rectangle is what the
+    // scroll writes, and `PlaceSubtree` copies a rectangle into `drawn`, so placing after it is placing
+    // the column back where it was.
+    if (!glide) micula::PlaceSubtree(scroll->content);
+    scroll->ScrollTo(viewRows * rowH, glide);
+    placedView = viewRows * rowH;
+    placedGlides = glide;
+    placedOwed = true;
+    flyout->rowsAbove = above;
+    flyout->rowsBelow = below;
+    flyout->panelLine = kPad + rowH * above + rowH / 2.0f;
+    Settle();
+    flyout->anchorLine = anchor;
     flyout->InvalidateLayout();
 }
 

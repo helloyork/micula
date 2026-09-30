@@ -1081,10 +1081,15 @@ struct Window {
         const float mx = where.left - w->rect.left, my = where.top - w->rect.top;
         p.rt->SetTransform(D2D1::Matrix3x2F::Translation(ox + mx, oy + my));
         // A widget that is a window onto its children clips them to itself. The clip is pushed
-        // *after* the transform, so its rectangle is read in the space it is written in -- the
-        // parent's, which is where `where` lives -- and not in the client's. See Widget::Clips.
+        // *after* the transform, so its rectangle is read in the space that transform is in -- and
+        // that space is the parent's with this widget's own glide taken *out* of it, because the
+        // transform being `ox + (drawn - rect)` is exactly what carries a widget painting at `rect` to
+        // `drawn`. The rectangle that means "where this widget is drawn" in here is therefore `rect`,
+        // and pushing `where` puts the box a whole glide further along than the thing it clips: a row
+        // of a sliding list drawn past the panel's edge, and the row at the other edge cut off. See
+        // Widget::Clips.
         const bool clips = w->Clips();
-        if (clips) p.rt->PushAxisAlignedClip(where, D2D1_ANTIALIAS_MODE_ALIASED);
+        if (clips) p.rt->PushAxisAlignedClip(w->rect, D2D1_ANTIALIAS_MODE_ALIASED);
         // A subtree being faded is drawn as one group at one opacity, rather than each of its widgets
         // at that opacity: fading them one by one shows the page through the gaps between them, and
         // comes out darker where two of them overlap. Two things answer with one -- a layer arriving
@@ -2290,7 +2295,15 @@ inline void App::Quit(int code) {
 inline bool App::Moving() {
     bool any = false;
     for (Window *w : windows) {
-        const bool on = w->Visible() && (w->Animating() || w->AnimationWanted());
+        // **A tree that owes an arrangement is a window with a frame to run.** The frame is where a
+        // change made by the message just handled becomes geometry and then paint -- "a child added, a
+        // layout replaced and a widget hidden all set the one flag, and it is cleared here", as
+        // `Window::Frame` puts it -- so a window that owes one and is not animating has to be a window
+        // the loop turns for, or the change waits for whatever else happens to paint. Which can be two
+        // seconds: a dragged scroll bar leaves the view where it was, because a bar that is already out
+        // is not animating, and the scroll is applied when the bar's auto-hide timer next comes up.
+        const bool on = w->Visible() &&
+                        (w->layoutDirty || w->Animating() || w->AnimationWanted());
         // A window that is *starting* to move picks its clock up here, which is where the one-window
         // loop did it for its window and only its window. Without it, that window's first frame
         // carries however long it spent sitting still while another window kept the loop awake -- and

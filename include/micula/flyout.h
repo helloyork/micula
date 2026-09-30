@@ -68,6 +68,12 @@ struct Flyout : Layer {
     bool  linedUp = false;
     float panelLine = 0.0f;
     float anchorLine = 0.0f;
+    // Where the **marker** goes, which is the panel's line until the list inside the panel is scrolled.
+    // `panelLine` is where the choice has *settled*, and it is what the panel is placed from; this is
+    // the line the chosen row is on *now*, so a list scrolled under the mark takes the mark with it.
+    // The two are the same whenever nothing is scrolling, which is every frame but the ones a wheel is
+    // travelling for. See `Flyout::marker` for why the mark is not inside the panel.
+    float markerLine = 0.0f;
     // **The marker**: the one child a flyout may have that is not the panel, and it is placed at the
     // panel's own line rather than at the panel. A drop-down puts its accent mark on it -- the row the
     // panel was placed so that it covers, which is the chosen one.
@@ -79,6 +85,48 @@ struct Flyout : Layer {
     // the options travel under it -- which is a dial rather than a menu, and what Windows does.
     Widget *marker = nullptr;
     float   markerH = 0.0f;
+    // **The rows a panel is made of**, when it is made of rows: the control that owns the panel says how
+    // tall one is and how much margin the panel keeps above and below them, and the panel's height is then
+    // a whole number of them. A panel cut off in the middle of a row is a row half drawn and half of the
+    // next one's business -- at the edge the eye is on when a list opens, and again at every clamp -- and
+    // the odd half row is exactly what a list is not allowed to end on. The room has the first say and
+    // this the second: the answer is rounded *down*, and one row is the least that is still a row.
+    float rowH = 0.0f;
+    float rowPad = 0.0f;
+    // **The rows the panel is being told to show** above and below the chosen one. Written by the
+    // control, which is the only thing that knows how many rows are in the list: the count it puts back
+    // is the panel's height, because the chosen row has to come out on the anchor line whatever the room
+    // says -- so the edges are what give way, not the alignment. Negative is "nobody has said", which is
+    // the state of a flyout that has not been arranged yet.
+    float rowsAbove = -1.0f;
+    float rowsBelow = 0.0f;
+
+    // Where the marker goes, from the panel it is beside. **One place**, because two things place it:
+    // the arrangement, and the control whose list has scrolled under it -- and the second cannot wait
+    // for one, because an arrangement runs before the tick that moved the list, which is a mark drawn at
+    // the scroll of the frame before.
+    //
+    // `exactly` is the whole of the difference between the two callers, and it is about what the mark is
+    // for. A *choice* moving is told to the mark by moving it there, and the travel is what shows it -- a
+    // mark that appears somewhere else is a change nobody saw happen. A list being *scrolled* is the other
+    // way round: the rows are the thing moving, the mark is what they move under, and a mark gliding after
+    // its row is a highlight that trails the list it belongs to. So: `exactly` for the scroll, the glide
+    // for everything else -- which is the tree's own glide, the one every widget on its way somewhere uses.
+    void PlaceMarker(bool exactly = false) {
+        if (!marker || !panel) return;
+        const float mid = panel->rect.top + (linedUp ? markerLine : 0.0f);
+        marker->rect = { panel->rect.left + 1.0f, mid - markerH / 2.0f, panel->rect.left + 4.0f,
+                         mid + markerH / 2.0f };
+        // **The first placement is where it is**, and that is the rule the tree already has for a widget
+        // nobody has arranged yet: a new one has nothing to glide *from*, and one that glides from the
+        // origin instead arrives from the corner of the page on the frame a list opens.
+        if (exactly || !marker->placed) marker->drawn = marker->rect;
+        marker->placed = true;
+        // A row scrolled out of the panel is not on screen, and its mark goes with it rather than
+        // sitting on the edge.
+        marker->visible = mid - markerH / 2.0f >= panel->rect.top &&
+                          mid + markerH / 2.0f <= panel->rect.bottom;
+    }
 
     explicit Flyout(D2D1_RECT_F at) : anchor(at) {
         lightDismiss = true;
@@ -191,7 +239,15 @@ inline void FlyoutLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     // than one side of the anchor: a combo box's list reaches above and below the control it covers,
     // and the only thing that decides which is where the chosen row has to be.
     const bool up = !f->linedUp && fitBelow < wantH && fitAbove > fitBelow;
-    const float height = (std::min)(wantH, f->linedUp ? fitAll : (up ? fitAbove : fitBelow));
+    float height = (std::min)(wantH, f->linedUp ? fitAll : (up ? fitAbove : fitBelow));
+    if (f->linedUp && f->rowsAbove >= 0.0f) {
+        // **Rows above and below, and the alignment under them**: the panel is as tall as the rows it was
+        // told to show, so that the chosen one lands on the anchor line -- see `Flyout::rowsAbove`.
+        height = 2.0f * f->rowPad + f->rowH * (f->rowsAbove + 1.0f + f->rowsBelow);
+    } else if (f->rowH > 0.0f && height > 2.0f * f->rowPad) {
+        const float rows = std::floor((height - 2.0f * f->rowPad) / f->rowH);
+        height = 2.0f * f->rowPad + f->rowH * (std::max)(1.0f, rows);
+    }
 
     const float panelW = (std::max)(w, want.w.how == Sizing::Fill ? w : want.w.size);
     float left = f->anchor.left;
@@ -206,15 +262,10 @@ inline void FlyoutLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
         top = up ? f->anchor.top - gap - height : f->anchor.bottom + gap;
     }
     f->panel->rect = { left, top, left + panelW, top + height };
-
-    // The marker, at the panel's own line as it has *settled*. See Flyout::marker: a mark inside the
-    // panel would ride the panel's slide, and a choice would be something that slid past rather than
-    // something that changed.
-    if (f->marker) {
-        const float mid = top + (f->linedUp ? f->panelLine : 0.0f);
-        f->marker->rect = { left + 1.0f, mid - f->markerH / 2.0f, left + 4.0f,
-                            mid + f->markerH / 2.0f };
-    }
+    // The marker, at the line the chosen row is on -- the panel's line as it has *settled*, unless the
+    // list inside the panel has been scrolled since, in which case the row, and the mark with it, are
+    // somewhere else. See `Flyout::marker` and `PlaceMarker`.
+    f->PlaceMarker();
 }
 
 }  // namespace micula

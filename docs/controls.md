@@ -217,23 +217,28 @@ for another rather than as picking from a menu. It grows out of the control over
 `motion::kFast`, each edge travelling from the control's row outward, and collapses back
 into it.
 
-The panel is never taller than the room the page shows it through, so the whole rounded
-rectangle stays in the room. A list longer than that scrolls *inside* the panel: the panel's
-top edge is clamped to the room and the rows move within it, and the chosen row comes to
-rest wherever the clamp leaves it -- on the control's own row when the room allows it, near
-an end of the panel when it does not.
+**The alignment is the premise, and the panel's edges are what serve it.** The panel is made
+of the whole rows that fit around the control's own line -- as many above the chosen row as
+the room over the control holds, as many below it as the room under it holds, and no more
+rows than the list has on that side -- so the panel is always one the room can place, and the
+chosen row is on the control's line whatever the list is chosen from. What gives way when the
+room runs out is the number of rows, never the line: a placement worked out from a room larger
+than the layout really gives is a panel the layout clamps, and a clamp takes the chosen row
+off the control by exactly what it clamped.
 
-A notch of the wheel moves the choice one row, and takes the view with it only when it has
-to and only as far as it has to: the row above and the row below the chosen one stay
-visible, so a wheel through a long list moves the highlight down it rather than bringing
-every choice to the same row. That is the difference between a dial and a menu, and it is
-what opening is exempt from -- opening does put the chosen row where the control's own row
-is.
+A notch of the wheel moves the choice one row and takes the view with it, by exactly that row:
+the panel stays where the choice put it and the rows travel under the mark, so the option that
+arrives at the control's line is the choice. That is the difference between a dial and a list
+that walks its highlight down the page, and it is why a step is the same placement as opening
+-- one is glided and the other is placed, and nothing else about the two differs. The view
+follows the choice even where it has to leave the row it was scrolled to: a choice that has
+been made and cannot be seen on the control has not been made.
 
 The list's scroll bar moves the view and leaves the choice alone: choosing is what clicking
 a row is for. The accent mark goes with its row, out of the panel if the bar has taken the
 row that far, and a wheel with Shift held scrolls the view the same way without touching
-the choice.
+the choice. Whatever moved the view, the mark is on its row: a placement speaks for the mark
+only for as long as the list is where the placement left it.
 
 While the list is open the wheel belongs to the list wherever the pointer is, and a page
 scrolled out from under an open list closes it rather than dragging it along.
@@ -246,11 +251,12 @@ through: both have two ends.
 
 The accent mark is drawn on the chosen row, and it is a follower rather than something put
 there: a choice that changes is a change to be *seen*, so the mark travels to its row rather
-than appearing on it. What the room leaves it to travel over is what changes. Where the panel
-can slide the mark holds still on the control's own row and the rows move past it, so which
-option stands under the mark is the choice. Where the room has pinned the panel the rows
-cannot move at all and the two change places: the mark travels down a list that stands still.
-Either way it comes to rest exactly on its row.
+than appearing on it. Which of the two is moving is what says what it looks like. While the
+*choice* is what moved, the mark holds still on the control's own row and the rows move past
+it, so which option stands under the mark is the choice. While the *view* is what moved -- a
+dragged scroll bar, Shift and the wheel -- the row moves and the mark goes with it, exactly,
+because a mark gliding after the row it belongs to is a highlight trailing the list it belongs
+to. Either way it is never half a row off the row it marks.
 
 The keyboard can search, **while the list is open**: typing letters chooses the option that
 starts with what has been typed, and the list slides to it. Only the first letter of a search
@@ -272,15 +278,13 @@ is shorter from the first frame and never longer -- and then both spring back. W
 `wrapAround` there is no end for the wheel or the keys to reach, so the mark gives way for
 a letter that matched nothing and for nothing else.
 
-The panel is as tall as the list and is not cut to the room it has: where the room runs out
-the page clips it, and the far end of the list is what goes out of sight -- never the chosen
-row, which stays on the control. The same room decides what a pointer can reach: a row is
-only ever lit, and only ever chosen, where it is drawn and inside the popup's own box, so
-neither the title bar nor the space beside the control is part of the list. Its scroll bar
-appears when the list is taller than that room, which is `ClipRect()` or, on a page that
-does not scroll, the client area below the title bar.
-
-`rect` must be 32 DIPs tall: while the list is open, `rect` grows to cover it.
+The panel is exactly the whole rows it is placed for and never more, so where the list is
+longer it is the list that scrolls inside the panel, and what goes out of sight is the far end
+of the list -- never the chosen row, which is on the control. The same room decides what a
+pointer can reach: a row is only ever lit, and only ever chosen, where it is drawn and inside
+the popup's own box, so neither the title bar nor the space beside the control is part of the
+list. Its scroll bar appears when the list is taller than that room, which is the page's own
+box -- `ClipRect()` or, on a page that does not scroll, the client area below the title bar.
 
 ## SideNav
 
