@@ -175,14 +175,10 @@ void PanePage(ScrollView *sheet) {
         }, paneOpen);
         // **A menu too long for the screen**, which is what a menu with more rows than room does: it is capped
         // to the work area it landed in and scrolls inside that, with a bar in a column the panel makes room for
-        // rather than drawn over its own rows. Here rather than only in the tests because the four ways of
-        // moving it -- the wheel, a finger, the arrow keys and the bar -- are not the same gesture as each other,
-        // and the taste of each of them is the thing being looked at. **Two of them on purpose**: the rows below
-        // are a list of this level, and the `Sub` under them is a list of the next one, which is a window of its
-        // own -- and whether a wheel reaches a menu's own window or the one it hangs over is a question a
-        // machine's own setting decides, so the two levels are the two cases.
-        for (int i = 0; i < 30; i++)
-            m.Item(L"Line " + std::to_wstring(i), nullptr, L"", [] {});
+        // rather than drawn over its own rows. Here rather than only in the tests because the four ways of moving
+        // it -- the wheel, a finger, the arrow keys and the bar -- are not the same gesture as each other, and the
+        // taste of each of them is the thing being looked at. It is a `Sub` rather than a list of this level
+        // because a submenu is a window of its own, which is the half a wheel has to reach by a different door.
         m.Sub(L"A list too long for the screen", [](micula::Menu &s) {
             for (int i = 0; i < 40; i++)
                 s.Item(L"Line " + std::to_wstring(i), nullptr, L"", [] {});
