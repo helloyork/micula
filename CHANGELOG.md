@@ -389,6 +389,14 @@ library can be: a minor version may break.
   click on that row, and the way out is a click on the row the open one came from. Which is what a second click on
   it is -- it puts the submenu away rather than opening it again -- and a click on a *rested* submenu is what makes
   it strong. The menu's strong state is only ever promoted by a click, never demoted by a rest.
+- **A menu answers UI Automation, and what a window answers a popup answers too.** The element a client is handed,
+  the uid it resolves and the focus event it raises were `Window`'s -- and a menu is a `Popup`, a window of its own
+  whose message handling never reached any of it, so a screen reader saw nothing of a menu however well the panel
+  inside it described its rows. They are `Surface`'s now, a popup answers `WM_GETOBJECT` with a root of its own
+  (only while a client is listening, as before), and a uid comes from the widget tree rather than from either kind
+  of surface -- so a menu's rows have names without anything about a menu being written for them. Walking the
+  provider from a menu's root gives the panel (`Menu`) and then its rows (`MenuItem` and `Separator`, named, with
+  the item boxes and `IsOffscreen` the panel already answered).
 
 ### Changed
 

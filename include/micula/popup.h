@@ -325,6 +325,22 @@ inline LRESULT CALLBACK Popup::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         break;
     case WM_ERASEBKGND:
         return 1;   // every pixel comes from the composition surface
+    case WM_GETOBJECT: {
+        // **UI Automation, and the reason a menu is not an invisible thing to a screen reader.** A client asks a
+        // window for its root element this way, and a menu is a window of its own -- a `Popup` -- so it has to
+        // answer here as well as a window's own handling does: the rows a menu draws are controls a client asks
+        // about like any other, and the panel inside it has been describing them all along. Only while a client is
+        // actually listening: a screen reader is absent in almost every run of a program built on this, and a
+        // provider tree built to answer nobody is work on the UI thread for nothing. Anything else -- and every
+        // other id -- falls through to `DefWindowProc`, where MSAA's half of the world's answer comes from.
+        const uiaapi::Api &uia = uiaapi::Get();
+        if ((LONG)lp == UiaRootObjectId && uia.Ready() && uia.ClientsAreListening()) {
+            // **The value it answers with is the one to return**, not zero: it is the marshalled provider a
+            // client is handed, and a zero here is a window that says "no element" after all that work.
+            return (LRESULT)uia.ReturnRawElementProvider(h, wp, lp, self->UiaRoot());
+        }
+        break;
+    }
     case WM_DESTROY:
         self->alive = false;
         self->EndPump();

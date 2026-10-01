@@ -1186,6 +1186,26 @@ struct Surface {
     // after the pointer has already gone is answered at once rather than never. See `Tips` in tip.h.
     void TrackLeave();
 
+    // ---- UI Automation ------------------------------------------------------------------------
+    // **A popup's business as much as a window's.** A menu is a `Popup` with a widget tree of its own, and the
+    // rows it draws are answers a client asks for exactly like any other control's -- so the element, the uid it
+    // resolves and the event it raises are this class's, and a window and a menu ask the same question. Everything
+    // the provider needs (the tree, the focus, the hover, the scale, the widget a uid names) is this class's too,
+    // and a uid is handed out by the widget tree itself -- see `Widget::NextUid` -- so a popup's widgets have
+    // names for a client without either kind of surface doing anything about it. See the UIA section near the end
+    // of this header, and `UiaElement`, which holds one of these.
+    friend struct UiaElement;
+    IRawElementProviderSimple *UiaRoot();
+    Widget *UiaFind(int uid) const;
+    // The same question asked from a widget down, because a uid belongs to the widget `Add` gave it to and an
+    // element resolves it against the whole tree.
+    Widget *FindUid(Widget *w, int uid) const;
+    // Told to a client that is listening that the keyboard focus moved. Called from `SetFocusTo`.
+    void UiaFocusChanged();
+    // **What a client is told this surface *is*.** A window has a title; a menu has none, and what names it is the
+    // rows it holds -- which the panel inside it answers for, one item at a time.
+    virtual const wchar_t *Title() const { return L""; }
+
     // Mark the whole surface for a repaint. The frame loop paints outside `WM_PAINT` while something is
     // moving, so a request for a frame is not a request to Windows for one -- see `Frame`. And while it
     // *is* animating, invalidating as well buys nothing and costs a frame: the region it sets is handed
@@ -1417,7 +1437,7 @@ struct Window : Surface {
 
     // --- to implement -----------------------------------------------------------
     virtual const wchar_t *ClassName() const = 0;
-    virtual const wchar_t *Title() const = 0;
+    const wchar_t *Title() const override = 0;
     // The page no longer has a `Layout()` to override: what places a page's controls is the layout
     // of the widget they were added to (see docs/layout.md). `PaintPage` is gone the same way --
     // what a page used to draw there is widgets now, a `Heading` and a `Card` among them.
@@ -1445,16 +1465,10 @@ struct Window : Surface {
     void EndPump() override;
 
     // ---- UI Automation ------------------------------------------------------------------------
-    // The element a client is handed for this window, and the widget behind an element's uid --
-    // null once the page has been laid out again, which is the answer that keeps an element that
-    // has outlived its widget harmless. See the UIA section near the end of this header.
-    IRawElementProviderSimple *UiaRoot();
-    Widget *UiaFind(int uid) const;
-    // The same question asked from a widget down, because a uid belongs to the widget Add gave it to
-    // and an element resolves it against the whole tree.
-    Widget *FindUid(Widget *w, int uid) const;
-    // Told to a client that is listening that the keyboard focus moved. Called from SetFocusTo.
-    void UiaFocusChanged();
+    // A window's half of it is nothing the base does not already have: the element, the uid it resolves and the
+    // focus event are `Surface`'s, because a menu needs them quite as much as a window does -- and a menu is a
+    // `Popup`, whose window never went through this class's own message handling at all. What is left here is
+    // what a client is told about *this* window: `Title()` below, and `UiaAnnounce`.
     // Told to a client that is listening what has changed since the frame before. Called from Paint,
     // which is the one moment every change has to pass through. See the UIA section of this header.
     void UiaAnnounce();
@@ -3678,7 +3692,7 @@ struct UiaElement : IRawElementProviderSimple,
                     ISelectionItemProvider {
     // `uid` 0 is the window itself, which is the root of the tree; `item` is which of that widget's
     // items this element is, or -1 for the widget itself. See `Widget::AccessibleItems`.
-    UiaElement(Window *w, int uid, int item = -1) : win(w), widget(uid), item(item) {}
+    UiaElement(Surface *w, int uid, int item = -1) : win(w), widget(uid), item(item) {}
 
     // ---- IUnknown -------------------------------------------------------------------------
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
@@ -4437,22 +4451,26 @@ private:
         return S_OK;
     }
 
-    Window *win;
+    // **A `Surface`, not a `Window`**: a menu is a `Popup` with a widget tree of its own, and the rows it draws
+    // are elements a client asks about like any other control's. Everything used through this pointer -- the
+    // tree, the focus, the hover, the scale, the uid lookup -- is the base class's, and a uid is handed out by
+    // the widget tree rather than by either kind of surface. See `Surface::UiaRoot`.
+    Surface *win;
     int widget;          // 0 for the window itself; otherwise a Widget::uid
     int item = -1;       // which of that widget's items, or -1 for the widget itself
     LONG refs = 1;
 };
 
-inline IRawElementProviderSimple *Window::UiaRoot() { return new UiaElement(this, 0); }
+inline IRawElementProviderSimple *Surface::UiaRoot() { return new UiaElement(this, 0); }
 
 // The widget behind an element's uid, or null. A linear scan of a list that is a page's worth of
 // controls, on a call that only happens when somebody is running a screen reader.
-inline Widget *Window::UiaFind(int uid) const {
+inline Widget *Surface::UiaFind(int uid) const {
     if (!uid) return nullptr;
     return FindUid(content.get(), uid);
 }
 
-inline Widget *Window::FindUid(Widget *w, int uid) const {
+inline Widget *Surface::FindUid(Widget *w, int uid) const {
     if (!w) return nullptr;
     if (w->uid == uid) return w;
     for (const auto &child : w->children)
@@ -4462,7 +4480,7 @@ inline Widget *Window::FindUid(Widget *w, int uid) const {
 
 // Told to a client that is listening that the keyboard focus moved: the one event a screen reader
 // cannot work without, because it is how it follows the Tab key.
-inline void Window::UiaFocusChanged() {
+inline void Surface::UiaFocusChanged() {
     const uiaapi::Api &uia = uiaapi::Get();
     if (!uia.Ready() || !uia.ClientsAreListening()) return;
     UiaElement *e = new UiaElement(this, focused ? focused->uid : 0);
