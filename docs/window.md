@@ -235,7 +235,10 @@ panel->contextMenu = [this](micula::Menu &m) {
     m.Item(L"Paste", micula::glyph::kPaste, L"Ctrl+V", [this] { Paste(); }, CanPaste());
     m.Separator();
     m.Check(L"Show hidden", hidden, [this](bool on) { SetHidden(on); });
-    m.Sub(L"Sort by", [](micula::Menu &s) { ... });   // the container a submenu will be
+    m.Sub(L"Sort by", [](micula::Menu &s) {
+        s.Item(L"Name", nullptr, L"", [this] { SortBy(Name); });
+        s.Sub(L"More", [](micula::Menu &t) { t.Check(L"Folders first", foldersFirst, Set); });
+    });
 };
 ```
 
@@ -255,6 +258,19 @@ hangs off for as long as somebody is merely using it, so the input the menu need
 sent, handed to the menu first while it is up -- see `Surface::onInput`. The window keeps the foreground, its
 caption stays lit, and the same door is what closes the menu when the window goes away.
 
+**A row that holds another menu is a way in rather than a choice.** `Sub` takes the builder of that menu, run
+every time *it* opens exactly as the page's builder is run for this one, and the menu opens beside the row:
+the row's own box on the screen, the panel's left edge landing **4 DIP inside the row's right edge** -- the two
+overlap rather than stand apart, which is what WinUI does (`CascadingMenuHelper::OpenSubMenu`: `position.X +=
+subItemWidth - m_subMenuOverlapPixels`, and `m_subMenuOverlapPixels` is 4) -- and its top on the row's own,
+which is where WinUI aligns it too ("align top of owner with top of presenter"). Flipped to the left of the
+menu it came from when the work area has no room to the right of it, the same four the other side. Three ways
+in -- resting on the row for as long as the platform's own menus wait (`SPI_GETMENUSHOWDELAY`), a click on it,
+or the right arrow on it -- and three ways back out, one level at a time: the left arrow, Esc, or a hand moving
+onto another row of the menu it came from. A submenu is a `Menu` like its parent, in a `Popup` of its own,
+which is what lets one be nested inside another without limit and what gives each level the entrance every
+popup has.
+
 | Member | Description |
 |---|---|
 | `std::function<void(Menu &)> contextMenu` | A widget's menu, filled in when it is opened. Null for a widget with none, and then a right-click goes up to the nearest widget above it that has one -- a click on a card's label is a click on the card. |
@@ -263,7 +279,7 @@ caption stays lit, and the same door is what closes the menu when the window goe
 | `Menu &Menus::Box()`, `bool Menus::Shown()`, `void Menus::Close()` | The box, and putting it away from the page. |
 | `Row &Menu::Item(text, icon, shortcut, onPick, enabled)` | A row that does something. The shortcut is drawn at the far end of the row, and the icon in the column at the near one. |
 | `Row &Menu::Check(text, checked, onCheck, icon)` | A row that is a switch. `onCheck` is handed what the state *becomes*, so the page writes `hidden = on` and nothing in the menu owns the state it is showing. |
-| `Row &Menu::Sub(text, build)` | The parent of another menu. **Structure only**: the row is drawn with the chevron that says there is more behind it, and nothing opens it yet. |
+| `Row &Menu::Sub(text, build)` | A row that holds another menu, drawn with the chevron that says there is more behind it. `build` fills that menu in every time it opens, and it may hold a `Sub` of its own. |
 | `Row &Menu::Separator()` | A line between rows -- 9 DIP of room and 1 of ink. |
 | `Menu::onClose` | Told when the menu has closed itself, which is where a page hears that it went. |
 

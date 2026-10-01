@@ -173,9 +173,36 @@ void PanePage(ScrollView *sheet) {
             paneOpen = false;
             Apply();
         }, paneOpen);
-        // The container a submenu will be, drawn with the chevron that says there is more behind it.
+        // **A row that holds another menu**, which is what the chevron at the end of it means: the widths
+        // WinUI calls OpenPaneLength, as a menu of its own that opens beside this one. Its rows are filled
+        // when *it* opens, the same way this menu's are -- and one of them holds a menu of its own, because a
+        // submenu is a menu: rest on a row, click it, or press the right arrow on it.
         m.Sub(L"Room for the pane", [](micula::Menu &s) {
-            s.Item(L"Narrow", nullptr, L"", nullptr, false);
+            s.Item(L"Narrow, 160", nullptr, L"", [] {
+                paneOpenW = 160.0f;
+                Apply();
+            }, paneOpenW > 160.0f);
+            s.Item(L"Default, 260", nullptr, L"", [] {
+                paneOpenW = 260.0f;
+                Apply();
+            }, paneOpenW > 260.0f);
+            s.Item(L"Wide, 400", nullptr, L"", [] {
+                paneOpenW = 400.0f;
+                Apply();
+            }, paneOpenW > 400.0f);
+            s.Separator();
+            s.Sub(L"Over the page, dimmed", [](micula::Menu &t) {
+                t.Item(L"Peek, and a scrim", nullptr, L"", [] {
+                    paneStyle = (int)PaneStyle::Peek;
+                    paneScrim = true;
+                    Apply();
+                }, !(paneStyle == (int)PaneStyle::Peek && paneScrim));
+                t.Item(L"Peek, no scrim", nullptr, L"", [] {
+                    paneStyle = (int)PaneStyle::Peek;
+                    paneScrim = false;
+                    Apply();
+                }, paneStyle == (int)PaneStyle::Peek && paneScrim);
+            });
         });
     };
 

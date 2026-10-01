@@ -25,6 +25,17 @@
 // A right-click on that panel opens it where the hand is, so do the Menu key and Shift+F10 under the
 // focused control, and the menu itself answers the arrows, Home/End, Enter, Esc and a click on a row.
 //
+// **A submenu is a menu of its own, in a window of its own.** A row that is a container holds a builder
+// (see `Row::onSub`), and resting on that row -- for as long as the platform's own menus wait -- clicking
+// it, or the right arrow on it opens a second `Menu` beside it: see `Menu::OpenSub`. It is a `Popup` and
+// not one more panel in this window for the same reason a menu is one and not a `Layer` -- it may have to
+// cross the edge of the window it came from -- and for two more that pay for themselves here: where it goes
+// is decided by the placement every menu already uses (the row's own box, flipped to the other side of it
+// when the work area runs out, clamped into what is left), and it *arrives* with the same fade every popup
+// arrives with, on its own. The cost is three small things, each of them a line: the parent owns the child
+// and closes it with itself, the child is shown without activating like its parent, and the keys a menu
+// takes are handed down to the deepest menu first.
+//
 // **It is filled every time it opens rather than kept in step.** The builder is the page's and it runs on
 // each open, so a row that is disabled now, a tick that is on now, and a list that changed under it are
 // all the page's own state read at the moment it matters: there is no second copy of the truth to get
@@ -50,9 +61,21 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace micula {
+
+// How long the pointer rests on a row before the menu under it opens. **A delay and not nothing**, because
+// a hand crossing a menu on its way somewhere passes over every container it has: a submenu that opened
+// under the hand on the way past would flash open and shut, which is the flicker the same rule exists to
+// prevent in the platform's own menus. Like the tip's dwell it is the machine's answer rather than a number
+// of ours -- `SPI_GETMENUSHOWDELAY`, 400 ms out of the box, and a setting a person can change.
+inline UINT MenuDwell() {
+    UINT ms = 0;
+    if (!SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &ms, 0) || ms == 0) ms = 400;
+    return ms;
+}
 
 struct Menu;
 
@@ -77,7 +100,7 @@ struct MenuPanel : Widget {
 // went, and what picking it does.
 struct Menu : Popup {
     // One row. `kind` is what it is and the rest is what it has -- a separator has neither words nor a
-    // callback, and a submenu's row is a container that nothing opens yet.
+    // callback, and a submenu's row holds another menu rather than something to do.
     struct Row {
         enum class Kind { Item, Separator, Check, Sub };
         std::wstring text;
@@ -88,9 +111,9 @@ struct Menu : Popup {
         bool enabled = true;
         std::function<void()> onPick;
         std::function<void(bool)> onCheck;
-        // **Structure only.** What a submenu needs is a second menu placed beside this row, its own
-        // dismissal, and the arrow that opens it on the way past -- so the builder is kept here, where a
-        // page can be written against it, and nothing opens it yet.
+        // **What is under this row**, for a row that holds a submenu: the builder of the menu that opens
+        // beside it, run every time that menu opens, exactly as the page's own builder is run for this one.
+        // See `Sub` and `OpenSub`.
         std::function<void(Menu &)> onSub;
         // Where the row was placed, in the panel's own space, and how tall it is. Filled by `Measure`.
         float top = 0.0f, h = 0.0f;
@@ -110,6 +133,17 @@ struct Menu : Popup {
     static constexpr float kRadius = metric::kRadiusCard;
     static constexpr float kRowRadius = metric::kRadiusControl;
     static constexpr float kMinW = 128.0f;
+    // **How far a submenu's panel is *inside* the row it belongs to.** The number and what it is measured from
+    // are WinUI's own: `CascadingMenuHelper` places a submenu at
+    //
+    //     subMenuPosition.X += subItemWidth - m_subMenuOverlapPixels;
+    //
+    // with `static constexpr UINT m_subMenuOverlapPixels = 4` (dxaml/xcp/dxaml/lib/CascadingMenuHelper.{h,cpp}),
+    // commented there as "the overlapped menu pixels between the main menu presenter and the sub presenter". So
+    // the child's left edge lands 4 DIP inside the *item's* right edge -- which is a row of this menu, inset
+    // from the panel by `kPad` -- and the two surfaces read as one thing with a fold in it rather than as two
+    // boxes with a gutter between them. Flipped, the same four on the other side.
+    static constexpr float kSubOverlap = 4.0f;
     // The room the window keeps around the panel for its shadow: the flyout's own falloff, which is what
     // a menu over a page wants -- see `Painter::Shadow` for why it is not a blur, and `Tip` for the
     // narrower one a tip carries. It is also how far a menu is kept inside the work area, so that a menu
@@ -126,6 +160,9 @@ struct Menu : Popup {
         panel->menu = this;
         Add(panel);
     }
+    // Declared here and defined below the struct: a menu owns the submenu it has open, and a `unique_ptr`
+    // to its own type needs that type complete where it is destroyed.
+    ~Menu();
 
     const wchar_t *ClassName() const override { return L"MiculaMenu"; }
 
@@ -173,6 +210,24 @@ struct Menu : Popup {
     // `ClientToScreen` answers with. Nothing is shown when the builder fills in nothing: a menu with no
     // rows in it is not a menu, and an empty box beside the hand is worse than no box.
     void Open(const std::function<void(Menu &)> &build, POINT at) {
+        Anchor a;
+        a.at = at;
+        a.flip = at;
+        OpenAt(build, a);
+    }
+
+    // **Where a menu puts itself**, which is the whole of the difference between one opened by a hand and one
+    // opened beside a row. `at` is the screen point the panel's own corner goes at; `flip` is the point its
+    // *right* edge goes at when the work area has no room for it where it wanted to be. The two are the same
+    // point for a menu opened by a hand, which is what puts it on the left of the pointer near the right edge
+    // of a screen; for a submenu they are the right and the left edge of the row it belongs to, which is what
+    // puts it on the left of the menu it came from rather than over that menu. Up and down is `at` either way:
+    // a menu with no room below it grows upwards from where it wanted to start.
+    struct Anchor {
+        POINT at = {};
+        POINT flip = {};
+    };
+    void OpenAt(const std::function<void(Menu &)> &build, const Anchor &a) {
         Close();
         rows.clear();
         hot = armed = -1;
@@ -183,11 +238,11 @@ struct Menu : Popup {
         // DIPs of the monitor it is landing on, asked of the monitor rather than of this window -- a menu
         // opens where the pointer is, and the pointer can be on a screen other than the one the window it
         // was opened from is on. See `dpiapi::ForPoint`.
-        const UINT mon = dpiapi::ForPoint(at);
+        const UINT mon = dpiapi::ForPoint(a.at);
         const float scale = (float)mon / 96.0f;
         RECT work = {};
         MONITORINFO mi = { sizeof(mi) };
-        GetMonitorInfoW(MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST), &mi);
+        GetMonitorInfoW(MonitorFromPoint(a.at, MONITOR_DEFAULTTONEAREST), &mi);
         work = mi.rcWork;
         // The work area less the room the shadow needs, as a tip keeps itself in: a menu against the edge
         // of a screen shows its shadow whole and a gap beside it rather than sitting on the last pixel.
@@ -195,13 +250,13 @@ struct Menu : Popup {
         const float right = (float)work.right / scale - kMargin;
         const float bottom = (float)work.bottom / scale - kMargin;
 
-        const float px = (float)at.x / scale, py = (float)at.y / scale;
+        const float px = (float)a.at.x / scale, py = (float)a.at.y / scale;
         // **The corner goes at the point, and to the other side of it when the work area runs out** --
         // a menu off the right edge of a screen is a menu half read. A menu is opened by a hand, so the
         // point is where the hand is rather than the middle of a control: the row under the hand is the
         // row the hand is on.
         float x = px, y = py;
-        if (x + panelW > right) x = px - panelW;
+        if (x + panelW > right) x = (float)a.flip.x / scale - panelW;
         if (y + panelH > bottom) y = py - panelH;
         x = (std::max)(left, (std::min)(x, right - panelW));
         y = (std::max)(top, (std::min)(y, bottom - panelH));
@@ -229,11 +284,82 @@ struct Menu : Popup {
     // Close it: what Esc, a picked row and the focus going away all do. Not `Hide` -- this is the menu
     // saying that it is over, and a page that wants to hear it (or to have the focus back) does.
     void Close() {
+        // **A menu takes what it opened with it.** A child left standing over a page whose menu has gone is
+        // a box nobody can put away, and closing from the inside out is also what lets each level answer
+        // before the one above it has gone.
+        CloseSub();
         if (!Shown()) return;
-        Hide();
+        Shut();
         hot = armed = -1;
         if (onClose) onClose();
     }
+
+    // Put the chain away without telling the page, which is what a *destructor* needs: see `Menus::~Menus`,
+    // where `Close` would run a page callback on its way out of that page's own destruction.
+    void Shut() {
+        CloseSub();
+        Popup::Hide();
+    }
+
+    // --- the submenu --------------------------------------------------------------------------------
+    // **The menu a row holds, opened beside that row.** Where it goes is the same placement a menu opened
+    // by a hand uses -- see `OpenAt` -- with the row's own box for the point: the panel's corner at the
+    // panel's right edge plus `kSubGap`, its top at the row's top, and flipped to the left of the row when
+    // the work area has no room to the right of it.
+    //
+    // **The row's box is asked of the panel rather than worked out.** `ScreenBox` is the same call a tip
+    // makes to learn where the control it names is, and it is the one place that knows what a widget's own
+    // space is and how it travels through the window: a box this computed by hand from the two windows'
+    // rectangles would be a second copy of that arithmetic, in the part of this library that has been wrong
+    // before.
+    void OpenSub(int i) {
+        if (i < 0 || i >= (int)rows.size()) return;
+        Row &r = rows[i];
+        if (r.kind != Row::Kind::Sub || !r.onSub) return;
+        // The delay is over whichever way this was called: a submenu opened by a resting hand is opened by
+        // the timer that *was* the delay, and one opened by a click or an arrow arrives here first.
+        open.Stop();
+        if (subRow == i && sub && sub->Shown()) return;
+        CloseSub();
+        if (!app) return;   // a menu nothing pumps is a window that never draws: see `Menus::Open`
+        if (!panel) return;
+        if (!sub) sub = std::make_unique<Menu>();
+        // **The row's box, on the screen.** `ScreenBox` takes a box in the space the panel's `rect` is
+        // measured in -- the client area's, which is where an item's box and a tip's box are written too (see
+        // `Widget::Item`) -- while `Row::top` is measured from the panel's own top edge, so the panel's own
+        // origin goes back on here. Two spaces, one line apart: this is the arithmetic that was wrong in
+        // `RowAt` before, and it is written out rather than folded into `ScreenBox` so that the space
+        // `ScreenBox` wants stays the same one everything else uses.
+        const D2D1_RECT_F rowBox = { panel->rect.left + kPad, panel->rect.top + r.top,
+                                     panel->rect.left + panelW - kPad, panel->rect.top + r.top + r.h };
+        const RECT box = ScreenBox(panel, rowBox);
+        // **The row's own box is what a submenu hangs off**, and the child's left edge lands `kSubOverlap`
+        // inside its right edge -- the same arithmetic WinUI's `CascadingMenuHelper::OpenSubMenu` does, written
+        // the same way round: `position.X += subItemWidth - m_subMenuOverlapPixels`. Flipped, the same four the
+        // other side of the row: the child's right edge lands that far inside the row's left edge.
+        const LONG over = (LONG)std::lround(kSubOverlap * scale());
+        Anchor a;
+        a.at = { box.right - over, box.top };
+        a.flip = { box.left + over, box.top };
+        subRow = i;
+        sub->owner = this;
+        sub->OpenAt(r.onSub, a);
+        if (!sub->Shown()) {
+            subRow = -1;
+            return;
+        }
+        if (!sub->app) app->Add(*sub);
+        // The row that owns an open submenu is the row that has to keep looking lit, and a keyboard move can
+        // have brought us here with nothing repainted yet.
+        if (panel) panel->Invalidate();
+    }
+
+    void CloseSub() {
+        open.Stop();
+        if (sub && sub->Shown()) sub->Close();
+        subRow = -1;
+    }
+    bool SubShown() const { return subRow >= 0 && sub && sub->Shown(); }
 
     // Told when the menu has closed itself. This is where a page puts the focus back, and where a trigger
     // learns that the menu it opened is gone.
@@ -241,6 +367,20 @@ struct Menu : Popup {
     std::vector<Row> rows;
     int hot = -1;     // the row the hand or the keys are on
     int armed = -1;   // the row the button went down on, which is what a release picks
+    // **The menu this one has open, and the row of this one it belongs to.** Kept rather than made and
+    // thrown away with every open, the same way `Menus` keeps the menu it opens: `Open` fills it again from
+    // its builder, and a window that already exists is a window that does not have to be made to be put
+    // beside a row for the second time. `subRow` is what says whether a submenu is up at all, because the
+    // child's `Shown` is the child's business -- and it is also the row that has to keep looking lit.
+    std::unique_ptr<Menu> sub;
+    int subRow = -1;
+    // **And the menu this one came from**, which is what a chain is: a row that is picked is a menu that is
+    // over, all of it, and the level that was picked does not know the levels above it without this. See
+    // `Dismiss`.
+    Menu *owner = nullptr;
+    // The delay between resting on a row and the menu under it opening: see `MenuDwell`, and
+    // `MoveHighlight`, which starts it.
+    Timer open;
     // Where the pointer was last seen, in the space the panel's `rect` is measured in, and whether it has
     // been seen at all: a move to the same place as the last one is not the pointer choosing anything.
     // See `MenuPanel::OnPointerMove`.
@@ -270,8 +410,34 @@ struct Menu : Popup {
             case VK_UP:     MoveHighlight(NextPickable(hot < 0 ? (int)rows.size() : hot, -1)); return true;
             case VK_HOME:   MoveHighlight(NextPickable(-1, 1)); return true;
             case VK_END:    MoveHighlight(NextPickable((int)rows.size(), -1)); return true;
-            case VK_RETURN: Pick(hot); return true;
-            case VK_ESCAPE: Close(); return true;
+            // **Right is "into the row" and left is "back out of it"**, which is what the two arrows mean
+            // inside a menu: a row that holds a submenu opens it, and one that does not has nothing to the
+            // right of it. The keys do not wait for the dwell -- that delay is for a hand that is on its way
+            // somewhere, and an arrow key is already a statement about where somebody wants to be.
+            case VK_RIGHT:
+                if (hot < 0 || hot >= (int)rows.size() || rows[hot].kind != Row::Kind::Sub) return false;
+                OpenSub(hot);
+                return true;
+            case VK_LEFT:
+                if (!SubShown()) return false;
+                CloseSub();
+                return true;
+            case VK_RETURN:
+                if (hot >= 0 && hot < (int)rows.size() && rows[hot].kind == Row::Kind::Sub) {
+                    OpenSub(hot);
+                    return true;
+                }
+                Pick(hot);
+                return true;
+            case VK_ESCAPE:
+                // One level at a time: the menu in front goes first, and the one it came from is still there
+                // for the next Esc. A menu with no submenu open closes itself, as it always did.
+                if (SubShown()) {
+                    CloseSub();
+                    return true;
+                }
+                Close();
+                return true;
             default:        return false;
             }
         case WM_KILLFOCUS:
@@ -295,7 +461,11 @@ struct Menu : Popup {
         if (!Shown()) return false;
         switch (m) {
         case WM_KEYDOWN:
-            return OnMessage(m, wp, lp);
+            // **The deepest menu answers the keys.** A menu with a submenu open is not the menu the keyboard
+            // is on: the arrows walk the rows of the one in front, Left steps back out of it and Esc closes
+            // it -- and a key the menu in front has no use for is not this one's either, which is why the
+            // answer is handed straight back rather than tried here as well.
+            return (sub && sub->Shown()) ? sub->TakeInput(m, wp, lp) : OnMessage(m, wp, lp);
         case WM_MOUSEMOVE:
         case WM_NCMOUSEMOVE:
         case WM_MOUSEWHEEL:
@@ -385,10 +555,28 @@ struct Menu : Popup {
     // **A menu does not wrap**, which is what Windows does and what keeps the ends of a menu readable:
     // nothing happens when there is nowhere left to go. The highlight is the only thing that changes, so
     // only the panel is repainted.
-    void MoveHighlight(int to) {
+    //
+    // **And the highlight is what a submenu follows.** Leaving the row that opened one closes it, and a hand
+    // coming to rest on a row that holds one opens it after the delay -- which is why what moved matters
+    // here: the arrows close a submenu and do not open one, because an arrow onto a container says "this row",
+    // not "whatever is under it". See `OpenSub` for the other way in.
+    void MoveHighlight(int to, bool byHover = false) {
         if (to < 0 || to == hot) return;
+        CloseSub();
         hot = to;
+        if (byHover && rows[to].kind == Row::Kind::Sub && rows[to].onSub && panel)
+            open.Start(this, MenuDwell(), [this] { OpenSub(hot); });
         if (panel) panel->Invalidate();
+    }
+
+    // **The whole chain goes, not the level that was picked.** A row that was picked is a menu that is over,
+    // and a child left standing over a page whose menu went away is a box nobody can put away; the level that
+    // was picked is usually the deepest one and knows nothing above it, so the root is what closes. See
+    // `owner`.
+    void Dismiss() {
+        Menu *root = this;
+        while (root->owner) root = root->owner;
+        root->Close();
     }
 
     // Pick a row: the menu goes first, and then the page's callback runs. **In that order**, so that a page
@@ -399,10 +587,16 @@ struct Menu : Popup {
         if (i < 0 || i >= (int)rows.size()) return;
         const Row &r = rows[i];
         if (!r.enabled || r.kind == Row::Kind::Separator) return;
+        // **A submenu's row is a way in rather than a choice**: picking it opens what it holds and leaves
+        // everything standing, this menu included -- it is the row's own menu that is now in front.
+        if (r.kind == Row::Kind::Sub) {
+            OpenSub(i);
+            return;
+        }
         std::function<void()> pick = r.onPick;
         std::function<void(bool)> check = r.onCheck;
         const bool was = r.checked;
-        Close();
+        Dismiss();
         if (pick) pick();
         else if (check) check(!was);
     }
@@ -477,10 +671,12 @@ struct Menus {
     }
     ~Menus() {
         // The hooks are the surface's and this object is the page's: see the destructor of `Tips` for what
-        // that ordering is worth.
+        // that ordering is worth. And the chain goes with it, without telling the page: a submenu left behind
+        // would be a window nothing owns, and `Close` here would run a page callback out of the page's own
+        // destruction.
         surface.onContextMenu = nullptr;
         surface.onInput = nullptr;
-        menu.Hide();
+        menu.Shut();
     }
     Menus(const Menus &) = delete;
     Menus &operator=(const Menus &) = delete;
@@ -511,6 +707,11 @@ private:
     Surface &surface;
     Menu menu;
 };
+
+// The submenu is owned, so the destructor has to be written where `Menu` is complete: see the note on its
+// declaration. Nothing else about the destruction of a chain needs saying -- the child's own destructor
+// takes the grandchild's window down with it, and a popup hides itself when it goes.
+inline Menu::~Menu() = default;
 
 // ---------------------------------------------------------------- the panel
 
@@ -593,9 +794,9 @@ inline void MenuPanel::OnPointerMove(float x, float y) {
     menu->moveY = y;
     if (same) return;
     const int i = menu->RowAt(x, y);
-    if (i == menu->hot) return;
-    menu->hot = i;
-    Invalidate();
+    // `byHover`: a hand resting on a row that holds a submenu opens it, after the delay a hand is given; an
+    // arrow onto the same row does not. See `Menu::MoveHighlight`.
+    menu->MoveHighlight(i, true);
 }
 
 inline void MenuPanel::OnPress(float x, float y) {

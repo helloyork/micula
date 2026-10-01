@@ -337,7 +337,7 @@ library can be: a minor version may break.
   function that fills it in, run every time it opens, so a disabled row, a tick and a list that changed are
   the page's state read at the moment it matters; a right-click opens it where the hand is, and so do the
   Menu key and Shift+F10 under the control the keyboard is on. Rows are commands, switches, separators and
-  the container a submenu will be; the arrows, Home/End, Enter and Esc are answered, a click on a row picks
+  rows that hold a menu of their own; the arrows, Home/End, Enter and Esc are answered, a click on a row picks
   it, and a click anywhere else closes the menu and stops there. **It takes neither the activation nor the
   focus** -- the caption of the window it hangs off stays lit -- which is what `Surface::onInput` is for:
   the input of that window, handed to the menu first while it is up.
@@ -358,6 +358,15 @@ library can be: a minor version may break.
   drawn -- `Minimal`, and the two styles that expand whenever they are open -- and the watchdog now asks what
   a tip is about as well as where the pointer is, so a pane that peeks open under a still hand stops standing
   in for the labels it has just drawn.
+- **A row of a menu can hold a menu of its own.** `Menu::Sub` takes the builder of the second menu, run every
+  time that menu opens, and the second is a `Menu` like the first in a `Popup` of its own -- placed beside the
+  row that holds it so that the two panels **overlap** rather than standing apart, by the same amount and the
+  same rule WinUI uses (`CascadingMenuHelper::OpenSubMenu`: the child's left edge 4 DIP inside the item's right
+  edge, its top on the item's top) -- and a level can be nested inside a level without limit. Three ways in
+  (resting on the row for as long as the platform's own menus wait, a click, the right arrow) and three ways
+  back out, one level at a time (the left arrow, Esc, leaving the row) -- and picking a row anywhere in the
+  chain puts the whole chain away, which is what `Menu::owner` is for: a level knows nothing about the levels
+  above it.
 ### Changed
 
 - **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and
