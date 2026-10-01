@@ -57,6 +57,7 @@
 
 #include "glyphs.h"
 #include "popup.h"
+#include "scroll_bar.h"
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +88,13 @@ struct MenuPanel : Widget {
 
     void Paint(const Painter &p) override;
     void OnPointerMove(float x, float y) override;
+    // **The wheel and the finger are the panel's**, because the panel is what has the pointer: the rows are
+    // not widgets, so there is nothing between the pointer and this. A menu is its own region, as the pane is
+    // -- a wheel over it is the menu's and the page behind it does not move for it.
+    bool OnWheel(float x, float y, float notches) override;
+    bool Pans() const override;
+    void PanMove(float dx, float dy) override;
+    void PanRelease(float vx, float vy) override;
     void OnPress(float x, float y) override;
     void OnRelease() override;
     // The rows are what this widget *is*, rather than widgets it has: see `Widget::Item`, which is the
@@ -144,6 +152,22 @@ struct Menu : Popup {
     // from the panel by `kPad` -- and the two surfaces read as one thing with a fold in it rather than as two
     // boxes with a gutter between them. Flipped, the same four on the other side.
     static constexpr float kSubOverlap = 4.0f;
+    // The bar is inset this far from the panel's own edge, and the scroll follows its target with this lag --
+    // the same numbers the navigation pane scrolls its rows by, because it is the same gesture and the same
+    // overlay bar: two controls in one library answering a wheel differently is a fault in the library.
+    static constexpr float kBarPad = 4.0f;
+    // How long a menu remembers that a hand rested on a row and something opened: a hand that has already rested
+    // once is reading the menu rather than passing over it, and the next submenu opens at once -- but only for as
+    // long as nothing else appears, which is what this window is. See `subbedAt`.
+    static constexpr float kGlide = 0.05f;
+    static constexpr DWORD kSubGrace = 500;
+    // **How much wider the panel is when there is a bar in it**: the bar's own width and the inset it keeps
+    // from the edge of the menu, less the padding the rows already leave along that edge. A menu that scrolls
+    // therefore *makes room* for its bar rather than drawing it over its own rows: the rows stay exactly as wide
+    // as their widest one asks for, and the bar gets a column of its own beside them -- which is what keeps a
+    // shortcut, a chevron and a long label from being covered by the thing that scrolls them. A menu whose rows
+    // fit has no bar and no gutter, so its width is its rows and nothing else.
+    static constexpr float kBarRoom = ScrollBar::kSize + kBarPad - kPad;
     // The room the window keeps around the panel for its shadow: the flyout's own falloff, which is what
     // a menu over a page wants -- see `Painter::Shadow` for why it is not a blur, and `Tip` for the
     // narrower one a tip carries. It is also how far a menu is kept inside the work area, so that a menu
@@ -158,6 +182,11 @@ struct Menu : Popup {
         activates = false;
         panel = new MenuPanel();
         panel->menu = this;
+        // **The bar is the panel's child**, so the tree paints it over the rows and offers it the pointer
+        // first -- the same arrangement the navigation pane uses. It is told where to scroll here; everything
+        // else it is told is set on every frame: see `PlaceBar`.
+        bar = new ScrollBar([this](float to, bool glide) { BarScrolled(to, glide); });
+        panel->Add(bar);
         Add(panel);
     }
     // Declared here and defined below the struct: a menu owns the submenu it has open, and a `unique_ptr`
@@ -231,9 +260,11 @@ struct Menu : Popup {
         Close();
         rows.clear();
         hot = armed = -1;
+        subbedAt = 0;
+        scrollTo = scrolled = 0.0f;
+        flingFor = 0.0f;
         if (build) build(*this);
         if (rows.empty()) return;
-        Measure();
 
         // DIPs of the monitor it is landing on, asked of the monitor rather than of this window -- a menu
         // opens where the pointer is, and the pointer can be on a screen other than the one the window it
@@ -249,6 +280,11 @@ struct Menu : Popup {
         const float left = (float)work.left / scale + kMargin, top = (float)work.top / scale + kMargin;
         const float right = (float)work.right / scale - kMargin;
         const float bottom = (float)work.bottom / scale - kMargin;
+        // **How tall it is allowed to be, which is what decides whether it scrolls at all**: the room between
+        // those two edges, before the rows are measured. A menu that fits is a menu with a bar that has nothing
+        // to do and no bar at all.
+        limit = bottom - top;
+        Measure();
 
         const float px = (float)a.at.x / scale, py = (float)a.at.y / scale;
         // **The corner goes at the point, and to the other side of it when the work area runs out** --
@@ -312,15 +348,26 @@ struct Menu : Popup {
     // space is and how it travels through the window: a box this computed by hand from the two windows'
     // rectangles would be a second copy of that arithmetic, in the part of this library that has been wrong
     // before.
-    void OpenSub(int i) {
+    void OpenSub(int i, bool sticky = false) {
         if (i < 0 || i >= (int)rows.size()) return;
         Row &r = rows[i];
         if (r.kind != Row::Kind::Sub || !r.onSub) return;
         // The delay is over whichever way this was called: a submenu opened by a resting hand is opened by
         // the timer that *was* the delay, and one opened by a click or an arrow arrives here first.
         open.Stop();
-        if (subRow == i && sub && sub->Shown()) return;
+        if (subRow == i && sub && sub->Shown()) {
+            // Already open, and the kind of trigger may still be changing hands: a click on a submenu a rest opened
+            // makes it strong, which is exactly what a click on it means. **Only upwards, though** -- a rest passing
+            // over a submenu a click opened is not the hand taking it back, and demoting it here would undo the
+            // click the moment the pointer moved onto the row it was made on. Which is also why a click can be the
+            // second thing said about a submenu: see `Pick`, where that is what the toggle is.
+            subSticky = subSticky || sticky;
+            return;
+        }
         CloseSub();
+        // **`sticky` is what a click asks for and a rest does not.** See `subSticky` -- and set after `CloseSub`,
+        // which is the one place that clears it.
+        subSticky = sticky;
         if (!app) return;   // a menu nothing pumps is a window that never draws: see `Menus::Open`
         if (!panel) return;
         if (!sub) sub = std::make_unique<Menu>();
@@ -331,7 +378,7 @@ struct Menu : Popup {
         // `RowAt` before, and it is written out rather than folded into `ScreenBox` so that the space
         // `ScreenBox` wants stays the same one everything else uses.
         const D2D1_RECT_F rowBox = { panel->rect.left + kPad, panel->rect.top + r.top,
-                                     panel->rect.left + panelW - kPad, panel->rect.top + r.top + r.h };
+                                     panel->rect.left + RowRight(), panel->rect.top + r.top + r.h };
         const RECT box = ScreenBox(panel, rowBox);
         // **The row's own box is what a submenu hangs off**, and the child's left edge lands `kSubOverlap`
         // inside its right edge -- the same arithmetic WinUI's `CascadingMenuHelper::OpenSubMenu` does, written
@@ -358,8 +405,16 @@ struct Menu : Popup {
         open.Stop();
         if (sub && sub->Shown()) sub->Close();
         subRow = -1;
+        subSticky = false;
     }
     bool SubShown() const { return subRow >= 0 && sub && sub->Shown(); }
+    // **A submenu opened by a click is a choice that was made, not a row that was passed over**, and it stays open
+    // when the highlight leaves the row: the hand that clicked it has to travel to it, and the way there crosses
+    // the rows of this menu in between -- right and up, in the case that started this. A submenu a *rest* opened is
+    // the other thing: it is what the hand is over rather than what it chose, and it goes when the hand does.
+    // Clicking the row of the open one again puts it away rather than opening it again, and clicking a different
+    // row that holds one switches to that one on the same terms. See `MoveHighlight` and `Pick`.
+    bool subSticky = false;
 
     // Told when the menu has closed itself. This is where a page puts the focus back, and where a trigger
     // learns that the menu it opened is gone.
@@ -374,10 +429,33 @@ struct Menu : Popup {
     // child's `Shown` is the child's business -- and it is also the row that has to keep looking lit.
     std::unique_ptr<Menu> sub;
     int subRow = -1;
+    // **When a submenu last appeared here because a hand rested on a row.** That is the whole of how long the next
+    // one waits for: the first waits out the platform's dwell time, because until then nobody knows whether the
+    // hand is reading the menu or passing over it -- and once it has waited once, the next opens at once. Until
+    // half a second goes by with nothing opening, at which point the hand may have gone back to browsing and the
+    // wait is owed again: which is what the shell's own menus do, and the cost of being wrong about it is only a
+    // menu that waited when it did not have to.
+    DWORD subbedAt = 0;
     // **And the menu this one came from**, which is what a chain is: a row that is picked is a menu that is
     // over, all of it, and the level that was picked does not know the levels above it without this. See
     // `Dismiss`.
     Menu *owner = nullptr;
+
+    // --- the scroll ---------------------------------------------------------------------------------
+    // **`Row::top` is where the row is *drawn*, with the scroll already folded into it**, which is exactly how
+    // the pane's rows are built. That is what lets the paint, the hit test, what a screen reader is told and the
+    // box a submenu hangs off all agree about where a row is, without any of them knowing that a scroll exists.
+    float scrollTo = 0.0f;    // where the wheel, the bar and the keyboard have asked to be
+    float scrolled = 0.0f;    // where it has got to, which trails `scrollTo` through a glide
+    float rowsH = 0.0f;       // how tall the rows are
+    float viewH = 0.0f;       // how much of them there is room for
+    // How tall the panel is allowed to be, in DIPs, from the work area it lands in: a menu with more rows than
+    // that scrolls rather than being cut off at the bottom of the screen. See `Measure`.
+    float limit = 0.0f;
+    // The bar, which is the panel's child: what it is told is the menu's own geometry.
+    ScrollBar *bar = nullptr;
+    // A throw on the rows, as the pane has one: see `PanRelease`, and the tick that walks it.
+    float flingFrom = 0.0f, flingBy = 0.0f, flingFor = 0.0f, flingSpent = 0.0f;
     // The delay between resting on a row and the menu under it opening: see `MenuDwell`, and
     // `MoveHighlight`, which starts it.
     Timer open;
@@ -387,6 +465,12 @@ struct Menu : Popup {
     bool moved = false;
     float moveX = 0.0f, moveY = 0.0f;
     float panelW = 0.0f, panelH = 0.0f;
+    // How much of the panel's width the bar has taken: none while the rows fit, a column of its own while they
+    // do not. `RowRight` is where the rows end either way, so the four places that have to know where a row
+    // stops -- the paint, the hit test, what a reader is told, and the box a submenu hangs off -- ask one thing
+    // rather than each working it out: the width is the panel's and the rows are the rows'.
+    float barRoom = 0.0f;
+    float RowRight() const { return panelW - kPad - barRoom; }
     // Whether the menu has an icon column at all -- one is needed by any row that has an icon, a tick or a
     // chevron. Reserved for the whole menu rather than sized per row, which is what keeps the words of a
     // menu in one column when only some of its rows have a glyph.
@@ -424,7 +508,7 @@ struct Menu : Popup {
                 return true;
             case VK_RETURN:
                 if (hot >= 0 && hot < (int)rows.size() && rows[hot].kind == Row::Kind::Sub) {
-                    OpenSub(hot);
+                    OpenSub(hot, true);
                     return true;
                 }
                 Pick(hot);
@@ -468,11 +552,20 @@ struct Menu : Popup {
             return (sub && sub->Shown()) ? sub->TakeInput(m, wp, lp) : OnMessage(m, wp, lp);
         case WM_MOUSEMOVE:
         case WM_NCMOUSEMOVE:
-        case WM_MOUSEWHEEL:
-            // Eaten so that nothing under the menu lights up or scrolls behind it: the pointer is over
-            // the menu, and a control waking up under its shadow is a control that is doing something
-            // nobody asked it to.
+            // Eaten so that nothing under the menu lights up behind it: the pointer is over the menu, and a
+            // control waking up under its shadow is a control that is doing something nobody asked it to.
             return true;
+        case WM_MOUSEWHEEL: {
+            // **A turn that lands here is the menu's too.** A wheel is sent to the window under the pointer,
+            // and a menu's own window is one -- but a menu never takes the front, so on a machine set not to
+            // scroll inactive windows the turn arrives at the window the menu hangs over instead. Eating that
+            // without moving anything was a menu that answered the wheel with nothing at all; the deepest level
+            // takes it, exactly as it takes the keys.
+            Menu *deep = this;
+            while (deep->sub && deep->sub->Shown()) deep = deep->sub.get();
+            deep->WheelBy((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
+            return true;
+        }
         case WM_LBUTTONDOWN:
         case WM_MBUTTONDOWN:
         case WM_RBUTTONDOWN:
@@ -535,7 +628,11 @@ struct Menu : Popup {
         const float left = panel ? panel->rect.left : 0.0f, top = panel ? panel->rect.top : 0.0f;
         x -= left;
         y -= top;
-        if (x < kPad || x >= panelW - kPad) return -1;
+        if (x < kPad || x >= RowRight()) return -1;
+        // A row the scroll has carried out of the view is not a row that is there to be pointed at: the paint
+        // clips them at exactly this line, and a hit test that did not would let a click land on a row under
+        // the padding at the top or the bottom of the menu.
+        if (y < kPad || y >= kPad + viewH) return -1;
         for (size_t i = 0; i < rows.size(); i++) {
             const Row &r = rows[i];
             if (r.kind == Row::Kind::Separator) continue;
@@ -562,11 +659,230 @@ struct Menu : Popup {
     // not "whatever is under it". See `OpenSub` for the other way in.
     void MoveHighlight(int to, bool byHover = false) {
         if (to < 0 || to == hot) return;
-        CloseSub();
+        // **Read before the submenu goes**: whether one was up is the whole of what decides how long the next
+        // one waits. See the dwell below.
+        const bool hadSub = SubShown();
+        // **A strong one is not closed by the highlight moving.** See `subSticky`: the hand travelling to a submenu
+        // it clicked crosses rows on the way, and a submenu that shut on the way is one nobody can reach with a
+        // mouse. What still closes one is leaving the row for *another* row that holds one -- which opens that one,
+        // and closes this one as it does (see `OpenSub`) -- or a click, Esc, or the left arrow.
+        if (!subSticky) CloseSub();
+        const int from = hot;
         hot = to;
-        if (byHover && rows[to].kind == Row::Kind::Sub && rows[to].onSub && panel)
-            open.Start(this, MenuDwell(), [this] { OpenSub(hot); });
+        // **An arrow key has no pointer behind it**, so the row it just landed on is the only thing that says
+        // where the keyboard is: it is scrolled into view, the least that puts it wholly there. The hand's move
+        // is followed differently -- a row arriving under the pointer when the menu was scrolled would be a row
+        // being chosen by nobody -- and a hand at the top of a long menu must still be able to reach the wheel.
+        // `from` is handed over because an arrow also says *which way* the menu is being read, and that is what
+        // decides the extra row the view keeps in front of it. See `EnsureVisible`.
+        EnsureVisible(to, byHover ? -1 : from);
+        if (byHover && rows[to].kind == Row::Kind::Sub && rows[to].onSub && panel && !subSticky) {
+            // **Nothing a hand passes over changes a submenu that was clicked.** While one is up on strong terms --
+            // see `subSticky` -- a hand resting on another row that holds one does nothing at all: switching to that
+            // one is a click on it, and the way out is a click on the row the strong one came from. Which is what
+            // "strong" is for, and why everything below is about a menu nobody has clicked.
+            //
+            // **The delay is for the first one, and it comes back after a pause.** Resting on a row for as long
+            // as the platform waits is a hand saying "this row"; once that has been said and a submenu is up, a
+            // hand moving to another row that holds one is reading the menu rather than passing over it, so the
+            // next opens **at once** -- with its own fade, which is the entrance and not the wait. Which is what
+            // the shell's cascading menus do, and waiting a second time for a hand that has already waited once
+            // is the one thing about a submenu that reads as a fault. **For half a second**, though: a hand that
+            // has been over ordinary rows for longer than that may be browsing again, and then the wait is owed.
+            const bool fresh = subbedAt != 0 && (DWORD)(GetTickCount() - subbedAt) < kSubGrace;
+            if (hadSub || fresh) {
+                subbedAt = GetTickCount();
+                OpenSub(to);
+            } else {
+                open.Start(this, MenuDwell(), [this] {
+                    // **A dwell is one shot, and it stops itself.** A `Timer` repeats until it is stopped, and the
+                    // row the hand is on when a repeat fires is not the row that started it: a dwell that is not
+                    // stopped opens whatever the hand happens to be over, with no wait at all. `OpenSub` stops it on
+                    // every way in that reaches it -- this is the way that does not: a row that holds nothing, or one
+                    // the hand had already left by the time it fired.
+                    open.Stop();
+                    subbedAt = GetTickCount();
+                    OpenSub(hot);
+                });
+            }
+        }
         if (panel) panel->Invalidate();
+    }
+
+    // --- the scroll ---------------------------------------------------------------------------------
+    // How far the rows can be scrolled: their own height against the room there is for them, and no more
+    // than that, so that the end of a menu is a row wholly in view rather than half of one. The clamp is the
+    // whole of what keeps a row from being cut off at an end.
+    float ScrollMax() const { return (std::max)(0.0f, rowsH - viewH); }
+
+    // Whether there is anything to scroll: a menu whose rows fit is a menu with no bar and no room to move,
+    // and a wheel over it is a wheel over the page -- see `MenuPanel::OnWheel`.
+    bool Scrolls() const { return ScrollMax() > 0.0f; }
+
+    // **The position itself, and the one place it is set.** `glide` is whether the view is allowed to trail the
+    // target: a thumb under a hand, a finger on the rows and a throw in flight all move it at once, while the
+    // wheel and the keyboard ask for a place and let the view follow. Laid out again at once where the view
+    // moved, because every reader of where a row is reads `Row::top` -- see the note in `ScrollBy`, which is
+    // what this replaces.
+    void PlaceScroll(float to, bool glide) {
+        scrollTo = (std::min)((std::max)(to, 0.0f), ScrollMax());
+        if (!glide) {
+            scrolled = scrollTo;
+            Measure();
+        }
+        WakeBar();
+    }
+
+    // The wheel's way of asking, in notches rather than in DIPs: a wheel is a hand on the menu, so it **catches
+    // a throw** the same way a finger on the rows does. Notches arrive from two doors -- the menu's own window
+    // and the window it hangs over, see `TakeInput` -- and a notch is worth the same from either.
+    void WheelBy(float notches) {
+        if (!Scrolls()) return;
+        // **A notch is a line, and how many lines is the system's to say** -- three unless somebody has said
+        // otherwise. A page at a time is the system's other answer, and it is answered here as a screenful of
+        // rows, which is the view rather than any particular number of lines.
+        int lines = 3;
+        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+        if (lines == WHEEL_PAGESCROLL) lines = (int)(viewH / kRowH);
+        if (lines < 1) lines = 1;
+        ScrollBy(-notches * (float)lines * kRowH);
+    }
+
+    void ScrollBy(float d) {
+        flingFor = 0.0f;
+        PlaceScroll(scrollTo + d, true);
+    }
+
+    // **The bar's own request, and the only one that can come with no glide**: a thumb being dragged has to
+    // stay under the hand, and the rows with it, or the thumb leads the rows and the two are never the same
+    // gesture. A thumb is a hand on the menu like any other, so a drag also catches a throw -- which is the
+    // whole of why this is a wrapper over `PlaceScroll` rather than the same thing: the throw's own step comes
+    // in through `PlaceScroll` directly, and a step that cancelled the throw would end it on its first frame.
+    void BarScrolled(float to, bool glide) {
+        if (!glide) flingFor = 0.0f;
+        PlaceScroll(to, glide);
+    }
+
+    // **Scroll the least that puts a row wholly inside the view, and one more row with it on the side the
+    // highlight is walking towards.** That second row is the whole of what tells somebody reading a long menu
+    // with the keyboard that there is more of it that way: the choice is never the last row in sight, because
+    // the view has already moved on by one -- which is what the shell's own menus do, and what a menu scrolled
+    // to the edge of nothing does not. `from` is the row the highlight came from, or -1 when it did not walk
+    // anywhere: a hand coming to rest on a row is not a direction, and neither is a first press that picks a row
+    // out of nothing.
+    //
+    // The view follows the choice, and a choice nobody can see is a choice that was not made -- but no further
+    // than that, so a menu somebody has scrolled where they want it is left where they put it while the rows
+    // being asked about are in view. The clamp at the ends comes last, so the end of a menu is a row wholly in
+    // view rather than half of one.
+    void EnsureVisible(int i, int from = -1) {
+        if (i < 0 || i >= (int)rows.size()) return;
+        const Row &r = rows[i];
+        if (r.kind == Row::Kind::Separator) return;
+        // Where a row sits in the view with no scroll at all: `r.top` is already the place it is drawn, so its
+        // place with no scroll is that much further up.
+        auto at = [this](int k) { return rows[k].top - kPad + scrolled; };
+        const float top = at(i), bottom = top + r.h;
+        // The row one beyond, on the side it is walking towards. There is none at an end of the menu, and then
+        // the row itself is the whole of what has to be in view: the last row of a menu is not a fault.
+        const int step = from < 0 || from == i ? 0 : (i > from ? 1 : -1);
+        const int cand = i + step;
+        const int beyond = step != 0 && cand >= 0 && cand < (int)rows.size() ? cand : -1;
+        const float was = scrollTo;
+        // **The margin first.** If the two cannot both be in view -- a menu whose view is barely a row tall --
+        // the row being decided about is the one that has to be, so it is the one clamped last.
+        if (beyond >= 0) {
+            if (step > 0) {
+                const float want = at(beyond) + rows[beyond].h - viewH;
+                if (want > scrollTo) scrollTo = want;
+            } else {
+                const float want = at(beyond);
+                if (want < scrollTo) scrollTo = want;
+            }
+        }
+        if (top - scrollTo < 0.0f) {
+            scrollTo = top;
+        } else if (bottom - scrollTo > viewH) {
+            scrollTo = bottom - viewH;
+        }
+        scrollTo = (std::min)((std::max)(scrollTo, 0.0f), ScrollMax());
+        // Only when it actually moved: a repaint and a bar waking up for every arrow key pressed on a row
+        // that was already in view is work nobody asked for. An arrow key is a hand on the menu, so moving the
+        // view for it also catches a throw -- and a hand at rest, whose move lands where the view already is,
+        // is nothing at all and leaves one running.
+        if (scrollTo != was) {
+            flingFor = 0.0f;
+            WakeBar();
+        }
+    }
+
+    void WakeBar() {
+        if (bar) bar->Wake();
+    }
+
+    // What the bar is told, and everything it needs to draw itself: the box it is drawn in, the range it is
+    // showing, and how wide the thing it is showing is. In the panel's own space, which is where the panel's
+    // `rect` is measured -- the bar is the panel's child, so that is the space its own hooks are handed.
+    // **The bar is inset from the panel's edge and not from the rows'**, so it sits in the padding of the
+    // menu as the pane's sits in the rail's, and it is drawn over the rows as an overlay rather than beside
+    // them, which is what keeps a menu's width a thing the rows decide.
+    void PlaceBar() {
+        if (!bar || !panel) return;
+        // **In this panel's own space, which is the space a child widget's rectangle is written in.** A box is
+        // measured from where its parent's rectangle begins -- see `Surface::OriginOf`, which walks the parents
+        // -- so the panel's own origin is not part of it. Adding it put the bar a shadow's margin outside the
+        // menu: drawn past the panel's right edge, and, when it was reached for, in the band the menu answers
+        // `HTTRANSPARENT` to, so the click went to whatever was behind the menu. Which is exactly what it looked
+        // like -- a bar outside the box that could not be grabbed.
+        const float right = panelW - kBarPad;
+        bar->rect = { right - ScrollBar::kSize, kPad, right, (std::max)(kPad, panelH - kPad) };
+        bar->viewport = viewH;
+        bar->extent = rowsH;
+        bar->value = scrollTo;
+        bar->drawn = scrolled;
+        bar->alpha = 1.0f;
+        bar->visible = Scrolls();
+        // Where the bar is *taken* to be: the widget itself, at `rect`. The drag of a pan is worked out by
+        // the window from where the press was, so a bar placed nowhere is a bar nothing can grab.
+        bar->Widget::drawn = bar->rect;
+        bar->placed = true;
+        bar->Poll();
+    }
+
+    // **The scroll's own clock**, and the only thing that moves the rows under the hand: the wheel, the bar
+    // and the keyboard all set a target, and this is what makes the movement one rather than a jump. The rows
+    // are measured again on every frame it moved, because a row's `top` *is* where it is drawn -- see
+    // `Measure`.
+    void OnTick(float dt) override {
+        Popup::OnTick(dt);
+        if (!Scrolls()) {
+            scrollTo = scrolled = 0.0f;
+            flingFor = 0.0f;
+        } else {
+            scrollTo = (std::min)((std::max)(scrollTo, 0.0f), ScrollMax());
+            if (flingFor > 0.0f) {
+                flingSpent += dt;
+                const float t = flingSpent / flingFor;
+                float at = flingFrom + flingBy * fling::Position(t);
+                // A throw that runs out of menu is a throw that ends there: it does not bounce, and it does
+                // not carry on against the clamp until its time is up.
+                if (t >= 1.0f || at < 0.0f || at > ScrollMax()) {
+                    at = (std::min)((std::max)(at, 0.0f), ScrollMax());
+                    flingFor = 0.0f;
+                }
+                PlaceScroll(at, false);
+            } else if (scrolled != scrollTo) {
+                motion::Follow(scrolled, scrollTo, dt, kGlide, 0.5f);
+            }
+        }
+        Measure();
+        PlaceBar();
+    }
+
+    bool Animating() const override {
+        // A glide is something to animate through whether or not the menu itself still is: a menu that has
+        // arrived and is being scrolled is a menu that is still moving.
+        return Popup::Animating() || scrolled != scrollTo || flingFor > 0.0f;
     }
 
     // **The whole chain goes, not the level that was picked.** A row that was picked is a menu that is over,
@@ -590,7 +906,17 @@ struct Menu : Popup {
         // **A submenu's row is a way in rather than a choice**: picking it opens what it holds and leaves
         // everything standing, this menu included -- it is the row's own menu that is now in front.
         if (r.kind == Row::Kind::Sub) {
-            OpenSub(i);
+            // **A click on a row that holds a menu is a way in and a way out.** The second click says the same
+            // thing the first one named, and what a hand says twice at the same place is "never mind" -- so it puts
+            // the submenu away rather than opening it again. Any other row that holds one opens *that* one, on the
+            // same strong terms, so switching from one to the next keeps the hand able to travel to whichever it
+            // ended on. See `subSticky`.
+            // **Only a submenu a click opened is put away by a click on that row.** One a *rest* opened is a
+            // submenu the hand is already over -- the pointer resting on a row is what opened it, so the click is
+            // the first thing said about it rather than the second -- and that one opens on the strong terms
+            // instead. `OpenSub` updates the kind, so both answers leave the hand able to travel to it.
+            if (subRow == i && SubShown() && subSticky) CloseSub();
+            else OpenSub(i, true);
             return;
         }
         std::function<void()> pick = r.onPick;
@@ -628,13 +954,28 @@ private:
             if (!r.shortcut.empty()) need += kShortcutGap + f.Measure(f.caption, r.shortcut);
             if (need > w) w = need;
         }
-        float y = kPad;
+        float y = 0.0f;
         for (Row &r : rows) {
-            r.top = y;
+            r.top = kPad + y - scrolled;
             y += r.h;
         }
-        panelW = std::ceil(w);
-        panelH = y + kPad;
+        rowsH = y;
+        // **The height is worked out before the width, because whether there is a bar at all is a question
+        // about the height and the bar's column is part of the width.** A menu with more rows than the room it
+        // was given scrolls inside that room -- see `limit`, which is what `OpenAt` worked out from the work
+        // area -- and a menu that scrolls is that much wider for the bar it now has.
+        panelH = rowsH + kPad * 2.0f;
+        if (limit > 0.0f && panelH > limit) panelH = limit;
+        viewH = (std::max)(0.0f, panelH - kPad * 2.0f);
+        barRoom = Scrolls() ? kBarRoom : 0.0f;
+        panelW = std::ceil(w) + barRoom;
+        // And the places again with the width settled, so that a row's own box is measured against where the
+        // rows end rather than against the panel's edge.
+        y = 0.0f;
+        for (Row &r : rows) {
+            r.top = kPad + y - scrolled;
+            y += r.h;
+        }
     }
 
     // The row under the cursor, asked when the menu opens, because the menu opens at the hand and the hand
@@ -728,10 +1069,18 @@ inline void MenuPanel::Paint(const Painter &p) {
     p.FillRound(box, Menu::kRadius, p.pal->flyoutBg);
     p.StrokeRound(box, Menu::kRadius, p.pal->flyoutStroke);
 
+    // **The rows are clipped to the view they have.** A menu with more rows than room is a menu that scrolls,
+    // and the row above the first one and the one below the last are cut at the panel's own edge rather than
+    // drawn over the padding. The shadow, the fill and the stroke are outside the clip: those are the panel
+    // itself, and the shadow is drawn outside its own rectangle as well. A rectangular clip is all it takes --
+    // the rows are inset from the panel by the padding, so no row's corner is near the rounded one.
+    p.rt->PushAxisAlignedClip(
+        { box.left, box.top + Menu::kPad, box.right, box.top + Menu::kPad + menu->viewH },
+        D2D1_ANTIALIAS_MODE_ALIASED);
     for (size_t i = 0; i < menu->rows.size(); i++) {
         const Menu::Row &r = menu->rows[i];
         // The rows are placed from the panel: `Row::top` is measured from the panel's own top edge.
-        const D2D1_RECT_F row = { box.left + Menu::kPad, box.top + r.top, box.right - Menu::kPad,
+        const D2D1_RECT_F row = { box.left + Menu::kPad, box.top + r.top, box.left + menu->RowRight(),
                                   box.top + r.top + r.h };
         if (r.kind == Menu::Row::Kind::Separator) {
             // The line is inset from the rows rather than drawn edge to edge: it divides the *rows*, and a
@@ -779,6 +1128,41 @@ inline void MenuPanel::Paint(const Painter &p) {
         // this loop and nothing else.
         p.Text(r.text, { left, row.top, right, row.bottom }, p.font->body, fg);
     }
+    p.rt->PopAxisAlignedClip();
+}
+
+inline bool MenuPanel::OnWheel(float /*x*/, float /*y*/, float notches) {
+    if (!menu) return true;
+    // **Taken whatever happens, as the pane and the drop-down's list take it**: a menu is its own region and
+    // the page behind it is not what is under the pointer. Where there is nothing to scroll the turn is taken
+    // and nothing is done with it.
+    menu->WheelBy(notches);
+    return true;
+}
+
+// **A menu is its own scroller**, as the pane is: its rows are not children, so a drag over them has nothing
+// above it to be handed to. What a finger gets that the wheel does not is the rule the thumb already follows --
+// it stays under the hand rather than gliding after it, which is what `BarScrolled(..., false)` is for.
+inline bool MenuPanel::Pans() const { return menu && menu->Scrolls(); }
+
+inline void MenuPanel::PanMove(float /*dx*/, float dy) {
+    if (!menu) return;
+    menu->flingFor = 0.0f;  // caught again: whatever it was coasting on is not this hand's
+    menu->PlaceScroll(menu->scrolled - dy, false);
+}
+
+inline void MenuPanel::PanRelease(float /*vx*/, float vy) {
+    if (!menu) return;
+    // **The hand moving down walks the rows back up**, so the two are each other's negative -- and a throw is
+    // what the hand had, not what the menu gets. Under the slowest speed a nudge is not a throw; over the
+    // fastest it is not a thumb. See `fling`, which the pane sends its rows with too.
+    const float speed = -vy;
+    if (std::fabs(speed) < fling::kSlowest) return;
+    const float honest = (std::min)((std::max)(std::fabs(speed), fling::kSlowest), fling::kFastest);
+    menu->flingFrom = menu->scrolled;
+    menu->flingBy = std::copysign(fling::Distance(honest), speed);
+    menu->flingFor = fling::Duration(honest);
+    menu->flingSpent = 0.0f;
 }
 
 inline void MenuPanel::OnPointerMove(float x, float y) {
@@ -793,6 +1177,9 @@ inline void MenuPanel::OnPointerMove(float x, float y) {
     menu->moveX = x;
     menu->moveY = y;
     if (same) return;
+    // A hand over the rows is what shows the bar: it is an overlay, so it has nothing of its own to be seen
+    // against until somebody moves over the thing it scrolls. See `ScrollBar::Wake`.
+    menu->WakeBar();
     const int i = menu->RowAt(x, y);
     // `byHover`: a hand resting on a row that holds a submenu opens it, after the delay a hand is given; an
     // arrow onto the same row does not. See `Menu::MoveHighlight`.
@@ -825,11 +1212,12 @@ inline bool MenuPanel::AccessibleItem(int i, Item &out) const {
     // written in and what the element adds the accumulated origin of the widget's ancestors to. The panel's
     // own origin is part of that, so it is here -- a row reported a margin up the menu is a highlight on the
     // wrong row for anybody reading the screen rather than looking at it.
-    out.box = { rect.left + Menu::kPad, rect.top + r.top, rect.left + menu->panelW - Menu::kPad,
+    out.box = { rect.left + Menu::kPad, rect.top + r.top, rect.left + menu->RowRight(),
                 rect.top + r.top + r.h };
-    // A menu is on screen when it is up, and every row of it is: a menu is as tall as its rows, so there is
-    // no row the scroll could have carried out of it.
-    out.onscreen = true;
+    // A menu is on screen when it is up, and so is every row of it that the scroll has left inside the view:
+    // a row carried out of it is not on screen, and a reader told otherwise would read out rows that are not
+    // in the box. See the clip in `Paint`, which is the same line.
+    out.onscreen = r.top >= Menu::kPad - 0.5f && r.top + r.h <= Menu::kPad + menu->viewH + 0.5f;
     return true;
 }
 
