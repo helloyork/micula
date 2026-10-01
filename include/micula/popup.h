@@ -203,6 +203,9 @@ inline bool Popup::Show(int x, int y, int dipW, int dipH, UINT dpiOf) {
     // what it looks like. See `dpiapi::ForPoint`.
     DWORD ex = WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP | extraStyle;
     if (!activates) ex |= WS_EX_NOACTIVATE;
+    // **A popup is never a thing in its own right.** It is over a window rather than beside one, it outlives
+    // nothing, and closing it is never the program being closed -- see `Surface::popup_surface`.
+    popup_surface = true;
     dpi = dpiOf ? dpiOf : dpiapi::ForPoint({ x, y });
     hwnd = CreateWindowExW(ex, ClassName(), L"", WS_POPUP,
                            MulDiv(x, (int)dpi, 96), MulDiv(y, (int)dpi, 96),

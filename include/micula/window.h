@@ -1104,6 +1104,33 @@ struct Surface {
     // was taken; false -- for a paint, a size, the activation -- leaves it to the window, which may still be
     // told about it either way. See `Menu::TakeInput` in menu.h.
     std::function<bool(UINT m, WPARAM wp, LPARAM lp)> onInput;
+    // **Two tags that decide when the program is over**, which is Qt's `WA_QuitOnClose` split into the two questions
+    // it really is.
+    //
+    // `popup_surface` says this is a thing *over* something rather than a thing in its own right -- a menu, a tip.
+    // `Popup` sets it, and a popup never ends an app by going away, however it is closed.
+    //
+    // `main_window` says this is *the* window of the program, and closing it is the program being closed. A
+    // program may open functional windows beside it -- a log, a picker, a preview -- and none of those should take
+    // the program with them when they go, so **only the first window to join the loop is the main one**, and a
+    // later window is beside it unless it says otherwise.
+    //
+    // A program with no main window at all -- `set_main_window(false)` on the first one -- is over when the last
+    // surface that is not a popup goes. All three are public, because the page that opens the windows is the only
+    // side that knows which of them somebody would call "the program".
+    bool popup_surface = false;
+    bool main_window = false;
+    // **Whether the page has said which of the two this window is.** A window that has said nothing becomes the
+    // program's if it is the first to join the loop -- and one that has said `false` is *not* the main window
+    // however early it was added, which is how a program with no main window says so. Without this the first
+    // window added would be claimed as the main one whatever the page had just said about it.
+    bool main_set = false;
+    // Say that this window is the program's, or that it is not it. See `main_window`.
+    void set_main_window(bool on) {
+        main_window = on;
+        main_set = true;
+    }
+    bool is_main_window() const { return main_window; }
     // The pointer moved: the widget under it hears about it, and so does any widget whose watched region
     // outside itself contains it (see Widget::ExternalRegion). Returns true when something under the
     // pointer wants a repaint per move.
@@ -2435,6 +2462,41 @@ inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         ClientToScreen(h, &at);
         return ContextMenu(HitTest(mx, my), at);
     }
+    // ---- the wheel, which a window and a popup both arrive here for -------------------------------------
+    case WM_MOUSEWHEEL: {
+        // **The wheel, in the one place a window and a popup both pass through.** It used to live only in the
+        // window's own handler -- and a menu is a `Popup`, whose window never goes through that one, so a wheel
+        // over an open menu did nothing at all while the same wheel over the window behind it scrolled the menu
+        // through `Menus`' own hook. Which is not what a hand hovering a menu is doing. Arrives in *screen*
+        // pixels, unlike every other mouse message -- the scale is the one worked out above.
+        POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        ScreenToClient(h, &pt);
+        const float x = pt.x / s, y = pt.y / s;
+        const float notches = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        // The widget under the pointer first, and then each of the things it is inside of, in its own space: the
+        // innermost thing that wants the notch takes it, and a control that has no use for one is not in the way
+        // of the thing around it. See `Widget::OnWheel`.
+        for (Widget *w = HitTest(x, y); w; w = w->parent) {
+            const D2D1_POINT_2F at = LocalPoint(w, x, y);
+            if (w->OnWheel(at.x, at.y, notches)) {
+                Invalidate();
+                return true;
+            }
+        }
+        // Then the layer on top, which is offered the notch whether or not the pointer was over it: a flyout that
+        // is up is what a wheel over it is for, and the page under it is not the thing being turned.
+        if (Layer *top = TopLayer()) {
+            const D2D1_POINT_2F at = LocalPoint(top, x, y);
+            if (top->OnWheel(at.x, at.y, notches)) {
+                Invalidate();
+                return true;
+            }
+        }
+        // **Nothing here took it, and this door has no page to offer it to.** A `Window`'s own handler has already
+        // dealt with its own wheel by the time this runs -- it has a page, and hands it the notch in client pixels
+        // -- so what arrives down here is a popup's, and a popup has nobody to pass it up to. Windows gets it back.
+        return false;
+    }
     // ---- a finger, and a pen ----------------------------------------------------------------------
     //
     // The coordinates are the pointer's own: screen pixels, physical, which is a different space from
@@ -3201,6 +3263,13 @@ inline App::~App() {
 inline void App::Add(Surface &w) {
     if (w.app == this) return;
     w.app = this;
+    // **The first window to join is the program's main one**, and every window after it is a window beside it:
+    // closing one of those does not end the program, which is what a page with a log window or a picker open beside
+    // its main window wants. A `Popup` is never the main window, so a menu that happened to be opened first does
+    // not become one. See `Surface::main_window`.
+    bool anyMain = false;
+    for (const Surface *s : surfaces) anyMain = anyMain || s->main_window;
+    if (!anyMain && !w.popup_surface && !w.main_set) w.main_window = true;
     surfaces.push_back(&w);
     // A surface that joins a loop that is already running needs everything App::Run sets up for the
     // ones that were there when it started, and it is not the clock that is the subtle half: the
@@ -3218,7 +3287,18 @@ inline void App::Remove(Surface &w) {
         break;
     }
     w.app = nullptr;
-    if (running && surfaces.empty()) PostQuitMessage(0);
+    // **An app ends when the program's own window goes** -- or, if it never had one, when the last surface that is
+    // not a popup goes. Not when the list is empty: a menu and a tip are `Popup`s, and one that has ever been shown
+    // stays in this loop for as long as the page does, so an app that waited for an empty list waited forever after
+    // the first menu anybody opened -- the window closes, the screen is empty, and the process runs on with nothing
+    // to do. See `Surface::main_window`.
+    const bool wasMain = w.main_window;
+    bool anyMain = false, anyWindow = false;
+    for (const Surface *s : surfaces) {
+        anyMain = anyMain || s->main_window;
+        anyWindow = anyWindow || !s->popup_surface;
+    }
+    if (running && (wasMain || (!anyMain && !anyWindow))) PostQuitMessage(0);
 }
 
 inline void App::Quit(int code) {
