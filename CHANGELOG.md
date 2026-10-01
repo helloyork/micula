@@ -367,6 +367,29 @@ library can be: a minor version may break.
   back out, one level at a time (the left arrow, Esc, leaving the row) -- and picking a row anywhere in the
   chain puts the whole chain away, which is what `Menu::owner` is for: a level knows nothing about the levels
   above it.
+- **A menu with more rows than room scrolls, inside the room it has.** It is measured against the work area it
+  lands in, less the margin its shadow needs, and a menu that does not fit is that tall and no taller, so a
+  menu longer than the screen is not a menu cut off at the bottom of it: the wheel (`SPI_GETWHEELSCROLLLINES`
+  lines to a notch, as everywhere else), a finger dragging the rows, which follow the hand rather than gliding
+  after it, and the arrow keys, all reach the rest of it. A finger lifted at speed **throws** the rows -- a
+  careful hand does not have to lift to be precise, so a release at speed is a hand asking for distance, a slow
+  one leaves the rows where they are, and a hand or a wheel put back on them catches a throw in flight. The
+  arrows scroll the row they arrive on into view *and the row past it on the side they are walking towards*, so
+  the choice is never the last row in sight and a long menu says which way there is more of it, while a hand
+  coming to rest on a row is not a direction and drags the view nowhere. The scroll is clamped at the ends and
+  nowhere else, so the end of a menu is a row wholly in view rather than half of one, and it glides through the
+  frame loop rather than jumping -- `Menu::Animating` counts a glide, so a menu that has arrived and is being
+  scrolled is still animating. The bar is the pane's own `ScrollBar`, drawn over the rows in the panel's padding
+  4 DIP in from the edge of the menu, and a menu whose rows fit has none at all. The rows are clipped to the
+  view they have, which is the one line that keeps a half-scrolled row off the padding above and below it.
+- **A submenu a click opened stays open until it is put away.** Resting on a row opens one on the shell's terms and
+  leaves it when the hand leaves; a *click* is an explicit choice, and the hand that made it has to travel to what
+  it opened -- crossing the rows of the menu in between -- so a clicked submenu is not closed by the highlight
+  moving, and while one is up a hand passing over another row that holds one does nothing at all: switching is a
+  click on that row, and the way out is a click on the row the open one came from. Which is what a second click on
+  it is -- it puts the submenu away rather than opening it again -- and a click on a *rested* submenu is what makes
+  it strong. The menu's strong state is only ever promoted by a click, never demoted by a rest.
+
 ### Changed
 
 - **A surface is the common part of anything that draws.** `Window` is one and `Popup` is another, and
@@ -484,6 +507,20 @@ library can be: a minor version may break.
   in `RowAt` so that no caller can hand it the wrong one, and the rows a screen reader is offered are
   reported in it too -- an element's items are written in the space the widget's `rect` is in, so the
   panel's own origin is part of them, and every row used to be reported a margin up the menu.
+
+- **A wheel over a menu's own window scrolls that menu.** `WM_MOUSEWHEEL` was handled only in a window's own
+  message handling -- and a menu is a `Popup`, whose window never goes through that one, so a wheel over an open
+  menu did nothing at all while the same wheel over the window behind it scrolled the menu through `Menus`' own
+  hook. It is handled where both kinds of surface pass through now (`Surface::HandMessage`, which is also where a
+  click is answered), so a popup gets a wheel as a window does; only the window has a page to hand an unclaimed
+  notch on to.
+- **A program ends when its main window is closed, and not before.** The app's loop ended when its list of
+  surfaces was empty -- and a menu or a tip is a surface in that list which stays in it for as long as the page
+  does, so a window closed after a menu had ever been opened never ended the program at all: the window goes, the
+  screen is empty, and the process runs on with nothing to do. `Surface::main_window` is the first window to join
+  the loop, unless the page says otherwise with `set_main_window`; a `Popup` is never it, a program with no main
+  window ends with the last of its windows, and a dwell that has opened a submenu now stops itself rather than
+  opening whatever a later repeat finds under the hand.
 
 ## [0.8.1] - 2026-09-29
 

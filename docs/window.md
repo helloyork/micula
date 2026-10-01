@@ -55,6 +55,16 @@ uses, for a page that wants to ask it of itself.
 
 ## The app
 
+**A program is over when its main window is closed.** The first window to join the app's loop is the main one,
+and a window opened beside it -- a log, a picker, a preview -- does not take the program with it when it goes.
+Which window is the program's is the page's to say: `set_main_window(false)` on the first one means the program
+has no main window and ends when the last of its windows has gone, and `set_main_window(true)` on a later one
+hands that part to it. A `Popup` -- a menu, a tip -- is never a thing in its own right: it is over a window
+rather than beside one, it can never end the program by closing, and one that has ever been shown stays in the
+loop for as long as the page does. Which is why what ends a program is a *window* going and not the list of
+surfaces emptying -- a program that waited for an empty list waited forever after the first menu anybody
+opened, with its window gone and its screen empty and the process running on with nothing to do.
+
 `Surface::Run()` runs that one surface -- a window, usually. A program with more than one surface, which
 is what a menu or a tip is, makes an `App` and gives it the surfaces:
 
@@ -267,9 +277,30 @@ which is where WinUI aligns it too ("align top of owner with top of presenter").
 menu it came from when the work area has no room to the right of it, the same four the other side. Three ways
 in -- resting on the row for as long as the platform's own menus wait (`SPI_GETMENUSHOWDELAY`), a click on it,
 or the right arrow on it -- and three ways back out, one level at a time: the left arrow, Esc, or a hand moving
-onto another row of the menu it came from. A submenu is a `Menu` like its parent, in a `Popup` of its own,
+onto another row of the menu it came from. **A click is a stronger way in than a rest**: what it opens stays open
+while the hand travels to it -- across the rows of this menu in between, which is right and up for a submenu that
+opened upwards -- until that row is clicked again, which puts it away rather than opening it a second time, or
+another row that holds one is clicked, which switches to that one on the same terms. A submenu is a `Menu` like its parent, in a `Popup` of its own,
 which is what lets one be nested inside another without limit and what gives each level the entrance every
 popup has.
+
+**A menu with more rows than room scrolls rather than being cut off at the bottom of the screen.** It is
+measured against the work area it lands in, less the margin its shadow needs -- the same room a tip keeps
+itself in -- and a menu that does not fit is that tall and no taller, with the rows past its view reachable
+the three ways anything scrolling is. The wheel, where `SPI_GETWHEELSCROLLLINES` decides what a notch is as it
+does everywhere else. A finger on the rows, which follow the hand rather than gliding after it -- and which are
+*thrown* when the hand is lifted fast, because a hand being careful does not have to lift to be precise, so a
+release at speed is a hand asking for distance: a slow one leaves the rows where they are, and a hand or a
+wheel put back on them catches a throw that is still in flight. And the arrow keys, which scroll the row they
+arrived on into view **and the row past it on the side they are walking towards** -- so the choice is never the
+last row in sight and a long menu says which way there is more of it, while a hand coming to rest on a row is
+not a direction and drags nothing along behind it. **Up and down are clamped at the ends and nowhere else**, so
+the end of a menu is a row wholly in view rather than half of one, and the scroll itself is a glide through the
+frame loop rather than a jump -- a menu that has arrived and is being scrolled is still animating, and says so.
+The bar is the pane's own `ScrollBar`, drawing over the rows in the panel's padding 4 DIP in from the edge of
+the menu and appearing when the pointer moves over the rows as well as when something scrolls them: a menu
+whose rows fit has no bar at all. The rows are clipped to the view they have, which is the one line that keeps
+a half-scrolled row from being drawn over the padding above or below it.
 
 | Member | Description |
 |---|---|
@@ -281,6 +312,7 @@ popup has.
 | `Row &Menu::Check(text, checked, onCheck, icon)` | A row that is a switch. `onCheck` is handed what the state *becomes*, so the page writes `hidden = on` and nothing in the menu owns the state it is showing. |
 | `Row &Menu::Sub(text, build)` | A row that holds another menu, drawn with the chevron that says there is more behind it. `build` fills that menu in every time it opens, and it may hold a `Sub` of its own. |
 | `Row &Menu::Separator()` | A line between rows -- 9 DIP of room and 1 of ink. |
+| `bool Menu::Scrolls()`, `float Menu::ScrollMax()` | Whether a menu has more rows than the room it landed in, and how far they can be scrolled. A menu that does not fit is capped to the work area less the room its shadow needs, the same room a tip keeps itself in, and scrolls inside that -- see below. |
 | `Menu::onClose` | Told when the menu has closed itself, which is where a page hears that it went. |
 
 ## Accessibility
