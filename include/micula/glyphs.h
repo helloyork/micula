@@ -61,6 +61,9 @@ constexpr const wchar_t *kClose      = L"\uE8BB";  // ChromeClose
 // puts beside it; this is the thin one, which is what a page's own button wants next to something
 // like Refresh. Both are in Segoe MDL2 Assets at the same code point.
 constexpr const wchar_t *kCancel     = L"\uE711";  // Cancel
+// The switch a session is turned off with, beside a Refresh. Fluent draws it as the power button,
+// which is what a button that ends a session is.
+constexpr const wchar_t *kPower      = L"\uE7E8";  // PowerButton
 constexpr const wchar_t *kPin        = L"\uE718";  // Pin
 constexpr const wchar_t *kLink       = L"\uE71B";  // Link
 constexpr const wchar_t *kShare      = L"\uE72D";  // Share
