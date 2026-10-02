@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-03
+
 ### Fixed
 
 - **A heading is drawn at the strong body size rather than the subtitle size.** `Heading` used
