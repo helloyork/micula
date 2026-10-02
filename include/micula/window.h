@@ -1286,13 +1286,11 @@ struct Surface {
     // Everything the surface animates on its own account: every control's pointer states, and a fling
     // the recognizer left behind. A window adds its caption buttons -- see `Window::Animating`.
     //
-    // A control the page has scrolled out of sight is not counted. Nothing it does can be seen,
-    // so nothing it does is a reason to run a frame -- and a page scrolled past a control that
-    // animates for ever, an indeterminate progress bar being the one that does, would otherwise
-    // keep the loop turning for as long as that page was open. It is the same test `pass` uses to
-    // skip *drawing* one, which is the whole point: what is not drawn is not animated either. The
-    // animation is not lost, only paused -- scrolling back brings it into the strip and this
-    // answers yes again, and the control lands where it was going.
+    // A widget a container has carried out of its window does not count, and the tree decides that as
+    // the walk goes down (`Widget::Seen`): a page scrolled past a control that animates for ever -- an
+    // indeterminate progress bar being the one that does -- is a page whose frames stop. The
+    // animation is not lost, only paused: scrolling back brings it into the window again and this
+    // answers yes, and it carries on from where it was rather than jumping.
     virtual bool Animating() const {
         // A fling keeps the loop turning on its own account: the recognizer has nothing left to say
         // until somebody asks it again, and the page is still moving until it does.
@@ -2979,6 +2977,16 @@ inline D2D1_RECT_F Widget::VisibleArea() const {
         out.bottom = (std::max)(out.top, (std::min)(out.bottom, in.bottom));
     }
     return out;
+}
+
+inline bool Widget::Seen() const {
+    // Nowhere to be unseen: a tree with no surface runs no frames at all, and a widget that is still
+    // being built would otherwise be quiet about its own animation.
+    if (!surface()) return true;
+    const D2D1_RECT_F seen = VisibleArea();
+    const D2D1_RECT_F box = placed ? drawn : rect;
+    return (std::max)(box.left, seen.left) < (std::min)(box.right, seen.right) &&
+           (std::max)(box.top, seen.top) < (std::min)(box.bottom, seen.bottom);
 }
 
 inline bool Widget::ShowFocusRing() const {

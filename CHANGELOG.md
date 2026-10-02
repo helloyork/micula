@@ -6,6 +6,16 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A page scrolled past a control that never stops animating runs no frames for it.** An indeterminate
+  progress bar animates wherever it is, and the tree counted it wherever it was -- so a page that had
+  carried one out of its view kept the window at a full frame rate while nothing in the picture changed.
+  `Widget::Animating` now asks `Widget::Seen`, which is the widget's own box cut by every container that
+  clips it -- the question `IsOffscreen` asks -- so a control nobody can see is not a reason to run a
+  frame. The animation is only paused: scrolling back brings it into the view again and it carries on
+  from where it was rather than jumping.
+
 ## [0.9.0] - 2026-10-02
 
 ### Added

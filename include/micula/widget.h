@@ -218,6 +218,12 @@ struct Widget {
     // How much room this widget really has: the page's box in its own space, and a container's clip
     // once containers clip. For a control deciding whether something it would show fits.
     D2D1_RECT_F VisibleArea() const;
+    // Whether any of this widget is inside everything that clips it -- which for a widget a container
+    // has carried out of its window is none of it. `VisibleArea` alone is the room the widget has, and
+    // that stays as large as the container however far the widget has gone, so it is the widget's own
+    // box that has to be compared with it. Asked by `Animating`: nothing that can be seen is animating
+    // anything, and a page scrolled past a bar that never stops is a page whose frames stop.
+    bool Seen() const;
     // Whether to draw the ring around `rect`. The window's decision and not the control's -- Windows
     // only shows one once the keyboard has been used -- and a control in no window shows none.
     bool ShowFocusRing() const;
@@ -281,7 +287,13 @@ struct Widget {
             return true;
         if (layout && layout->Gliding()) return true;
         for (const auto &c : children) {
-            if (c->visible && c->Animating()) return true;
+            // **A widget nothing can see is not animating anything**, and counting it would keep the
+            // frame loop running for a page nobody is looking at -- an indeterminate progress bar
+            // scrolled out of its view being the one that does it for ever. It costs nothing to be
+            // wrong the other way: scrolling back brings it in and this answers yes again, so the
+            // animation carries on from where it was rather than jumping. See `Seen`.
+            if (!c->visible || !c->Seen()) continue;
+            if (c->Animating()) return true;
         }
         return false;
     }

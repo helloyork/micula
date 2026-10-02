@@ -42,11 +42,11 @@ Esc and the title bar's close button post `WM_CLOSE`. To ask before closing, han
 Frames are run only while something asks for them, and only while the window is somewhere
 it can be seen. A hidden, minimised or cloaked window gets none at all -- an animation still
 going does not paint into a window nobody is looking at, and a minimised window is the
-worst of it, because every one of those frames is drawn and then thrown away. A control the
-page has scrolled out of `ClipRect()` does not ask for frames either: it is not drawn, so it
-is not animated. Neither case loses the animation -- the frame clock is picked up again when
-frames resume, so an ease carries on from where it was rather than jumping forward by
-however long the window was away.
+worst of it, because every one of those frames is drawn and then thrown away. A widget a
+container has carried out of its view does not ask for one either: what cannot be seen is not
+animated, so a page scrolled past an indeterminate bar is a page whose frames stop. Neither case
+loses the animation -- the frame clock is picked up again when frames resume, so an ease carries
+on from where it was rather than jumping forward by however long it was away.
 
 Occlusion is not part of that. Windows has no query for "another window is over this one",
 and the approximations of one are wrong for a partly covered window and for a layered one,
