@@ -6,6 +6,20 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`PageTitle`** (`text.h`). The page's own title line, in the window's title size, with the numbers
+  the examples have always used for one: a 44 DIP line and 8 DIP above it. A widget of its own rather
+  than a `Heading` at another size, because the two are the two ends of a page's hierarchy -- a title
+  is what everything on the page is under, a heading is what one group of it is under -- and each is
+  wrong for the other's job.
+
+### Fixed
+
+- **The examples now say which is which.** `nav` and `settings` opened every page with a `Heading`, so
+  the previous change shrank their page titles along with their headings; they open with a `PageTitle`
+  now and what is under it is still a `Heading`.
+
 ## [0.9.3] - 2026-10-03
 
 ### Fixed

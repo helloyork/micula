@@ -90,17 +90,49 @@ struct Heading : Widget {
     }
 
     void Paint(const Painter &p) override {
-        // The strong body format, not the subtitle: a heading groups what is under it and is not
-        // itself the point. The subtitle size is a headline -- which is what a page title is, and a
-        // page title is drawn by the page's own header, not by this. Twice the measured weight of the
-        // words it groups also reads as a heading of a *section*, which is one step up from what a
-        // heading inside a page is.
+        // The strong body format, not the subtitle: a heading names the group under it rather than
+        // being a line of its own, and at the subtitle size it outweighed the card titles it was
+        // grouping -- twice the measured weight of those words reads as the heading of a *page*,
+        // which is what `PageTitle` is.
         p.Text(text, { rect.left, rect.top + band, rect.right, rect.top + band + line },
                p.font->bodyStrong, p.pal->textPrimary);
     }
 
     // A heading is its own margin and a line of words: the pointer goes past it the same way it goes
     // past a label. See Label::Covers.
+    bool Covers(float, float) const override { return false; }
+
+    const wchar_t *AccessibleName() const override { return text.empty() ? nullptr : text.c_str(); }
+    int AccessibleType() const override { return UIA_TextControlTypeId; }
+};
+
+// The page's own title: the one line at the top of a page, in the window's title size.
+//
+// `Heading` groups what is under it; this is what everything on the page is under. They are two
+// widgets rather than one with a size on it because they are the two ends of a page's hierarchy and
+// each is wrong for the other's job: a page title is a 44 DIP line with 8 above it, a heading is 30
+// with 24 above it.
+//
+//     page->Add(new PageTitle(kPages[0].title));
+//     page->Add(new Card(...));                  // rows, gap 4 apart
+//     page->Add(new Heading(L"Advanced"));
+struct PageTitle : Widget {
+    std::wstring text;
+    float band = 8.0f;    // above the line, empty
+    float line = 44.0f;   // the line's own height
+
+    explicit PageTitle(std::wstring s) : text(std::move(s)) {}
+
+    micula::Want Measure(const Room &) const override {
+        return micula::Want(Axis::Fill(), Axis::Content(band + line));
+    }
+
+    void Paint(const Painter &p) override {
+        p.Text(text, { rect.left, rect.top + band, rect.right, rect.top + band + line }, p.font->title,
+               p.pal->textPrimary);
+    }
+
+    // Its own margin and a line of words, like a heading. See Label::Covers.
     bool Covers(float, float) const override { return false; }
 
     const wchar_t *AccessibleName() const override { return text.empty() ? nullptr : text.c_str(); }

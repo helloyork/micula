@@ -139,8 +139,8 @@ Built-in layouts, in the order they are needed:
 ## The spec is a thing
 
 The numbers in today's pages are not arbitrary: a page margin of 24, cards 64 DIP high and 4 apart, a
-control slot 16 DIP from the card's right edge, a heading 30 high with 24 above it, a control height
-of 32. They are the platform's own settings-page numbers, the same in every Windows app, which is
+control slot 16 DIP from the card's right edge, a page title 44 high with 8 above it, headings 30 high
+with 24 above them, a control height of 32. They are the platform's own settings-page numbers, the same in every Windows app, which is
 exactly why they should not be typed into every page.
 
 They become one struct the layouts read -- `Spec`, defaulting to those numbers, with the `theme.h`
@@ -153,6 +153,7 @@ tree dirty, so a page never sees it.
 ```cpp
 auto *page = nav->AddPage();
 page->SetLayout(new StackLayout());
+page->Add(new PageTitle(L"General"));
 page->Add(new Heading(L"Choices"));
 page->Add(new CheckBox(L"Show a notification when done", notify, onChange));
 
@@ -162,7 +163,7 @@ card->Set(new Segmented({ L"Auto", L"High", L"Low" }, quality, onChange));
 card->value = [&] { return kQuality[quality]; };   // what the control reads back as
 ```
 
-A `Heading`, a `Label` and a `Card` are widgets, so what a page used to draw in `PaintPage()` -- its
+A `PageTitle`, a `Heading`, a `Label` and a `Card` are widgets, so what a page used to draw in `PaintPage()` -- its
 headings, its card backgrounds, its lines of detail -- is placed, measured, ordered and reported like
 anything else, and `PaintPage()` has nothing left to do.
 
@@ -301,7 +302,7 @@ The frame becomes:
 | `ClearWidgets()`, `persistent` | the tree, and hiding |
 | `rect` in page coordinates | `rect` in the parent's space |
 | `scrolls`, `ClipRect()`, `ContentTransform()`, `VisibleArea()`, the page's `ScrollBar` | a container that overflows |
-| `PaintPage()` | widgets: `Heading`, `Label`, `Card` |
+| `PaintPage()` | widgets: `PageTitle`, `Heading`, `Label`, `Card` |
 | `z` | tree order |
 | A control laying itself out by calling the page's `Layout()` | its own children, and its own layout |
 

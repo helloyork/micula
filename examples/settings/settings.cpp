@@ -220,7 +220,7 @@ NavigationView *BuildTree(Widget *root) {
         nav->AddPage(kNav[2], new ScrollView()),
         nav->AddPage(kNav[3], new ScrollView()),
     };
-    for (int i = 0; i < 4; i++) sheets[i]->Add(new Heading(kNav[i].label));
+    for (int i = 0; i < 4; i++) sheets[i]->Add(new PageTitle(kNav[i].label));
 
     GeneralPage(sheets[0]);
     SchedulePage(sheets[1]);

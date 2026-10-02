@@ -144,7 +144,7 @@ Card *Setting(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, cons
 // The page the window opens on: the pane's own switches, which is what makes this window a playground
 // rather than a demo.
 void PanePage(ScrollView *sheet) {
-    sheet->Add(new Heading(kPages[0].title));
+    sheet->Add(new PageTitle(kPages[0].title));
 
     Card *style = Setting(sheet, glyph::kView, L"Style",
                           L"Room for the pane, or the pane over the page");
@@ -292,7 +292,7 @@ void ToggleCard(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, co
 // page's -- so the list is taller than the window on purpose, and past either end of it the wheel
 // belongs to the page. See `DropDown` for the wheel and the search that go with a closed one.
 void LongListPage(ScrollView *sheet) {
-    sheet->Add(new Heading(kPages[1].title));
+    sheet->Add(new PageTitle(kPages[1].title));
     sheet->Add(new Label(kPages[1].detail, TextRole::Caption))->secondary = true;
 
     std::vector<std::wstring> lines;
@@ -314,7 +314,7 @@ void LongListPage(ScrollView *sheet) {
 // the pane says which page, and the page says what is on it. A list of times of day is a ring -- the
 // step past 18:00 is after midnight -- which is `DropDown::wrapAround` and the wheel over the list.
 void SchedulePage(ScrollView *sheet) {
-    sheet->Add(new Heading(kPages[2].title));
+    sheet->Add(new PageTitle(kPages[2].title));
     sheet->Add(new Label(kPages[2].detail, TextRole::Caption))->secondary = true;
 
     Setting(sheet, glyph::kCalendar, L"Run", L"When a cleanup starts")
@@ -332,7 +332,7 @@ void SchedulePage(ScrollView *sheet) {
 
 // And the same shape four times, which is what most of a settings page is.
 void FoldersPage(ScrollView *sheet) {
-    sheet->Add(new Heading(kPages[3].title));
+    sheet->Add(new PageTitle(kPages[3].title));
     sheet->Add(new Label(kPages[3].detail, TextRole::Caption))->secondary = true;
 
     ToggleCard(sheet, glyph::kFolder, L"Downloads", L"Files saved by browsers and other apps",
@@ -349,7 +349,7 @@ void FoldersPage(ScrollView *sheet) {
 // rather than one: the mode is the library's, and the palette a window paints from was built when
 // the window was made, so the window it is on has to be told to build it again.
 void SettingsPage(ScrollView *sheet) {
-    sheet->Add(new Heading(kPages[4].title));
+    sheet->Add(new PageTitle(kPages[4].title));
     sheet->Add(new Label(kPages[4].detail, TextRole::Caption))->secondary = true;
     Setting(sheet, glyph::kBrightness, L"Theme",
             L"Follow Windows or pick one: every colour on every page comes from it")
@@ -403,7 +403,7 @@ NavigationView *BuildTree(Widget *root) {
         for (int i = 1; i <= navRows; i++) {
             const std::wstring name = L"Row " + std::to_wstring(i);
             ScrollView *sheet = nav->AddPage({ glyph::kHome, name }, new ScrollView());
-            sheet->Add(new Heading(name));
+            sheet->Add(new PageTitle(name));
             Setting(sheet, glyph::kHome, L"One of the extra rows",
                     L"`nav=` puts these here: the pane scrolls, and the bar down its edge is what "
                     L"says so");
