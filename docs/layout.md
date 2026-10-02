@@ -1,10 +1,10 @@
 # Layout
 
-**Status: being built.** This file describes the retained object tree, which is on the branch
-`layout-experimental` and is not in `master`. The core is written, every control the library has is on
-it -- the last one, `SideNav`, was ported from the flat list, and with it the last example written for
-the old model -- and the migration list at the end is where that stands. Everything below is a decision
-unless it is under [Open questions](#open-questions) at the end, which is working notes for the branch.
+**Status: this is the library.** A page arranges a retained tree of widgets, and this file is what that
+tree is. It arrived in `master` with `v0.9.0`, and the flat list it replaced is kept on the branch
+`layout-legacy` -- the last state of the old model, for reading an older program rather than for
+building one. Everything below is a decision unless it is under
+[Open questions](#open-questions) at the end.
 
 ## Why the page is no longer rebuilt
 
@@ -307,7 +307,8 @@ The frame becomes:
 
 ## Migration
 
-On the branch, in this order. Each phase is something a person can look at and disagree with:
+The migration happened in this order, and each phase was something a person could look at and disagree
+with:
 
 0. **This file.** The design, agreed before code. *done*
 1. **The core.** `Widget` as a node, hit test and focus over the tree, `Layout` with
@@ -328,25 +329,25 @@ On the branch, in this order. Each phase is something a person can look at and d
    card width and the room it has, which is what a gallery of cards wants, and what a page of two-part
    rows wants once the two parts stop fitting side by side. **`Page` is not part of this**: a page is a
    `Widget` with a layout of its own, and `ScrollView`'s is what pages are built with.
-4. **Accessibility and polish.** Groups, headings and item elements in the automation tree; **arrivals
-   and departures** -- the glide is the only motion the tree has, and WinUI has a set of others, a card
-   growing into its page, a row leaving a list, a layer fading through a scale, all worth trying here;
-   the surfaces that are still missing -- a tooltip, and a context menu that a **held** press opens, both
-   of which are windows of their own rather than layers on the page, so that a menu can exist with no
-   window to hang off at all; the docs rewritten (`window.md`, `controls.md`,
-   `widget.md`, `README.md`) and `docs/layout.md` (this file) turned into the user-facing document.
+4. **Accessibility and polish.** The automation tree was the first half of this and is done: a widget
+   says what it is made of, so a heading is a heading and the rows of a list are elements a client
+   visits one at a time. What is left of the phase: **arrivals and departures** -- the glide is the
+   only motion the tree has, and WinUI has a set of others, a card growing into its page, a row leaving
+   a list, a layer fading through a scale, all worth trying here; **a held press** as the way a touch
+   opens a context menu, which is the one gesture left unwritten; and the docs rewritten (`window.md`,
+   `controls.md`, `widget.md`, `README.md`) with this file turned into the user-facing document.
 5. **The applications.** `AlasViewer` is the first, and it is the real test: a `Widget` of its own with
    a `Paint` that draws a game screen, a page built by hand, and a source dependency on this checkout
    rather than an installed package -- so it is the thing that says whether the model survives a
-   program that is not an example. *(you are here)*
+   program that is not an example. *in progress*, and still the one finding what the model is missing.
 
-While the branch lives, `master` keeps shipping: merge `master` into the branch whenever it moves.
-The conflicts will be in `window.h`, and they will be real -- the branch replaces its middle. Nothing
-large should be refactored in `window.h` on `master` while this is open.
+The branch that held all of this is gone: what it built is `master` now, and nothing has to be kept in
+step with anything. What it replaced is on `layout-legacy`, kept as a record rather than as a version
+that ships.
 
-Merging back is a breaking release. The migration note is short, because the new model is the smaller
-one: a page stops computing rectangles and starts adding children, and a control that used to read
-`rect` reads the rectangle its parent's layout gave it. `docs/layout.md` is the note.
+Merging back was a breaking release, and the note is short because the new model is the smaller one: a
+page stops computing rectangles and starts adding children, and a control that used to read `rect`
+reads the rectangle its parent's layout gave it. This file is the note.
 
 ## Open questions
 
