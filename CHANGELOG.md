@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-03
+
 ### Added
 
 - **`PageTitle`** (`text.h`). The page's own title line, in the window's title size, with the numbers

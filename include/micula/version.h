@@ -22,8 +22,8 @@
 #pragma once
 
 #define MICULA_VERSION_MAJOR 0
-#define MICULA_VERSION_MINOR 9
-#define MICULA_VERSION_PATCH 3
+#define MICULA_VERSION_MINOR 10
+#define MICULA_VERSION_PATCH 0
 
 // Built from the numbers rather than written out a second time: a string that says 0.1.0
 // beside numbers that say 0.2.0 is the kind of thing only ever noticed by a user.
