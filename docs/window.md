@@ -322,6 +322,16 @@ them: a control is a rectangle a screen reader cannot see into unless the window
 through UI Automation, and there is nothing to switch on -- a program that never runs beside a
 screen reader does no UIA work at all, and one that does gets a tree of the page's controls.
 
+**A popup is a surface and answers like one.** A menu and a tip are windows of their own -- no title
+bar, no activation -- and `WM_GETOBJECT` is answered by a `Surface` rather than by a `Window`, so the
+panel a menu draws and the rows in it are elements a client walks like any other's, with runtime ids
+of their own and rectangles in the same screen pixels, and `ElementProviderFromPoint` answers there
+too, which is what a client asking "what is under the pointer" needs on a window that never has the
+focus. What a popup does not have is a title, so it is named by nothing rather than by a name made up
+for it. The events below are the one half it does not get: the comparison that raises them happens in
+a `Window`'s own frame, so a menu's rows are there to be read but the row the arrow keys are on is not
+announced as it moves.
+
 What a control has to say is a handful of virtuals, and one string for the page's half of it:
 
 |---|---|
@@ -406,9 +416,8 @@ screen readers see the window as they did before -- the same reasoning as
 `DCompositionWaitForCompositorClock`, which is resolved for a different reason: that one is Windows
 11 only.
 - **Not there yet.** The scroll bar itself, which is drawn rather than published as a range of its
-own, and a change in the *shape* of a page: a control that arrives or leaves says nothing, so a
-client holding a tree of it has to find out for itself.
-
+  own; and a popup's changes, which are read rather than heard, because the frame that compares them
+  for the events above is a `Window`'s and a `Popup` is not one.
 ## Page callbacks
 
 All virtual. `ClassName()` and `Title()` must be overridden.
