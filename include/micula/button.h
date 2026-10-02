@@ -41,7 +41,7 @@ struct Button : Widget {
     // As wide as its label and Fluent's 12-DIP side padding, and never narrower than the 100-DIP
     // minimum that keeps a row of buttons even; one control tall.
     micula::Want Measure(const Room &room) const override {
-        return micula::Want(Axis::Content(PreferredWidth(room.fonts)),
+        return micula::Want(Axis::Content(PreferredWidth(room.fonts, room.spec->controlH)),
                             Axis::Fixed(room.spec->controlH));
     }
 
@@ -142,9 +142,14 @@ struct Button : Widget {
         p.Text(label, text, p.font->body, fg);
     }
 
-    // The width this button wants: its label plus Fluent's 12-DIP side padding, and
-    // never narrower than the 100-DIP minimum that keeps a row of buttons even.
-    float PreferredWidth(const Fonts *f) const {
+    // **An icon-only button is a square**, and that is what `controlH` is here for: a button's height is
+    // the page's control height, and a box as wide as the shape in it is what the comment in `Paint`
+    // says an icon-only button is for. The padding and the minimum below are room for a word to sit in
+    // and for a row of buttons to come out even, and one glyph in the middle of them is a wide empty
+    // pill. The default is the height a page has unless it says otherwise -- what the dialog's own
+    // arithmetic measures with, where there is no page to ask.
+    float PreferredWidth(const Fonts *f, float controlH = metric::kControlH) const {
+        if (label.empty() && !glyph.empty()) return controlH;
         return (std::max)(metric::kButtonMinW,
                           f->Measure(f->body, label) + 24.0f + (glyph.empty() ? 0.0f : 32.0f));
     }

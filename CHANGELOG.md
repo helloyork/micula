@@ -6,6 +6,14 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A button with an icon and no label is a square rather than 100 DIP wide.** `Button`'s width is its
+  label plus Fluent's side padding with a 100 DIP floor, and that floor is what keeps a row of buttons
+  even -- but an icon-only button has no label to pad and nothing to be even with, so it came out as one
+  glyph centred in a wide empty pill. Its own `Paint` already said what it should be: as wide as the
+  shape in it. It is now as wide as the page's control height, which is also its height.
+
 ## [0.10.0] - 2026-10-03
 
 ### Added
