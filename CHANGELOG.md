@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-03
+
 ### Fixed
 
 - **A page scrolled past a control that never stops animating runs no frames for it.** An indeterminate
