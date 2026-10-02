@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-03
+
 ### Fixed
 
 - **A row or a button that is pressed is filled with the pressed state of the fill it already had.**
