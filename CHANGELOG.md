@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-02
+
 ### Added
 
 - **A finger scrolls a page.** A control that is not holding the gesture stops being asked about it as
