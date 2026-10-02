@@ -202,6 +202,13 @@ struct Widget {
     // Whether the pointer is on this widget, in the space its `rect` is in: what the window's hit
     // test asks. Virtual because a control whose box is not simply `rect` -- one that derives it
     // from its own state -- answers with that box.
+    //
+    // **Asked before anything under the widget is.** A widget that answers no here is not asked about
+    // its children either, and the point is handed to whatever is behind it in the tree instead: that
+    // is what "the pointer goes past it" means for a word. A container therefore answers yes inside
+    // its own box even where it has nothing of its own to press -- a bar holding a page's controls is
+    // the pointer's as much as the controls are, and one that said otherwise would take them out of
+    // the tree with it, leaving them drawn and unreachable.
     virtual bool Covers(float x, float y) const { return Inside(rect, x, y); }
     // The animated shadows of the three flags: 0 is off, 1 is on, anything between is a brush
     // crossing over. Only the background follows them -- a WinUI control under the pointer moves one
