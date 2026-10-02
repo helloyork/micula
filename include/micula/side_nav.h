@@ -1101,12 +1101,24 @@ struct SideNav : Widget {
             // row once the pane has arrived, and every frame in between is the pane's arrival
             // itself. One number, and not a second animation to keep in step with it.
             const float hoverNow = r.index < (int)hot.size() ? hot[r.index] : 0.0f;
-            const float fill = (std::max)(r.index == selected ? 1.0f : 0.0f, hoverNow);
-            if (fill > 0.0f)
+            const bool chosen = r.index == selected;
+            const bool lit = hoverNow > 0.0f;
+            const bool down = pressed && lit;
+            const float fill = (std::max)(chosen ? 1.0f : 0.0f, hoverNow);
+            if (fill > 0.0f) {
+                // **The pane fills with the subtle family, and its pressed state is the next step of
+                // that same family.** WinUI's own table for a navigation item: secondary under the
+                // pointer, tertiary while pressed, secondary for the chosen row, tertiary for the
+                // chosen row under the pointer, and secondary again for a press on a row that is
+                // already chosen. Reaching for `controlBgPressed` instead put a wash of white where a
+                // wash of black had been, so over the light theme's own 0xF3F3F3 pane a pressed row
+                // came out a shade *lighter* than what it was drawn over. See `Palette::subtlePressed`.
+                const D2D1_COLOR_F back =
+                    down ? (chosen ? c.subtleHover : c.subtlePressed)
+                         : (lit && chosen ? c.subtlePressed : c.subtleHover);
                 p.FillRound({ rect.left + 4, top + 2, box.right - 4, top + rowH - 2 },
-                            metric::kRadiusControl,
-                            Fade(pressed && hoverNow > 0.0f ? c.controlBgPressed : c.subtleHover,
-                                 fill));
+                            metric::kRadiusControl, Fade(back, fill));
+            }
             if (r.item->glyph) {
                 // Centred in the icon's box by measuring, the way the button at the top of the
                 // rail is. The icon format is left-aligned like every other text format here,
@@ -1290,9 +1302,11 @@ private:
         const D2D1_RECT_F b = ToggleBox();
         const float f = (std::max)(toggleT, togglePressT);
         if (enabled && f > 0.0f)
+            // The pane's toggle is a navigation item on the platform rather than a standard button:
+            // pointer over is `SubtleFillColorSecondary` and the press is `Tertiary`, the same two
+            // steps the rows below it take. See `Palette::subtlePressed`.
             p.FillRound(b, metric::kRadiusControl,
-                        Fade(Mix(Mix(c.controlBg, c.controlBgHover, toggleT),
-                                 c.controlBgPressed, togglePressT), f));
+                        Fade(Mix(c.subtleHover, c.subtlePressed, togglePressT), f));
         // Centred by measuring, because the icon format is left-aligned like every other text
         // format here -- the same thing the caption's three buttons do.
         const float gw = p.MeasureWidth(glyph::kMenu, p.font->icon);

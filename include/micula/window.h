@@ -2075,7 +2075,7 @@ inline void Window::PaintCaption(const Painter &p) {
                 p.Fill(r, Fade(captionDown == i ? Rgb(0xC42B1C, 0.9f) : Rgb(0xC42B1C), t));
                 glyphColour = Mix(fg, Rgb(0xFFFFFF), t);
             } else {
-                p.Fill(r, Fade(captionDown == i ? c.controlBgPressed : c.subtleHover, t));
+                p.Fill(r, Fade(captionDown == i ? c.subtlePressed : c.subtleHover, t));
             }
         }
         const float gw = p.MeasureWidth(glyphs[i], p.font->iconSmall);

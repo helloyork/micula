@@ -93,10 +93,12 @@ struct Button : Widget {
                        Fade(c.controlStrokeBottom, 1.0f - pressT));
         } else if (style == ButtonStyle::Subtle) {
             // Nothing at all at rest, so the fill fades in from transparent rather than
-            // from a colour: its own alpha is what carries it.
+            // from a colour: its own alpha is what carries it. The press is the next step of
+            // the same family -- `SubtleFillColorTertiary` -- rather than the control ramp's
+            // white, which on a light page is a white wash on white. See `Palette::subtlePressed`.
             if (enabled && hoverT > 0.0f)
                 p.FillRound(box, metric::kRadiusControl,
-                            Fade(Mix(c.subtleHover, c.controlBgPressed, pressT), hoverT));
+                            Fade(Mix(c.subtleHover, c.subtlePressed, pressT), hoverT));
         } else {
             fg = !enabled ? c.textDisabled : Mix(c.accent, Shade(c.accent, -0.15f), pressT);
         }

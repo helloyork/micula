@@ -218,6 +218,12 @@ struct Palette {
     D2D1_COLOR_F controlStroke;
     D2D1_COLOR_F controlStrokeBottom;  // the 1px darker bottom edge Fluent controls have
     D2D1_COLOR_F subtleHover;          // background a borderless button takes on hover
+    // The step of the same family below it: what anything that hovers with `subtleHover` is filled
+    // with while it is pressed -- a row of a list or a pane, a subtle button, a caption button. The
+    // subtle fills are washes over the page rather than fills laid on another fill, which is why the
+    // family matters: `controlBgPressed` is a wash of *white* in the light theme, and on a pane that
+    // is nearly white it is nothing at all. See `MakePalette`.
+    D2D1_COLOR_F subtlePressed;
     // A scroll bar's two colours, both named by WinUI's ScrollBar template: the thumb and
     // the arrows are ControlStrongFillColorDefault, and the track that comes up under
     // them is AcrylicInAppFillColorDefault. Acrylic is a composition effect this window
@@ -572,6 +578,7 @@ inline Palette MakePalette(bool dark) {
         p.controlStroke       = Rgb(0xFFFFFF, 0.0837f);        // ControlStrokeColorDefault
         p.controlStrokeBottom = Rgb(0x000000, 0.14f);          // ...Secondary, the bottom edge
         p.subtleHover         = Rgb(0xFFFFFF, 0.0605f);        // SubtleFillColorSecondary
+        p.subtlePressed       = Rgb(0xFFFFFF, 0.0403f);        // ...Tertiary, two thirds of it (#0A / #0F)
         p.controlStrong       = Rgb(0xFFFFFF, 0.5451f);        // ControlStrongFillColorDefault, #8B
         p.acrylicInApp        = Rgb(0x2C2C2C);                 // AcrylicInAppFillColorDefault's fallback
         p.textPrimary         = Rgb(0xFFFFFF);
@@ -598,6 +605,7 @@ inline Palette MakePalette(bool dark) {
         p.controlStroke       = Rgb(0x000000, 0.0578f);
         p.controlStrokeBottom = Rgb(0x000000, 0.16f);
         p.subtleHover         = Rgb(0x000000, 0.0373f);
+        p.subtlePressed       = Rgb(0x000000, 0.0249f);        // ...Tertiary, two thirds of it (#06 / #09)
         p.controlStrong       = Rgb(0x000000, 0.4471f);        // ControlStrongFillColorDefault, #72
         p.acrylicInApp        = Rgb(0xF9F9F9);                 // AcrylicInAppFillColorDefault's fallback
         p.textPrimary         = Rgb(0x000000, 0.8956f);        // TextFillColorPrimary

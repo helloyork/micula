@@ -575,9 +575,11 @@ struct DropDownList : Widget {
             const float top = RowTop(i);
             const D2D1_RECT_F row = { rect.left + DropDown::kPad, top,
                                       rect.right - DropDown::kPad, top + RowH() };
+            // A row of a list is filled the way WinUI's combo box item is -- `SubtleFillColorSecondary`
+            // under the pointer, `SubtleFillColorTertiary` while it is pressed. See `Palette::subtlePressed`.
             if (i == lit)
                 p.FillRound(row, metric::kRadiusControl,
-                            pressed && enabled ? c.controlBgPressed : c.subtleHover);
+                            pressed && enabled ? c.subtlePressed : c.subtleHover);
             p.Text(dd->options[i], { row.left + kTextPad, row.top, row.right, row.bottom },
                    p.font->body, enabled ? c.textPrimary : c.textDisabled);
         }

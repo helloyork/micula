@@ -6,6 +6,19 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A row or a button that is pressed is filled with the pressed state of the fill it already had.**
+  Everything that hovers with `SubtleFillColorSecondary` -- a row of a navigation pane or of a list, a
+  subtle button, a caption button -- was filled with `ControlFillColorTertiary` while it was pressed,
+  which is the other ramp's step: a wash of white, laid in the light theme on a pane that is all but
+  white, so a pressed row came out a shade lighter than what it was drawn over and read as having
+  nothing under the pointer at all. `Palette::subtlePressed` is the missing step of the family
+  (`SubtleFillColorTertiary`, two thirds of the fill above it), and a row of a pane now follows
+  WinUI's own table for a navigation item: secondary under the pointer, tertiary while pressed,
+  secondary for the chosen row, tertiary for the chosen row under the pointer, and secondary again
+  for a press on a row that is already chosen.
+
 ## [0.9.1] - 2026-10-03
 
 ### Fixed
