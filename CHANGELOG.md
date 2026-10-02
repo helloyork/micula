@@ -6,6 +6,15 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A heading is drawn at the strong body size rather than the subtitle size.** `Heading` used
+  `subtitle` (20), which is a headline: it is the size a page title is set in, and it made a heading
+  inside a page twice the visual weight of the card titles it was grouping -- noticeably so in
+  Chinese, where the same nominal weight sets heavier than in Latin. It is now `bodyStrong` (14), the
+  rung Windows Settings uses for the same job, and the band above the line and the line's own height
+  are unchanged.
+
 ## [0.9.2] - 2026-10-03
 
 ### Fixed

@@ -90,8 +90,13 @@ struct Heading : Widget {
     }
 
     void Paint(const Painter &p) override {
+        // The strong body format, not the subtitle: a heading groups what is under it and is not
+        // itself the point. The subtitle size is a headline -- which is what a page title is, and a
+        // page title is drawn by the page's own header, not by this. Twice the measured weight of the
+        // words it groups also reads as a heading of a *section*, which is one step up from what a
+        // heading inside a page is.
         p.Text(text, { rect.left, rect.top + band, rect.right, rect.top + band + line },
-               p.font->subtitle, p.pal->textPrimary);
+               p.font->bodyStrong, p.pal->textPrimary);
     }
 
     // A heading is its own margin and a line of words: the pointer goes past it the same way it goes
