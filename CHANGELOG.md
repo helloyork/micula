@@ -39,6 +39,16 @@ library can be: a minor version may break.
   page turned inside out rather than the accent -- 16% white in the dark theme, 22% black in the
   light -- and the label is a shade of white on it, which the light theme leaves fully opaque.
   `Palette::accentDisabled` and `Palette::accentTextDisabled` carry the pair.
+- **A drop-down that is off takes no choice, from any hand.** `DropDown::enabled` is the control's --
+  a page turns the picker off while it waits for what the choice it has just taken means, and turns it
+  off when there is nothing to choose from yet -- and the list is a child of the flyout rather than of
+  the control, so it went on taking clicks and notches while it was up, and the arrows went on stepping
+  the choice while it was down. Whichever of the two was being worked, the rows went on being drawn lit
+  and enabled. The list now does nothing while the control is off, and it still swallows the wheel: an
+  open list covers the page, and a notch let past it would scroll what is behind. The control's own
+  wheel -- the *closed* one, the only one that is ever the control's -- is the other half of the same
+  rule: off, it never takes the notch, and the notch goes on to the page. The arrow keys answer like it,
+  and Escape stays the control's: what is open is still its to close.
 - **A button with an icon and no label is a square rather than 100 DIP wide.** `Button`'s width is its
   label plus Fluent's side padding with a 100 DIP floor, and that floor is what keeps a row of buttons
   even -- but an icon-only button has no label to pad and nothing to be even with, so it came out as one

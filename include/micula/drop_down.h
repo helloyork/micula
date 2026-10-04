@@ -405,6 +405,13 @@ struct DropDown : Widget {
 
     bool OnKey(WPARAM vk) override {
         if (vk == VK_ESCAPE && open) { SetOpen(false); return true; }
+        // **A control that is off answers no key but Escape.** The arrows reach the same steps the wheel
+        // does, and the wheel is the one place this was already right: a page turns the picker off while
+        // it waits for what the choice it has just taken means, the list is a child of the flyout rather
+        // than of the control, and the keys still went to the control -- so a choice could be moved under
+        // a picker that had been told not to take one. Escape stays: what is open is still the control's
+        // to close, whatever it has been told about taking a choice.
+        if (!enabled) return false;
         if (vk != VK_UP && vk != VK_DOWN) return false;
         if (options.empty()) return false;
         const int dir = vk == VK_DOWN ? 1 : -1;
@@ -465,7 +472,12 @@ struct DropDown : Widget {
     // panel can then be read to its end with the wheel, which the old one could not do -- there the
     // wheel stepped the choice and Shift was the only way to scroll.
     bool OnWheel(float, float, float notches) override {
-        if (open || options.empty() || !focus) return false;
+        // **Off is off, whether or not anybody left it focused.** A control can be focused and then
+        // turned off -- a page waiting for what the choice it has just taken means -- and the wheel was
+        // the one hand that went on stepping it. Let past rather than swallowed: a control nobody can
+        // work is not in the way of the page's scroll either, which is the same reason the focus rule
+        // above exists.
+        if (open || options.empty() || !focus || !enabled) return false;
         Step(notches > 0.0f ? -1 : 1);
         return true;
     }
@@ -557,6 +569,7 @@ struct DropDownList : Widget {
         // Asked again rather than remembered: the press and the release are two messages apart, and
         // between them the list may have slid under the pointer -- a notch of the wheel, a step of the
         // keyboard. The old one read the cursor here for the same reason.
+        if (!dd->enabled) return;
         const int i = UnderHand();
         if (i < 0) return;
         dd->Choose(i);
@@ -566,7 +579,15 @@ struct DropDownList : Widget {
     // The wheel is the choice's here rather than the view's, and the control is what decides -- see
     // DropDown::Wheel. A list of things to choose is not a page: a notch that scrolled it would leave
     // the chosen row somewhere other than under the control it was chosen from.
-    bool OnWheel(float, float, float notches) override { return dd->Wheel(notches); }
+    //
+    // **A list is only as enabled as the control that opened it**, and the control can be turned off
+    // while the list is up -- a page waiting for what the choice it has just taken means. It still
+    // takes the notch, because an open list covers the page and a wheel let past it would scroll what
+    // is behind: what a disabled list does is nothing, out loud.
+    bool OnWheel(float, float, float notches) override {
+        if (!dd->enabled) return true;
+        return dd->Wheel(notches);
+    }
 
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
@@ -577,11 +598,12 @@ struct DropDownList : Widget {
                                       rect.right - DropDown::kPad, top + RowH() };
             // A row of a list is filled the way WinUI's combo box item is -- `SubtleFillColorSecondary`
             // under the pointer, `SubtleFillColorTertiary` while it is pressed. See `Palette::subtlePressed`.
-            if (i == lit)
+            // A control that has been turned off while its list is up takes the rows with it: see OnWheel.
+            if (i == lit && enabled && dd->enabled)
                 p.FillRound(row, metric::kRadiusControl,
                             pressed && enabled ? c.subtlePressed : c.subtleHover);
             p.Text(dd->options[i], { row.left + kTextPad, row.top, row.right, row.bottom },
-                   p.font->body, enabled ? c.textPrimary : c.textDisabled);
+                   p.font->body, enabled && dd->enabled ? c.textPrimary : c.textDisabled);
         }
     }
 
