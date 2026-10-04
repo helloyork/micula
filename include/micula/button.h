@@ -70,11 +70,14 @@ struct Button : Widget {
         const D2D1_RECT_F box = rect;
 
         if (style == ButtonStyle::Accent) {
+            // Off, this is not the standard button's grey: the accent keeps a disabled pair of
+            // its own, and using the plain control's colours is what made a page's one primary
+            // action read as "not the accent button" rather than as "this accent button is off".
             const D2D1_COLOR_F bg =
-                !enabled ? c.controlBg
+                !enabled ? c.accentDisabled
                          : Mix(Mix(c.accent, c.accentHover, hoverT), c.accentPressed, pressT);
             p.FillRound(box, metric::kRadiusControl, bg);
-            fg = enabled ? c.accentText : c.textDisabled;
+            fg = enabled ? c.accentText : c.accentTextDisabled;
         } else if (style == ButtonStyle::Standard) {
             const D2D1_COLOR_F bg =
                 !enabled ? c.controlBg

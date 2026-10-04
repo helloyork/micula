@@ -189,6 +189,10 @@ struct Palette {
     D2D1_COLOR_F accentHover;
     D2D1_COLOR_F accentPressed;
     D2D1_COLOR_F accentText;      // what reads on top of `accent`
+    // The same pair for a button that has been turned off. Windows keeps two tokens of its
+    // own for it, and neither is the disabled *text* colour -- see where they are filled in.
+    D2D1_COLOR_F accentDisabled;
+    D2D1_COLOR_F accentTextDisabled;
 
     D2D1_COLOR_F windowBg;        // opaque fallback, used only when Mica was refused
     D2D1_COLOR_F layerBg;         // a large region of page over the backdrop
@@ -562,6 +566,16 @@ inline Palette MakePalette(bool dark) {
     // light-mode one (which is dark). This is what Windows does, and it is the whole
     // reason the two shades are picked apart above.
     p.accentText = dark ? Rgb(0x000000) : Rgb(0xFFFFFF);
+    // **Off, the accent button is still the accent button.** It does not go to the standard
+    // control's grey, which is what it did: Windows gives this pair its own two tokens, and
+    // neither is the disabled text colour. The fill is the *page* turned inside out rather
+    // than the accent -- 16% white in the dark theme, 22% black in the light -- and the label
+    // is a shade of white on that, which the light theme leaves fully opaque. That is why a
+    // disabled accent button reads as a flat grey box rather than as a washed-out one.
+    p.accentDisabled     = dark ? Rgb(0xFFFFFF, 0.1569f)  // AccentFillColorDisabled, #28FFFFFF
+                                : Rgb(0x000000, 0.2157f); // ... #37000000, the Light dictionary
+    p.accentTextDisabled = dark ? Rgb(0xFFFFFF, 0.5294f)  // TextOnAccentFillColorDisabled, #87FFFFFF
+                                : Rgb(0xFFFFFF, 1.0f);    // ... #FFFFFF, fully opaque in the light
 
     if (dark) {
         p.windowBg            = Rgb(0x202020);                 // SolidBackgroundFillColorBase

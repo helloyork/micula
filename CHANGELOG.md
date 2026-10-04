@@ -8,6 +8,14 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A disabled accent button keeps the accent's own greys rather than the standard control's.**
+  It was drawn as a plain control -- `controlBg` with `textDisabled` on it -- which is what a
+  *standard* button's off state looks like, so a page's one primary action went the same grey as
+  everything around it and read as "this is not the accent button" rather than "this accent button
+  is off". Fluent keeps two tokens for it, and neither is the disabled text colour: the fill is the
+  page turned inside out rather than the accent -- 16% white in the dark theme, 22% black in the
+  light -- and the label is a shade of white on it, which the light theme leaves fully opaque.
+  `Palette::accentDisabled` and `Palette::accentTextDisabled` carry the pair.
 - **A button with an icon and no label is a square rather than 100 DIP wide.** `Button`'s width is its
   label plus Fluent's side padding with a 100 DIP floor, and that floor is what keeps a row of buttons
   even -- but an icon-only button has no label to pad and nothing to be even with, so it came out as one
