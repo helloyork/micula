@@ -19,6 +19,18 @@ struct RowLayout : Layout {
     float pad = 0.0f;
     Align align = Align::Middle;   // a row of controls is centred: it is what a card's slot is
     bool gaps = true;              // spec.rowGap between the children
+    // **A width of its own, for a row that is not to be measured from what is in it.** Zero is the
+    // honest answer -- as wide as its children make it, or the room it is given when one of them
+    // asked to fill -- and it is what every row wants; `Measure` asks the children and answers.
+    // Anything else pins the row, and so whatever it holds, to that width, measured against the
+    // box rather than against the children.
+    //
+    // It is for a control whose width a layout would otherwise decide: a drop-down asks to fill,
+    // because in a settings row the card's slot is what a control's width is, and a card with no
+    // words on it has no slot to be measured against -- there the whole card is what fill means,
+    // and a page that wants the platform's control width at the card's right edge puts the control
+    // in a `View` with a row like this one inside it.
+    float width = 0.0f;
 
     Want Measure(const Room &room) const override;
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
@@ -29,25 +41,29 @@ struct RowLayout : Layout {
 
 // The children side by side. A child that asked to fill takes what the others left, and the row
 // itself asks to fill across when one of them does -- so a row of two buttons hugs them, and a row
-// with a filling field in it reaches the edge.
+// with a filling field in it reaches the edge. A row with a `width` of its own is that width and
+// answers nothing else: what is in it is measured against the box instead.
 inline Want RowLayout::Measure(const Room &room) const {
+    const float pinned = width;
     Room inner = room;
     inner.height = (std::max)(0.0f, room.height - 2 * pad);
+    if (pinned > 0.0f) inner.width = (std::max)(0.0f, pinned - 2 * pad);
 
-    float width = 2 * pad, height = 0.0f;
+    float wanted = 2 * pad, height = 0.0f;
     bool fillW = false, first = true;
     for (const auto &child : host_->children) {
         if (!child->visible || child->AsLayer()) continue;   // a layer is the tree's, not the row's
         const Want want = child->Measure(inner);
-        if (gaps && !first) width += spec.rowGap;
+        if (gaps && !first) wanted += spec.rowGap;
         first = false;
         if (want.w.how == Sizing::Fill) fillW = true;
-        else width += want.w.size;
+        else wanted += want.w.size;
         height = (std::max)(height, want.h.size);
     }
 
     Want out;
-    out.w = fillW ? Axis::Fill() : Axis::Content(width);
+    out.w = pinned > 0.0f ? Axis::Fixed(pinned)
+                          : (fillW ? Axis::Fill() : Axis::Content(wanted));
     out.h = Axis::Content(height + 2 * pad);
     return out;
 }
@@ -82,7 +98,9 @@ inline void RowLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
         i++;
 
         const Want want = w->Measure(inner);
-        const float width = want.w.how == Sizing::Fill ? share : want.w.size;
+        // Not `width`: the row has one of its own now, and a local by that name hides it -- see the
+        // member above. This is the child's.
+        const float childW = want.w.how == Sizing::Fill ? share : want.w.size;
         float height = inner.height;
         float y = top;
         if (align != Align::Stretch && want.h.how != Sizing::Fill) {
@@ -90,8 +108,8 @@ inline void RowLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
             if (align == Align::Middle) y = top + (inner.height - height) * 0.5f;
             else if (align == Align::Bottom) y = top + inner.height - height;
         }
-        w->rect = { x, y, x + width, y + height };
-        x += width;
+        w->rect = { x, y, x + childW, y + height };
+        x += childW;
     }
 }
 

@@ -6,6 +6,29 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **`RowLayout::width`.** A row is as wide as its children make it -- as wide as the room when one of
+  them asked to fill -- and that is what every row wants, so zero is what it defaults to and nothing
+  changes for anyone who does not set it. A row told a width is exactly that wide and measures what is
+  in it against the box instead: it is for a control whose width the layout would otherwise decide, and
+  a drop-down is the one that shows why. A drop-down asks to fill, because a settings card's slot is
+  what a control's width is there; in a card with no words on it there is no slot, and fill means the
+  whole card, which is a picker as wide as a text field. Wrapped in a `View` with a row of the
+  platform's control width inside it, it is a control at the card's right end again.
+
+### Changed
+
+- **A card with no words on it lays its contents out from its own left edge rather than from its
+  right.** A card is the platform's settings row -- words at the left, the control at the right end of
+  them -- and every control on a page ends up in one column because of it. A card with nothing to say
+  has no such column: no icon, no title, no line under it and no value to read back, so there is
+  nothing for a control to be packed away from and nothing to reserve, and what is left is a box of
+  controls. They start at the card's left edge, on the card's own padding, and a child that asks to
+  fill takes the whole card rather than the 240-DIP slot a settings row keeps its control in -- that
+  slot is the column's, and this card has none. `Card()` takes no line at all now, which is what a
+  page that wants one of these writes.
+
 ### Fixed
 
 - **A disabled accent button keeps the accent's own greys rather than the standard control's.**

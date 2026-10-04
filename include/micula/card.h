@@ -17,6 +17,11 @@
 // The four shapes a card comes in are all one shape with pieces missing: the icon may be absent, the
 // detail may be absent -- and then the text is centred instead of sitting up -- and the control may
 // be absent, which is a heading-like row of text. Nothing here is a special case for any of them.
+//
+// The fifth shape is a card with nothing of its own to say at all -- no icon, no line, no value -- and
+// it is the one that is not a settings row with pieces missing, because a settings row *is* the words
+// with a control beside them. It is a box of controls, and it is laid out as one: its contents run
+// from its own left edge to its right, and nothing is reserved. See `CardLayout::Arrange`.
 
 #include "widget.h"
 
@@ -29,11 +34,14 @@ namespace micula {
 struct Card;
 
 // The card's own layout: the children along the right-hand side, right-aligned, each as wide as it
-// asked to be, and a child that asked to fill taking what is left of the row.
+// asked to be, and a child that asked to fill taking what is left of the row. A card with no words on
+// it has no row for them to be right-aligned in, and its children start at its own left edge -- the
+// two are `Arrange` below.
 //
 // It has to know how much room the card's own text costs, because the children are placed around it
-// and no measurement of the children can answer that. That question is `Reserved` below, and it is
-// the only reason this layout knows what it is arranging.
+// and no measurement of the children can answer that. That question is `Reserved` below, and what the
+// card has to say is also what decides which end of the row they are packed against -- see
+// `Card::HasWording`. Those two are the only reasons this layout knows what it is arranging.
 struct CardLayout : Layout {
     Want Measure(const Room &room) const override;
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
@@ -55,9 +63,19 @@ struct Card : Widget {
     // both is the one that knows how to say it. Nothing is drawn when it answers empty.
     std::function<std::wstring()> value;
 
-    Card(std::wstring line, std::wstring under = std::wstring())
+    // A card with no line at all is a card of controls rather than a settings row -- `Card()` is what a
+    // page that wants one writes -- and so is one whose line, detail, icon and value are all empty.
+    Card(std::wstring line = std::wstring(), std::wstring under = std::wstring())
         : text(std::move(line)), detail(std::move(under)) {
         SetLayout(new CardLayout());
+    }
+
+    // Whether there is anything on the card but the control: an icon, a line, a line under it, or the
+    // value the control reads back as. A card that answers no is not a settings row, and what is on it
+    // is placed as the contents of a box rather than as the control of a row -- see
+    // `CardLayout::Arrange`, which asks.
+    bool HasWording() const {
+        return !icon.empty() || !text.empty() || !detail.empty() || (bool)value;
     }
 
     // Takes the control, adds it, and hands it back:
@@ -161,6 +179,9 @@ struct Card : Widget {
 
 inline float CardLayout::Reserved(const Room &room) const {
     const Card *card = static_cast<const Card *>(host_);
+    // A card with nothing of its own to say reserves nothing: a reservation is the room the words take
+    // off the row, and there are none. See `Arrange`, which is where the difference shows.
+    if (!card->HasWording()) return 0.0f;
     const Fonts *f = room.fonts;
     float w = card->icon.empty() ? 0.0f : 32.0f;
     // The wider of the two lines, not their sum: they are one under the other.
@@ -183,6 +204,14 @@ inline Want CardLayout::Measure(const Room &room) const {
 }
 
 inline void CardLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
+    const Card *card = static_cast<const Card *>(host_);
+    // **Which end the contents are packed against is what the card has to say.** A card with words on
+    // it is a settings row: the words are at the left, the control is at the right end of them, and it
+    // is that -- not any measurement of the children -- which puts every control on a page in one
+    // column down the right. A card with nothing to say is a box of controls instead, and there is no
+    // column for them to be in: the first of them is the row's own left end rather than the last one's
+    // neighbour, and the row grows to the right from there.
+    const bool words = card->HasWording();
     const float left = box.left + spec.cardPad + Reserved(room);
     const float right = box.right - spec.cardPad;
     const float mid = (box.top + box.bottom) / 2.0f;
@@ -204,10 +233,14 @@ inline void CardLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     float share = 0.0f;
     if (filling > 0.0f) {
         share = (std::max)(0.0f, right - left - used) / filling;
-        if (share > spec.cardSlotW) share = spec.cardSlotW;
+        // The cap is the column's, and it is the one thing a settings row will not have stretched to
+        // the card's edge: a field or a slider as wide as the row is what breaks the column every
+        // control in Windows Settings sits in. A box of controls has no column to break, and there a
+        // child that asked to fill is asking for the card.
+        if (words && share > spec.cardSlotW) share = spec.cardSlotW;
     }
 
-    float x = right - used - share * filling;
+    float x = words ? right - used - share * filling : left;
     for (const auto &child : host_->children) {
         Widget *w = child.get();
         if (!w->visible) continue;

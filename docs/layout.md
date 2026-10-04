@@ -131,7 +131,7 @@ Built-in layouts, in the order they are needed:
 | | |
 |---|---|
 | `StackLayout` | The default, and the one most pages want: children one after another, a gap between them, padding, headings that take their own band. |
-| `RowLayout` | Children side by side, each as wide as it asked to be, or sharing the room. |
+| `RowLayout` | Children side by side, each as wide as it asked to be, or sharing the room. A row with a `width` of its own is that width, whatever is in it. |
 | `CardLayout` | The settings card, and the layout of the `Card` widget below. |
 | `GridLayout` | Columns and rows, with a cell able to span. The one that needs a real measure pass, and the one to build last. |
 | `CustomLayout` | A callback: `CustomLayout([](Widget *host, const D2D1_RECT_F &box) { ... })`. The escape hatch for a page that wants to do its own arithmetic, which is what today's `Layout()` is. |
@@ -173,6 +173,12 @@ and the line that reads that control's value back. Windows Settings is built out
 so a library that looks like Windows Settings is built out of it too -- which is why it belongs in the
 library as a widget instead of being a shape every page assembles, and why it is the widget a page
 reaches for most.
+
+The template with none of its words is the one other shape it has, and then it is not a settings row
+at all: `Card()` holds controls and no text, and they are placed as the contents of a box -- from the
+card's left edge to its right, with a child that asks to fill taking the whole card. It is what a row
+of two controls in a card is, and what a settings row cannot be: a row with no words has no column to
+put its control in.
 
 ## Scrolling belongs to the container
 
