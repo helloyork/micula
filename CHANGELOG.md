@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-05
+
 ### Fixed
 
 - **A text field keeps its I-beam while the mouse is held down on it.** The cursor was set as the
