@@ -1179,6 +1179,17 @@ struct Surface {
     // *ignores* the pointer.
     bool HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp);
 
+    // ---- the cursor ------------------------------------------------------------------------------
+    //
+    // **The cursor is asked for rather than pushed.** A control says which of the three it wants --
+    // `Widget::TextCursor`, `Widget::HandCursor` -- and the surface answers, but the pointer moving is
+    // only one of the two ways it is asked. Windows puts a cursor on the screen of its own accord and
+    // asks first -- on the press, on a capture changing hands, on the window being activated -- and a
+    // surface that only answered the other way had this one answered by `DefWindowProc`, whose answer
+    // is the window class's arrow. See the `WM_SETCURSOR` case.
+    Widget *PointerOver(float x, float y);
+    void ApplyCursor(Widget *over);
+
     // **Ask Windows to say when the pointer leaves**, which nothing hears by itself: a window is told
     // WM_MOUSELEAVE only after it has asked, and the asking lasts until the pointer leaves -- or until
     // *any* window appears or disappears under it, which is what a tip or a menu does. So a surface that
@@ -2474,6 +2485,31 @@ inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         ClientToScreen(h, &at);
         return ContextMenu(HitTest(mx, my), at);
     }
+    // ---- the cursor, which Windows asks for by itself ---------------------------------------------
+    //
+    // **Asked again rather than only set.** `MoveTo` sets the cursor as the mouse moves; this is the
+    // other half of it -- Windows putting one on the screen and asking first, which is what a press
+    // does. Answered here because a window and a menu both pass through this one function, the
+    // wheel's reason as well.
+    //
+    // Returning true is what makes it stick: `DefWindowProc`'s answer to HTCLIENT is the window
+    // class's cursor, and a class cursor is set once for a whole window -- it cannot be the arrow for
+    // the page and the I-beam for the field. A field's own answer therefore lasted exactly until
+    // Windows asked again, so an I-beam lasted as long as the pointer was moving and the class's
+    // arrow stood in for it the moment it was not.
+    case WM_SETCURSOR: {
+        // The caption, the frame, an edge: Windows' own answers, and it has more of them than this
+        // does. The hit test code is what says which -- only the client area is the tree's. That code
+        // is the *low* word and the mouse message number is the high one: **this message carries no
+        // point**, unlike the wheel, so a coordinate read out of `lp` is the hit code written into
+        // both halves and the hit test lands nowhere. The cursor's own position is where the point is.
+        if (LOWORD(lp) != HTCLIENT) break;
+        POINT pt = {};
+        if (!GetCursorPos(&pt)) break;
+        ScreenToClient(h, &pt);
+        ApplyCursor(PointerOver(pt.x / s, pt.y / s));
+        return true;
+    }
     // ---- the wheel, which a window and a popup both arrive here for -------------------------------------
     case WM_MOUSEWHEEL: {
         // **The wheel, in the one place a window and a popup both pass through.** It used to live only in the
@@ -2649,6 +2685,22 @@ inline void Surface::PressAt(float x, float y, Hand hand) {
     Invalidate();
 }
 
+// What the pointer is over: the capture while one is held, and the hit test otherwise. The one
+// question the cursor is answered from, asked by the pointer moving and by Windows asking.
+inline Widget *Surface::PointerOver(float x, float y) {
+    return capture ? capture : HitTest(x, y);
+}
+
+// The cursor for that widget, and the whole of what a control has to say about it. Three of them and
+// no more: the I-beam of a text field, the hand of something that is a link, and the arrow everything
+// else gets -- which is also what nothing under the pointer gets.
+inline void Surface::ApplyCursor(Widget *over) {
+    SetCursor(LoadCursorW(nullptr, !over             ? kCursorArrow
+                                 : over->TextCursor() ? kCursorIBeam
+                                 : over->HandCursor() ? kCursorHand
+                                                      : kCursorArrow));
+}
+
 // Returns whether anything about what the pointer is over changed, which is the window's reason to
 // draw a frame -- the same contract the two walks it drives already have.
 inline bool Surface::MoveTo(float x, float y, Hand hand, bool contact) {
@@ -2724,11 +2776,7 @@ inline bool Surface::MoveTo(float x, float y, Hand hand, bool contact) {
     const bool tracks = content ? SendMove(content.get(), x, y, over) : false;
     // A cursor is a mouse's business: a finger has none, and one that appeared under a finger would
     // be a lie about where the pointer is.
-    if (hand == Hand::Mouse)
-        SetCursor(LoadCursorW(nullptr, !over             ? kCursorArrow
-                                     : over->TextCursor() ? kCursorIBeam
-                                     : over->HandCursor() ? kCursorHand
-                                                          : kCursorArrow));
+    if (hand == Hand::Mouse) ApplyCursor(over);
     return changed || tracks;
 }
 
@@ -4870,6 +4918,14 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // somewhere is put on its target by the next frame, which is already running.
         RefreshAnimations();
         return 0;
+    case WM_SETCURSOR:
+        // **The cursor, answered by the tree for the client area and by Windows for the rest.** The
+        // caption, the frame and the edges a drag resizes from are not the tree's, and Windows has the
+        // cursors to go with them -- so this is the one message here whose answer is *asked* for rather
+        // than taken, and `DefWindowProc` is what gets it when the tree has nothing to say. See the
+        // `WM_SETCURSOR` case in `Surface::HandMessage`.
+        if (self->HandMessage(h, m, wp, lp)) return 0;
+        break;
     case WM_MOUSEMOVE:
     case WM_MOUSELEAVE:
     case WM_LBUTTONDOWN:

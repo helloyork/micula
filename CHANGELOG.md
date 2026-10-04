@@ -6,6 +6,17 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A text field keeps its I-beam while the mouse is held down on it.** The cursor was set as the
+  pointer moved and by nothing else, and Windows asks for it again of its own accord -- which is what
+  a press is -- so the answer the field had given lasted exactly until the button went down, and the
+  window class's arrow stood in for it: an I-beam for as long as the pointer was moving, an arrow the
+  moment it was not. The surface now answers that question where a window and a popup both pass
+  through, with the same answer `MoveTo` gives -- the widget the pointer is over, which is the capture
+  while one is held. What a control asks for is unchanged: the same two hooks, and the arrow for
+  everything else.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added
