@@ -22,7 +22,7 @@
 #pragma once
 
 #define MICULA_VERSION_MAJOR 0
-#define MICULA_VERSION_MINOR 10
+#define MICULA_VERSION_MINOR 11
 #define MICULA_VERSION_PATCH 0
 
 // Built from the numbers rather than written out a second time: a string that says 0.1.0

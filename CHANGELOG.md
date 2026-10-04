@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-05
+
 ### Added
 
 - **`RowLayout::width`.** A row is as wide as its children make it -- as wide as the room when one of
