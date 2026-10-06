@@ -114,7 +114,9 @@ struct TextBox : Widget {
     // **Where the caret is trying to be, while the keys moving it are vertical ones.** Down through a line
     // shorter than the column somebody was on clamps the caret to that line's end, and the run of presses
     // has to come back out to the column it started from rather than creep leftwards -- see `VK_UP`. In the
-    // layout's own x, and -1 when there is no such run.
+    // layout's own x, and -1 when there is no such run. An editor does this and the platform's own edit
+    // control does not: that one takes the column it finds on the line it is leaving, so a run of presses
+    // through a short line walks a caret leftwards and leaves it there.
     float preferredX = -1.0f;
     float  scroll = 0.0f;   // how far the text is scrolled left, in DIPs
     float  scrollY = 0.0f;  // and up, which a field with one line has no use for
@@ -669,6 +671,34 @@ struct TextBox : Widget {
         if (i + 1 < text.size() && text[i] == L'\r' && text[i + 1] == L'\n') return i + 2;
         return i < text.size() ? i + 1 : text.size();
     }
+    // **The one move Up, Down, PageUp and PageDown all make**: another of the layout's lines, keeping the
+    // column. The target line is clamped to the ones that exist, and **a target that is the line the caret
+    // is already on is not a move at all** -- measured against the platform's own edit control, both ends
+    // leave the caret alone (an Up at the first line, a Down at the last), rather than flinging it to the
+    // start or the end of the text; a page at the end still travels, because it lands on another line.
+    void MoveLines(int by) {
+        const std::vector<Line> rows = Lines();
+        if (rows.empty()) return;
+        const size_t at = LineAt(rows, caret);
+        const float  pitch = LineH();
+        const int    want = (std::min)((std::max)((int)at + by, 0), (int)rows.size() - 1);
+        if (want == (int)at) return;
+        if (preferredX < 0.0f) preferredX = CaretAt(caret).x;
+        // The middle of the line, so that a point exactly on a boundary is not read as the line above it,
+        // and clamped to the line afterwards for the same reason `preferredX` exists at all.
+        caret = IndexAt(preferredX, (float)want * pitch + pitch * 0.5f);
+        caret = (std::min)((std::max)(caret, rows[(size_t)want].first), rows[(size_t)want].end);
+    }
+    // How far a page moves: the whole lines on screen less one, so a line somebody has already read stays
+    // in view. A choice rather than a measurement -- the edit control ignores the page keys outright in
+    // every arrangement this was tried in, focused or not, so what it would have done is not knowable
+    // from it. Keeping a line of the previous page visible is what makes a page down not lose the thread.
+    int PageLines() const {
+        const float pitch = LineH();
+        if (pitch <= 0.0f) return 1;
+        const int whole = (int)(InnerHeight() / pitch);
+        return whole > 1 ? whole - 1 : 1;
+    }
 
     // --- the bar, and the two ways a field is scrolled -------------------------------------------
 
@@ -898,7 +928,7 @@ struct TextBox : Widget {
         // **The column is kept across a run of vertical moves and nothing else.** A letter, a click, the
         // clipboard move the caret somewhere somebody chose, and a column remembered from before that is
         // not the column they are on. See `preferredX`.
-        const bool vertical = (vk == VK_UP || vk == VK_DOWN);
+        const bool vertical = (vk == VK_UP || vk == VK_DOWN || vk == VK_PRIOR || vk == VK_NEXT);
         if (!vertical) preferredX = -1.0f;
 
         if (ctrl) {
@@ -983,29 +1013,22 @@ struct TextBox : Widget {
             break;
         }
         case VK_UP:
-        case VK_DOWN: {
-            // **Up and down move a line, and take the column with them.** The x is remembered across the
-            // whole run of presses, so a short line in the middle clamps the caret while it is there and
-            // gives the column back on the far side -- without it, walking a paragraph of uneven lines
-            // slides the caret steadily leftwards. See `preferredX`.
-            const std::vector<Line> rows = Lines();
-            if (rows.empty()) return true;
-            const size_t at = LineAt(rows, caret);
-            const float  pitch = LineH();
-            if (preferredX < 0.0f) preferredX = CaretAt(caret).x;
-            const bool   up = (vk == VK_UP);
-            if (up ? at == 0 : at + 1 >= rows.size()) {
-                // The end of the field: Down goes to the end of the text, which is where the Windows edit
-                // control puts it and what "nowhere left to go" means in a field; Up stays where it is.
-                // Either way the key is taken, or the window moves the focus with it.
-                if (!up) caret = text.size();
-            } else {
-                const size_t to = up ? at - 1 : at + 1;
-                // The middle of the line, so that a point exactly on a boundary is not read as the line
-                // above it, and clamped to the line afterwards for the same reason `preferredX` exists.
-                caret = IndexAt(preferredX, (float)to * pitch + pitch * 0.5f);
-                caret = (std::min)((std::max)(caret, rows[to].first), rows[to].end);
-            }
+        case VK_DOWN:
+        case VK_PRIOR:
+        case VK_NEXT: {
+            // **A field with one line has nothing for these to do**, and a long line whose caret jumps to
+            // its end because somebody brushed the key is an annoyance with no reason behind it: the key
+            // goes on to whoever else wants it. (The window moves the focus on Tab and on nothing else, so
+            // what it does there today is nothing at all.)
+            if (!Wraps()) return false;
+            // **The column comes along**, which is the whole of what the x remembered below is for: a
+            // short line in the middle clamps the caret while it is there and gives the column back on the
+            // far side, instead of the caret sliding leftwards for every line it passes.
+            const bool up = (vk == VK_UP || vk == VK_PRIOR);
+            const int  by = (vk == VK_PRIOR || vk == VK_NEXT) ? PageLines() : 1;
+            // The line is clamped to the ones that exist and a target on the line the caret is already on
+            // is not a move: that is what leaves the caret alone at both ends. See `MoveLines`.
+            MoveLines(up ? -by : by);
             if (!shift) anchor = caret;
             break;
         }

@@ -72,8 +72,14 @@ library can be: a minor version may break.
   line -- which is what an editor does, and the reason a caret comes back to rest between the two
   characters it was between before. Home and End are the line the caret is on, which in a field that
   wraps is the wrap and not the paragraph, and Ctrl+Home and Ctrl+End are the whole text, which is what
-  the plain keys used to be. Up at the first line stays put and Down at the last goes to the end of the
-  text, and both keys are taken rather than left to move the focus out of the field.
+  the plain keys used to be. A move that would land on the line the caret is already on is not a move:
+  Up at the first line and Down at the last leave the caret where it is, and both keys are taken rather
+  than left to move the focus out of the field.
+- **PageUp and PageDown,** a page being the whole lines on screen less one so that a line already read
+  stays in view, and taking the column with them the way Up and Down do; a page that lands on the line
+  the caret is already on is no move either. **A field with one
+  line takes none of the four keys**: the caret of a long line jumping to its end because somebody
+  brushed a key is an annoyance with nothing behind it, so the key is handed on instead.
 - **`Run`, `TextBox::runs` and `TextBox::formatRuns`,** which are what a syntax highlighter needs --
   and what a search that lights up its hits, a validator that marks the part it did not like, or a log
   coloured by the level of each row needs as well. A `Run` is one run of the text -- `{at, len}` -- drawn
