@@ -6,6 +6,29 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- **A field can be told what may go into it.** `TextBox::filter` takes a character or leaves it,
+  `validate` answers what the text stands at with an `Acceptable`, `Intermediate` or `Invalid` -- the
+  middle one being the state a *prefix* of something valid is in, without which an address or a
+  duration can never be typed at all -- and `maxLength` says how much the field will hold, zero for
+  no limit. Where WinUI's own `MaxLength` leaves pasted text alone, these apply to the keyboard, the
+  clipboard and `SetText` alike: a rule that only the keyboard obeys is not a rule.
+- **`TextBox::onRefused`,** told with a `Refusal` and the text that was offered, so a page can say
+  why instead of leaving somebody typing into a field that silently eats keystrokes. It is called
+  once per attempt -- a paste of a hundred refused characters is one thing that happened -- and when
+  the validator's answer *becomes* `Invalid`, because a page wants to say it once rather than once
+  per keystroke.
+- **`TextBox::SetTextRaw`,** the unchecked half of `SetText`: for a page that has validated a value
+  itself, or that is restoring one the field's rules would refuse again.
+
+### Fixed
+
+- **`SetText` is subject to the field's own rules.** It used to write straight into the text, which
+  made it the one door with no door -- a page could put into a field what the field would not have
+  taken from anybody else. An `Invalid` answer from the validator is painted on the underline in
+  `Palette::bad`, focused or not: it is a fact about the value, not about where the keyboard is.
+
 ## [0.11.2] - 2026-10-06
 
 ### Fixed

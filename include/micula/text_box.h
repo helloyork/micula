@@ -33,6 +33,24 @@ namespace micula {
 // where the caret goes for a character index, and which character index a click landed
 // on -- are `IDWriteTextLayout` queries, and creating a layout per query turns a
 // 60-character path into 60 layouts on every mouse move.
+// What a validator says about the text as it stands. **Three states and not two**, because a
+// *prefix* of something valid matches nothing yet: `2001:` is not an address, and a rule that could
+// only say yes or no could never be satisfied by somebody typing one.
+//
+// The field asks its validator on every change and paints an `Invalid` answer on the underline, in
+// `Palette::bad`. It is not asked at all when no validator is set, which is the usual case and costs
+// nothing.
+enum class Validation { Acceptable, Intermediate, Invalid };
+
+// What the field turned away, told to `TextBox::onRefused` so a page can say why rather than leaving
+// somebody typing into a field that silently eats their keystrokes. One report per attempt, whatever
+// length it was: a paste of a hundred refused characters is one thing that happened.
+enum class Refusal {
+    Character,   // the filter would not have it
+    Length,      // there was no room left for it
+    Invalid,     // the text now stands, and the validator will not accept it
+};
+
 struct TextBox : Widget {
     std::wstring text;
     size_t caret  = 0;      // index into `text`
@@ -44,6 +62,37 @@ struct TextBox : Widget {
     // neither is part of the path, and both are what somebody would have to delete by
     // hand. Off for ordinary text, where a quoted word is meant.
     bool pathField = false;
+
+    // ---- what may go in, and what the field says when it will not ---------------------------------
+    //
+    // **One door for every way in.** A character typed, a character pasted, a value the page sets
+    // and a value a client sets all go through `Admitted`, so a rule cannot be enforced on one of
+    // them and forgotten on the rest -- which is exactly how a field ends up taking from the
+    // clipboard what it would not take from the keyboard.
+    //
+    // Nothing here is a validator's job alone: the field owns the *shape* of what it holds (a
+    // single-line field holds no line breaks) and the page owns what counts as a *value*.
+
+    // Which characters may come in. Empty means all of them. A refused character is refused
+    // everywhere, paste included.
+    std::function<bool(wchar_t)> filter;
+    // What the text is meant to be, asked on every change. See `Validation`.
+    std::function<Validation(const std::wstring &)> validate;
+    // How much text the field will hold, 0 for no limit at all -- which is the answer rather than a
+    // very large number, because a limit nobody chose is a limit somebody will hit.
+    //
+    // Applied to the keyboard, the clipboard and `SetText` alike. WinUI's own `MaxLength` leaves
+    // pasted text alone, and that is a hole this library does not have.
+    size_t maxLength = 0;
+    // Told when something was turned away. See `Refusal`.
+    std::function<void(Refusal, const std::wstring &)> onRefused;
+    // The last thing `validate` said, and whether it still stands. **Lazy**: the answer is asked for
+    // when it is needed -- by the underline that paints it, by `State`, and by a change -- rather
+    // than by every way the text can move. `SetTextRaw` in particular only marks it stale, because
+    // not paying for that call is the whole reason it exists. `Acceptable` while no validator is
+    // set, so the ordinary field has one answer and no branch.
+    mutable Validation validation = Validation::Acceptable;
+    mutable bool validationStale = false;
     std::function<void(const std::wstring &)> onChange;
     // Fired when the field is finished with -- Enter, or focus leaving it -- and not
     // on every keystroke. See Widget::OnBlur for why a text field needs both.
@@ -111,10 +160,68 @@ struct TextBox : Widget {
     float InnerLeft() const  { return rect.left + 11.0f; }
     float InnerWidth() const { return Width(rect) - 22.0f; }
 
+    // What of `in` the field will take, with `base` as the length the text already stands at once
+    // whatever is selected has gone. One pass, and one report per rule rather than one per
+    // character: what a page needs to know is that an attempt was refused, and roughly why.
+    std::wstring Admitted(const std::wstring &in, size_t base, bool raw) const {
+        if (raw) return in;
+        std::wstring out;
+        out.reserve(in.size());
+        bool refusedChar = false, refusedLen = false;
+        for (wchar_t ch : in) {
+            if (filter && !filter(ch)) { refusedChar = true; continue; }
+            if (maxLength && base + out.size() >= maxLength) { refusedLen = true; continue; }
+            out.push_back(ch);
+        }
+        if (onRefused) {
+            if (refusedChar) onRefused(Refusal::Character, in);
+            else if (refusedLen) onRefused(Refusal::Length, in);
+        }
+        return out;
+    }
+    // The text after the selection has gone: what a change is measured against.
+    size_t Base() const { return text.size() - (HasSelection() ? SelHi() - SelLo() : 0); }
+    // What the validator says now, at most once per change. `report` is for the two paths that took
+    // the answer as the text changed: a page wants to say "that is not an address" once, and not
+    // again on every frame the answer happens to be looked at while somebody types one.
+    void Resolve(bool report) const {
+        if (!validationStale) return;
+        validationStale = false;
+        const Validation before = validation;
+        validation = validate ? validate(text) : Validation::Acceptable;
+        if (report && validation == Validation::Invalid && before != Validation::Invalid && onRefused)
+            onRefused(Refusal::Invalid, text);
+    }
+    // The answer, for a page that wants to look at it -- and the only way to hear about a
+    // `SetTextRaw` that skipped the question. Asking is a page's own act, so the transition is
+    // reported from here as well; what does *not* report is the underline, which resolves the same
+    // answer while painting and has no business calling a page back from inside a paint.
+    Validation State() const {
+        Resolve(true);
+        return validation;
+    }
+
+    // **The page's own value, subject to the same rules as anybody else's.** A field that took from
+    // its page what it would not take from the keyboard is a field with two sets of rules. What
+    // this cannot do is complain usefully -- there is nobody to complain to but `onRefused`, which
+    // is called anyway.
     void SetText(const std::wstring &s) {
+        text = Admitted(s, 0, false);
+        caret = anchor = text.size();
+        Dirty();
+        validationStale = true;
+        Resolve(true);
+    }
+    // The same, unchecked: for a page that has validated the value itself, or that is restoring a
+    // value the field refused long ago and would refuse again. **Nothing else skips the rules** --
+    // in particular the field's own shape is not a page's to break -- and the validator is not
+    // called either, which is the other half of what this is for: the answer is marked stale and
+    // asked for only if somebody looks.
+    void SetTextRaw(const std::wstring &s) {
         text = s;
         caret = anchor = text.size();
         Dirty();
+        validationStale = true;
     }
     void Dirty() {
         if (layout) { layout->Release(); layout = nullptr; }
@@ -170,6 +277,8 @@ struct TextBox : Widget {
     }
     void Changed() {
         Dirty();
+        validationStale = true;
+        Resolve(true);
         if (onChange) onChange(text);
     }
 
@@ -273,9 +382,15 @@ struct TextBox : Widget {
 
     bool OnChar(wchar_t ch) override {
         if (!enabled) return false;
+        // Asked before anything moves: what fits depends on the length the text will stand at, and
+        // the selection is on its way out. Answered either way -- a character this field will not
+        // take is still this field's to answer for, and returning false here would hand it to the
+        // window as a mnemonic. See the note on VK_SPACE below.
+        const std::wstring ok = Admitted(std::wstring(1, ch), Base(), false);
+        if (ok.empty()) return true;
         DeleteSelection();
-        text.insert(caret, 1, ch);
-        caret = anchor = caret + 1;
+        text.insert(caret, ok);
+        caret = anchor = caret + ok.size();
         Changed();
         ScrollToCaret();
         return true;
@@ -299,7 +414,7 @@ struct TextBox : Widget {
                       }
                       return true;
             case 'V': {
-                const std::wstring in = Pasted(micula::ClipboardText(hwnd));
+                const std::wstring in = Admitted(Pasted(micula::ClipboardText(hwnd)), Base(), false);
                 if (in.empty()) return true;
                 DeleteSelection();
                 text.insert(caret, in);
@@ -388,9 +503,12 @@ struct TextBox : Widget {
         // not Fluent's: WinUI changes `BorderThickness` to 0,0,0,2 in a visual-state
         // setter, and a setter has no duration. The fill behind it is the part that
         // crosses over, and it does that above.
+        Resolve(false);
         p.Line(rect.left + metric::kRadiusControl, rect.bottom - 1,
                rect.right - metric::kRadiusControl, rect.bottom - 1,
-               active && enabled ? c.accent : c.controlStrokeBottom,
+               validation == Validation::Invalid
+                   ? c.bad
+                   : (active && enabled ? c.accent : c.controlStrokeBottom),
                active && enabled ? 2.0f : 1.0f);
 
         Ensure();
