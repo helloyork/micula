@@ -79,9 +79,9 @@ enum class TextMode {
 // is, which is exactly what a page that asked for one asked for.
 //
 // Offsets are into `TextBox::text`, so a page that edits the text owns their upkeep -- which is what
-// `TextBox::format` exists to avoid: an engine asked for the runs again whenever the text changes never
-// has to know how it changed.
-struct Span {
+// `TextBox::formatRuns` exists to avoid: an engine asked for the runs again whenever the text changes
+// never has to know how it changed.
+struct Run {
     size_t at = 0;                 // where in the text the run starts
     size_t len = 0;                // how much of it is drawn this way
     // **What is different about it, and every part of it means "the field's own" when unset.** The
@@ -186,7 +186,7 @@ struct TextBox : Widget {
     // was measured against it (`InvalidateLayout`).
     void SetFont(IDWriteTextFormat *f) { font = f; Dirty(); InvalidateLayout(); }
 
-    // **The runs the text is drawn with, and the engine that answers them.** See `Span`.
+    // **The runs the text is drawn with, and the engine that answers them.** See `Run`.
     //
     // A syntax highlighter is the case this exists for, and it is not the only one: a search that lights
     // up its hits, a validator that marks the part it did not like, a log coloured by the level of each
@@ -195,20 +195,20 @@ struct TextBox : Widget {
     // a vector to fill rather than one to return, so an engine that keeps a scratch vector pays nothing
     // per call; and it is asked for *all* of the runs rather than for what changed, so an engine that
     // wants to be incremental can compare inside itself and one that does not is correct by construction.
-    std::function<void(const std::wstring &text, std::vector<Span> &out)> formatSpans;
+    std::function<void(const std::wstring &text, std::vector<Run> &out)> formatRuns;
     // What it answered, or what a page set by hand with no engine at all. **Set by hand, a page owns
     // their upkeep** -- every edit moves the offsets after it, and the field does not move them -- so a
-    // page that intends to edit the text wants `formatSpans`.
-    std::vector<Span> spans;
-    void SetSpans(std::vector<Span> s) {
-        spans.swap(s);
+    // page that intends to edit the text wants `formatRuns`.
+    std::vector<Run> runs;
+    void SetRuns(std::vector<Run> s) {
+        runs.swap(s);
         Dirty();
         Invalidate();
     }
     // Ask the engine again, for a page whose answer comes from something other than the text: a theme, a
     // setting, which of its own rules is switched on.
     void Reformat() {
-        if (formatSpans) { spans.clear(); formatSpans(text, spans); }
+        if (formatRuns) { runs.clear(); formatRuns(text, runs); }
         Dirty();
         Invalidate();
     }
@@ -524,7 +524,7 @@ struct TextBox : Widget {
         }
         layoutW = want;
         layoutSpacing = spacing;
-        ApplySpans();
+        ApplyRuns();
     }
 
     // --- the runs, and the brushes they are drawn with ---------------------------------------------------
@@ -559,33 +559,33 @@ struct TextBox : Widget {
     // whole business, and nothing else in the field has to know about runs at all: the wrapping, the
     // caret, the hit test and the scroll are still the layout's own answers, and follow the runs because
     // the layout does.
-    void ApplySpans() const {
+    void ApplyRuns() const {
         if (!layout || text.empty()) return;
         // Out of range is not something an engine has to avoid: a run that runs past the end is treated as
         // ending there, and one that starts past the end is not drawn at all. An engine answering from a
         // text a keystroke out of date is a frame, not a crash.
         const DWRITE_TEXT_RANGE all = { 0, (UINT32)text.size() };
         layout->SetDrawingEffect(nullptr, all);
-        for (const Span &s : spans) {
-            if (s.len == 0 || s.at >= text.size()) continue;
-            const DWRITE_TEXT_RANGE r = { (UINT32)s.at,
-                                          (UINT32)(std::min)(s.len, text.size() - s.at) };
-            if (s.font) {
-                layout->SetFontSize(s.font->GetFontSize(), r);
-                layout->SetFontWeight(s.font->GetFontWeight(), r);
-                layout->SetFontStyle(s.font->GetFontStyle(), r);
-                const UINT32 n = s.font->GetFontFamilyNameLength();
+        for (const Run &r : runs) {
+            if (r.len == 0 || r.at >= text.size()) continue;
+            const DWRITE_TEXT_RANGE range = { (UINT32)r.at,
+                                             (UINT32)(std::min)(r.len, text.size() - r.at) };
+            if (r.font) {
+                layout->SetFontSize(r.font->GetFontSize(), range);
+                layout->SetFontWeight(r.font->GetFontWeight(), range);
+                layout->SetFontStyle(r.font->GetFontStyle(), range);
+                const UINT32 n = r.font->GetFontFamilyNameLength();
                 if (n) {
                     std::wstring name((size_t)n + 1, L'\0');
-                    if (SUCCEEDED(s.font->GetFontFamilyName(&name[0], n + 1))) {
+                    if (SUCCEEDED(r.font->GetFontFamilyName(&name[0], n + 1))) {
                         name.resize(n);
-                        layout->SetFontFamilyName(name.c_str(), r);
+                        layout->SetFontFamilyName(name.c_str(), range);
                     }
                 }
             }
-            layout->SetUnderline(s.underline ? TRUE : FALSE, r);
-            if (s.hasColor)
-                if (ID2D1SolidColorBrush *b = BrushFor(s.color)) layout->SetDrawingEffect(b, r);
+            layout->SetUnderline(r.underline ? TRUE : FALSE, range);
+            if (r.hasColor)
+                if (ID2D1SolidColorBrush *b = BrushFor(r.color)) layout->SetDrawingEffect(b, range);
         }
     }
     // Where the caret for an index sits, in the layout's own space: its own line and column, which is
