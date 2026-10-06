@@ -897,6 +897,14 @@ struct Surface {
     // has no rectangle whose subtree could be arranged on its own.
     bool layoutDirty = true;
 
+    // **How many times this surface's device-tied resources have been thrown away.** A widget that keeps
+    // something made from the device -- a bitmap, a colour brush a text layout draws a run with -- has no
+    // other way to hear that it is gone: the tree has no device-lost walk, and rebuilding per paint would
+    // be paying per frame for something that changes maybe once a session. So it records this number
+    // beside what it cached and rebuilds when it has moved. See `ReleaseDevice`, which is the one place
+    // it changes, and `TextBox`, which is the first thing to need it.
+    unsigned deviceGen = 0;
+
     // The animation clock, and it is QueryPerformanceCounter rather than GetTickCount64 for a measured
     // reason: GetTickCount64's resolution is the system tick, 15.6 ms, so every dt it can report is 0,
     // 15.6 or 31.2 -- the quantisation is the same size as the frame, and the motion inherits it as a
@@ -1808,6 +1816,9 @@ inline void Surface::ReleaseImages() {
 }
 
 inline void Surface::ReleaseDevice() {
+    // Before anything is released: whatever is holding a device resource has to see the new number and
+    // the next frame rebuild what it needs. See the field's own note.
+    deviceGen++;
     ReleaseSizedResources();
     ReleaseImages();
     if (iconBitmap) { iconBitmap->Release(); iconBitmap = nullptr; }
