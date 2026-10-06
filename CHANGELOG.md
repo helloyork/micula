@@ -52,6 +52,11 @@ library can be: a minor version may break.
   three lines of one and a half, and the caret, the selection, a click and a notch all follow, because
   every one of them takes the row height from the one function that asks the font. It means nothing to
   a single-line field: there is no spacing between one line.
+- **A field can be given a font of its own.** `TextBox::font` is an `IDWriteTextFormat` the page owns --
+  null, the default, means the library's body font -- and `SetFont` is the setter. It is the field's
+  *shape* like `lines` and `lineSpacing`: the lines are measured with it, so the box, the caret and the
+  5em the clear button follows all come from it, which is what a monospace field needs in order to be a
+  monospace field rather than a body-font field with monospace text in it.
 
 ### Fixed
 

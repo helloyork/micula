@@ -150,6 +150,16 @@ struct TextBox : Widget {
     void SetMode(TextMode m) { mode = m; InvalidateLayout(); }
     void SetLines(size_t n) { lines = n; InvalidateLayout(); }
     void SetLineSpacing(float multiple) { lineSpacing = multiple; InvalidateLayout(); }
+    // **The format the field draws with, or null for the library's body font.** A page that wants a
+    // field in something other than the body font -- a monospace for a path, a log, a code sample --
+    // brings its own, and it is the field's *shape* like the three above: the lines are measured with
+    // it, so the box, the caret and the 5em the clear button follows all come from it. The format is
+    // the page's and the field never releases it; null is the whole of what an ordinary field needs.
+    IDWriteTextFormat *font = nullptr;
+    IDWriteTextFormat *TextFont(const Fonts &f) const { return font ? font : f.body; }
+    // Both halves are needed: the DirectWrite layout was made with the old format (`Dirty`) and the box
+    // was measured against it (`InvalidateLayout`).
+    void SetFont(IDWriteTextFormat *f) { font = f; Dirty(); InvalidateLayout(); }
     // More than one line: wrapping, line breaks that stay, and a box that is `lines` of them tall.
     bool Wraps() const { return mode != TextMode::SingleLine; }
     // `RichText` is not built: see `TextMode`.
@@ -271,8 +281,10 @@ struct TextBox : Widget {
         if (!showClearButton || !clearButton || !enabled || !focus) return false;
         if (Wraps() || text.empty()) return false;
         Surface *w = surface();
-        if (!w || !w->fonts.body) return false;
-        const FLOAT em = w->fonts.body->GetFontSize();
+        if (!w) return false;
+        IDWriteTextFormat *format = TextFont(w->fonts);
+        if (!format) return false;
+        const FLOAT em = format->GetFontSize();
         if (em <= 0.0f) return false;
         // "Minimum width for TextBox with DeleteButton visible is 5em."
         return Width(rect) > 5.0f * (float)em;
@@ -298,10 +310,10 @@ struct TextBox : Widget {
         Invalidate();
     }
 
-    // One line of the body font, which is what a field with more than one line is made of. Asked of
-    // the fonts rather than of a layout, because `Measure` has no layout to ask -- and the two agree
-    // because it is the same format either way.
-    static float RowH(const Fonts &f) { return f.WrappedHeight(f.body, L"X", 1000.0f); }
+    // One line of the field's own font, which is what a field with more than one line is made of. Asked
+    // of the fonts rather than of a layout, because `Measure` has no layout to ask -- and the two agree
+    // because it is the same format either way, the page's if it brought one.
+    float RowH(const Fonts &f) const { return f.WrappedHeight(TextFont(f), L"X", 1000.0f); }
     // Where the first line is drawn: centred in what one control's height would have been, which is
     // exactly where a single-line field puts its text. Every line after it is one row lower, so the
     // box grows downwards and the text does not move.
@@ -412,14 +424,16 @@ struct TextBox : Widget {
     }
     void Ensure() const {
         Surface *w = surface();
-        if (!w || !w->fonts.dw || !w->fonts.body) return;
+        if (!w || !w->fonts.dw) return;
+        IDWriteTextFormat *format = TextFont(w->fonts);
+        if (!format) return;
         const float want = Wraps() ? InnerWidth() : 0.0f;
         // A single line has nothing to space, and its own line height is left alone: a spaced single
         // line would be a line lower in its box rather than a box that grew.
         const float spacing = Wraps() ? lineSpacing : 1.0f;
         if (layout && (layoutW != want || layoutSpacing != spacing)) Dirty();
         if (layout) return;
-        w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
+        w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), format,
                                       Wraps() ? want : 100000.0f, 100000.0f, &layout);
         if (!layout) return;
         // The shared body format is vertically centred, because every other call site
@@ -857,7 +871,7 @@ struct TextBox : Widget {
         const float originX = inner.left - scroll;
 
         if (text.empty() && !placeholder.empty()) {
-            p.Text(placeholder, inner, p.font->body, c.textDisabled);
+            p.Text(placeholder, inner, TextFont(*p.font), c.textDisabled);
         } else if (layout) {
             // **The selection is the field's; the highlight is the focus's.** A selection survives a
             // blur -- clicking elsewhere must not throw away what was picked, and neither Windows' own
