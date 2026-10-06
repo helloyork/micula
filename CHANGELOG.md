@@ -55,6 +55,11 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **The field's own shape is changed through setters.** `SetMode`, `SetLines` and `SetLineSpacing`
+  set the property and mark the tree's arrangement stale, which is what a page owes after changing any
+  of the three: the box is `lines` of these, and it was the page's layout that decided how tall the
+  control is. The fields are still there and still settable -- the setters are the way that cannot be
+  forgotten.
 - **`SetText` is subject to the field's own rules.** It used to write straight into the text, which
   made it the one door with no door -- a page could put into a field what the field would not have
   taken from anybody else. An `Invalid` answer from the validator is painted on the underline in

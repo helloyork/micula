@@ -131,20 +131,25 @@ struct TextBox : Widget {
     // can have more than one line of them.
     size_t maxLines = 0;
 
-    // What the field is for, and how tall it is. **Both are plain fields**: setting them marks the
-    // field's own layout stale and nothing else, because a property change that rearranged the page
-    // under the pointer would be a page reacting to a keystroke. Nothing is arranged until the frame
-    // that was already coming. See `Widget::InvalidateLayout`.
+    // **What the field is for, how tall it is, and how far apart its lines are.** These three are the
+    // field's *shape*, and every one of them changes the box -- which is the page's business, not the
+    // field's: it was the page's layout that decided how tall this control is.
     TextMode mode = TextMode::SingleLine;
     size_t lines = 3;
-    // **How far apart the lines are, as a multiple of one line.** 1 is what the font calls a line and
-    // anything else multiplies it, which is all a "line height" setting ever is. It means nothing to
-    // a field with one line: there is no spacing between one line.
-    //
-    // A property like `mode` and `lines`, and changed the same way: before the field is arranged, or
-    // followed by `InvalidateLayout()`, because the box is `lines` of these and a page is allowed to
-    // decide when it is rearranged.
+    // A multiple of one line: 1 is what the font calls a line and anything else multiplies it, which
+    // is all a "line height" setting ever is. Nothing to a field with one line -- there is no spacing
+    // between one line.
     float lineSpacing = 1.0f;
+    // **The setters, for a page that changes one of the three after the field is on screen.**
+    // `InvalidateLayout` writes `Surface::layoutDirty` and does nothing else where it is called; the
+    // next frame turns it into one arrangement of the content, which is the same pass a resize runs and
+    // the only one there is. Nothing else about the field is the page's business: its *text* is `Dirty`
+    // plus `Invalidate`, and the box does not depend on the text. Changing the fields directly is
+    // allowed -- they are fields -- and owes an `InvalidateLayout`; these are the way that cannot be
+    // forgotten.
+    void SetMode(TextMode m) { mode = m; InvalidateLayout(); }
+    void SetLines(size_t n) { lines = n; InvalidateLayout(); }
+    void SetLineSpacing(float multiple) { lineSpacing = multiple; InvalidateLayout(); }
     // More than one line: wrapping, line breaks that stay, and a box that is `lines` of them tall.
     bool Wraps() const { return mode != TextMode::SingleLine; }
     // `RichText` is not built: see `TextMode`.
