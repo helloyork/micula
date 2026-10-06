@@ -98,7 +98,7 @@ struct TextBox : Widget {
     // language, so the page puts its own word here.
     std::wstring clearLabel = L"Clear";
     // The button itself, a child of the field like the bar and arranged by `FieldLayout`.
-    ClearButton *clear = nullptr;
+    ClearButton *clearButton = nullptr;
     std::wstring placeholder;
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
@@ -263,7 +263,7 @@ struct TextBox : Widget {
     // field somebody is writing in, and a button that empties it is not what a hand is looking for
     // there -- so WinUI shows none, and neither does this.
     bool ClearShown() const {
-        if (!showClearButton || !clear || !enabled || !focus) return false;
+        if (!showClearButton || !clearButton || !enabled || !focus) return false;
         if (Wraps() || text.empty()) return false;
         Surface *w = surface();
         if (!w || !w->fonts.body) return false;
@@ -951,7 +951,7 @@ struct ClearButton : Widget {
 // The field's side of the button, which needs the button to be a complete type: where a click on it
 // leaves the field is `TextBox::Clear`, and when it is there is `ClearShown`.
 inline void TextBox::ClearState() {
-    if (clear) clear->visible = ClearShown();
+    if (clearButton) clearButton->visible = ClearShown();
 }
 
 // What a field's own layout arranges: the bar, over the right-hand edge rather than in a column of
@@ -978,7 +978,7 @@ inline void FieldLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     f->BarNumbers();
     // The clear button, in the same space. Its *state* is the field's -- see `ClearState` -- but a box
     // that has just changed size is where the 5em rule can change, so it is asked for again here.
-    if (f->clear) f->clear->rect = TextBox::ClearBoxIn(box);
+    if (f->clearButton) f->clearButton->rect = TextBox::ClearBoxIn(box);
     f->ClearState();
 }
 
@@ -995,9 +995,9 @@ inline TextBox::TextBox() {
     // The button is made whether or not the page ever asks for it, and hidden until it does: a control
     // that appeared later would be a control arriving in the tree after a layout, and there is nothing
     // saved by waiting.
-    clear = Widget::Add(new ClearButton());
-    clear->field = this;
-    clear->visible = false;
+    clearButton = Widget::Add(new ClearButton());
+    clearButton->field = this;
+    clearButton->visible = false;
 }
 
 }  // namespace micula
