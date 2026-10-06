@@ -34,6 +34,12 @@ library can be: a minor version may break.
   under it on every keystroke, so it is as tall as its own number of lines and the text scrolls
   inside it. A break past `maxLines`, like a character past `maxLength`, is refused and reported.
 - **`Refusal::Lines`,** for the one rule a page cannot talk the field out of: its own shape.
+- **A multi-line field scrolls, and has a bar of its own.** The bar is the library's `ScrollBar` -- the
+  same one a page's `ScrollView` has, along the field's right-hand edge rather than in a column of its
+  own -- and appears only when the text is taller than the box. The wheel scrolls it when the pointer
+  is over the field and does not care where the focus is, which is the opposite of the drop-down's
+  rule on purpose: there the wheel changes a value, and here it scrolls. A notch with nowhere to go is
+  passed on to the page, the way `ScrollView` passes one on.
 
 ### Fixed
 

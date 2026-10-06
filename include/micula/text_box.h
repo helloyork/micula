@@ -3,6 +3,7 @@
 #pragma once
 
 #include "window.h"
+#include "scroll_bar.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +15,7 @@
 namespace micula {
 
 
-// A single-line text field, drawn.
+// A text field, drawn.
 //
 // This was a real child EDIT control, and it had to stop being one: the window carries
 // `WS_EX_NOREDIRECTIONBITMAP` so that Mica is visible behind it (window.h says why),
@@ -24,15 +25,20 @@ namespace micula {
 // So this reimplements the part of an edit control a settings field actually uses: a
 // caret, a selection made with the keyboard or the mouse (press, drag, Shift+click,
 // double-click), the six navigation keys, the four clipboard commands, and IME
-// input. It does not reimplement undo, drag-and-drop, right-click, spell checking,
-// multiple lines or accessibility, and it should not grow them -- a dialog that needs
-// those wants a redirected window with a real edit control, not a bigger version of
-// this.
+// input. One line or several -- see `TextMode` -- and a field with several has a
+// `ScrollBar` of its own, laid over its right-hand edge the way WinUI's own bar lies
+// over the page it belongs to.
+//
+// It does not reimplement undo, drag-and-drop, right-click, spell checking or rich
+// text, and it should not grow them -- a dialog that needs those wants a redirected
+// window with a real edit control, not a bigger version of this.
 //
 // The layout object is kept rather than rebuilt per paint. Both things this needs --
 // where the caret goes for a character index, and which character index a click landed
 // on -- are `IDWriteTextLayout` queries, and creating a layout per query turns a
-// 60-character path into 60 layouts on every mouse move.
+// 60-character path into 60 layouts on every mouse move. A wrapped field has one more
+// reason to keep it: the same text at another width is another set of lines, so it is
+// remade when the width moves and at no other time.
 // What a validator says about the text as it stands. **Three states and not two**, because a
 // *prefix* of something valid matches nothing yet: `2001:` is not an address, and a rule that could
 // only say yes or no could never be satisfied by somebody typing one.
@@ -63,12 +69,27 @@ enum class TextMode {
     RichText,     // not built -- see above
 };
 
+struct TextBox;
+
+// What arranges a field's own children, of which there is one: the bar. A field has no layout of a
+// page's kind -- the page arranges *it* -- so this is only about the bar at the right-hand edge,
+// which is laid over the text rather than taking a column of it. WinUI's bar does the same, and its
+// reason applies here too: a field is as wide as the room it was given, and a bar that took a column
+// would narrow the text on the frames it appeared.
+struct FieldLayout : Layout {
+    Want Measure(const Room &room) const override;
+    void Arrange(const Room &room, const D2D1_RECT_F &box) override;
+};
+
 struct TextBox : Widget {
     std::wstring text;
     size_t caret  = 0;      // index into `text`
     size_t anchor = 0;      // the other end of the selection; equal to caret when none
     float  scroll = 0.0f;   // how far the text is scrolled left, in DIPs
     float  scrollY = 0.0f;  // and up, which a field with one line has no use for
+    // The bar, a child of the field. Hidden unless there is something to scroll -- see `BarNumbers`
+    // -- and laid out by `FieldLayout`.
+    ScrollBar *bar = nullptr;
     std::wstring placeholder;
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
@@ -140,6 +161,8 @@ struct TextBox : Widget {
     mutable float layoutW = -1.0f;
 
     ~TextBox() override { if (layout) layout->Release(); }
+    // The field makes its own bar. See the end of this header for what a field's layout arranges.
+    TextBox();
 
     bool Focusable() const override { return true; }
     bool TextCursor() const override { return true; }
@@ -355,6 +378,50 @@ struct TextBox : Widget {
         Surface *w = surface();
         return w ? RowH(w->fonts) : 0.0f;
     }
+
+    // --- the bar, and the two ways a field is scrolled -------------------------------------------
+
+    // **The bar is told, not asked.** It is a child, so its rectangle is the layout's business (see
+    // `FieldLayout`), but what it *shows* changes on every keystroke and on every notch, and asking
+    // the tree to lay out again for each of those would be a page-wide arrangement per character.
+    // So the field keeps the bar's numbers itself, and the layout never has to run for a scroll.
+    void BarNumbers() {
+        if (!bar) return;
+        const float box = InnerHeight();
+        const float all = TextHeight();
+        bar->viewport = box;
+        bar->extent = all;
+        bar->value = scrollY;
+        bar->drawn = scrollY;
+        bar->visible = Wraps() && all > box;
+        bar->Poll();
+    }
+    // Scroll the text, from a notch or from the bar being dragged. Clamped to the text: the last line
+    // is readable to its end rather than scrolled past.
+    void ScrollTo(float to) {
+        const float most = (std::max)(0.0f, TextHeight() - InnerHeight());
+        const float at = std::clamp(to, 0.0f, most);
+        if (at == scrollY) return;
+        scrollY = at;
+        if (bar) bar->Wake();
+        BarNumbers();
+        Invalidate();
+    }
+    // **The wheel scrolls the text when the pointer is over it, and does not care where the focus is.**
+    // That is the opposite of the drop-down's rule, and deliberately: there the wheel *changes a
+    // value*, which only a control being worked on should do -- and here it *scrolls*, which anything
+    // under the pointer may do. WinUI puts it the same way: scrolling is "automatically enabled when
+    // needed" on a text box, and the scroll bar is conscious of the pointer rather than of the focus.
+    //
+    // A notch with nowhere to go is passed on, the way `ScrollView` passes one on: a field that has
+    // scrolled to its end is not in the way of the page's own scroll.
+    bool OnWheel(float, float, float notches) override {
+        if (!Wraps() || notches == 0.0f) return false;
+        if (TextHeight() - InnerHeight() <= 0.0f) return false;
+        const float perNotch = SystemWheelLines();
+        ScrollTo(scrollY - notches * (perNotch > 0.0f ? perNotch : 3.0f) * LineH());
+        return true;
+    }
     // How tall the text stands, lines and all: what a field with more than one line scrolls over.
     float TextHeight() const {
         Ensure();
@@ -429,6 +496,7 @@ struct TextBox : Widget {
         if (at.y - scrollY + row > box) scrollY = at.y + row - box;
         if (at.y - scrollY < 0)         scrollY = at.y;
         scrollY = std::clamp(scrollY, 0.0f, (std::max)(0.0f, TextHeight() - box));
+        BarNumbers();
     }
 
     // --- the mouse ---------------------------------------------------------------
@@ -742,5 +810,40 @@ struct TextBox : Widget {
         p.rt->PopAxisAlignedClip();
     }
 };
+
+// What a field's own layout arranges: the bar, over the right-hand edge rather than in a column of
+// its own, the way WinUI's lies over the page it belongs to. Its numbers are the field's business and
+// are kept up to date by `BarNumbers` -- a scroll must not be a reason to lay a page out again.
+inline Want FieldLayout::Measure(const Room &room) const {
+    (void)room;
+    return Want(Axis::Fill(), Axis::Fill());
+}
+
+inline void FieldLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
+    (void)room;
+    TextBox *f = static_cast<TextBox *>(host_);
+    if (!f || !f->bar) return;
+    const float inset = 2.0f;
+    f->bar->rect = { box.right - inset - ScrollBar::kSize, box.top + inset, box.right - inset,
+                     box.bottom - inset };
+    // The region the bar watches outside itself, and it is written in the space the pointer is handed
+    // to it in: a widget's own `rect` and the points it is given share one origin, which for the bar is
+    // the field's. So the field's own box, whole -- a pointer anywhere over the field brings the bar
+    // out. Not a hit test region: a click out there is a click on the field, which is where the caret
+    // goes.
+    f->bar->area = box;
+    f->BarNumbers();
+}
+
+inline TextBox::TextBox() {
+    // The field's own layout, which arranges the bar and nothing else: the page arranges the field.
+    SetLayout(new FieldLayout());
+    // Qualified, because this class hides `Add`: the bar is the field's own child rather than
+    // something a page is putting in it.
+    bar = Widget::Add(new ScrollBar([this](float to, bool) { ScrollTo(to); }));
+    // Nothing to scroll yet, and a bar that has never been arranged would otherwise flash at the
+    // right-hand edge before the first arrangement. See ScrollBar::Poll, which puts it away itself.
+    bar->visible = false;
+}
 
 }  // namespace micula
