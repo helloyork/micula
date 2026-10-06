@@ -53,7 +53,9 @@ library can be: a minor version may break.
   every one of them takes the row height from the one function that asks the font. It means nothing to
   a single-line field: there is no spacing between one line.
 - **`Font`,** a text format a page owns a share of. `Font::Make(L"Cascadia Mono", 18.0f)` makes one from
-  a family name, and an empty `Font` means the library's own body font, which is what everything uses
+  a family name, `Font::FromFile(path, 18.0f)` makes one from a font file of the application's own
+  without installing it -- the family name is read out of the file and looked up in a collection holding
+  that one file -- and an empty `Font` means the library's own body font, which is what everything uses
   unless it was told otherwise. It is a handle rather than a pointer: copying it takes another share and
   the last one to go releases the format, so what a page hands over goes on living as long as the thing
   drawing with it needs it -- which is what a page that rebuilds its formats when the theme changes

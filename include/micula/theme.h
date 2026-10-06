@@ -61,6 +61,10 @@
 
 #include <d2d1.h>
 #include <dwrite.h>
+// Only `Font::FromFile` needs it -- a font set builder is how a file becomes a collection without the
+// font being installed -- and the interfaces in it are asked for by name at runtime, so a machine
+// without them answers an empty font rather than failing to start.
+#include <dwrite_3.h>
 
 #include <cmath>
 #include <string>
@@ -882,13 +886,108 @@ struct Font {
     // **A font by family name**, from the library's own DirectWrite factory. The size is in DIPs. A
     // family the machine has not got is not refused -- DirectWrite substitutes silently, which is what
     // `HasFamily` exists to see round -- and a family that has only one face answers with it, thickened
-    // or slanted to whatever weight and slope were asked for.
+    // or slanted to whatever weight and slope were asked for. A font file of the application's own wants
+    // `FromFile`: measured, a file registered with `AddFontResourceEx` is *not* visible to DirectWrite,
+    // neither in the collection it made at startup nor in one rebuilt afterwards.
     static Font Make(const wchar_t *family, float size,
                      DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL, bool italic = false) {
         Fonts &fonts = CurrentFonts();
         if (!fonts.dw) return Font();
         return Owned(MakeFormat(fonts.dw, family, weight, size,
                                 italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL));
+    }
+
+    // **A font out of a file, without installing it.** The file is opened, every face in it is put into
+    // a font set, and the set becomes a collection that only this format knows about -- so a page may
+    // ship a font with its application, or let somebody pick one, and the machine's own font list is not
+    // touched. The family name that will find it again is read out of the file rather than asked for,
+    // and the faces are matched by the weight and slope passed here.
+    //
+    // **Empty when it cannot be done**: a file that will not open, or a machine without DirectWrite 3
+    // (Windows 10 15063), which is where a font set builder comes from -- the interfaces are asked for
+    // by name, so this is a font that is missing rather than an application that will not start.
+    static Font FromFile(const std::wstring &path, float size,
+                         DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL, bool italic = false) {
+        Fonts &fonts = CurrentFonts();
+        if (!fonts.dw) return Font();
+        IDWriteFactory *dw = fonts.dw;
+        IDWriteFactory5 *five = nullptr;
+        IDWriteFactory3 *three = nullptr;
+        if (FAILED(dw->QueryInterface(__uuidof(IDWriteFactory5), reinterpret_cast<void **>(&five))) || !five)
+            return Font();
+        if (FAILED(five->QueryInterface(__uuidof(IDWriteFactory3), reinterpret_cast<void **>(&three))) ||
+            !three) {
+            five->Release();
+            return Font();
+        }
+        IDWriteFontFile *file = nullptr;
+        IDWriteFontSetBuilder *builder = nullptr;
+        IDWriteFontSet *set = nullptr;
+        IDWriteFontCollection1 *collection = nullptr;
+        IDWriteTextFormat *format = nullptr;
+        if (SUCCEEDED(dw->CreateFontFileReference(path.c_str(), nullptr, &file)) && file &&
+            SUCCEEDED(five->CreateFontSetBuilder(&builder)) && builder) {
+            // Every face in the file, not the first: one file may hold a regular, a bold and an italic,
+            // and which of them answers is then the weight and slope asked for below.
+            BOOL supported = FALSE;
+            DWRITE_FONT_FILE_TYPE type = DWRITE_FONT_FILE_TYPE_UNKNOWN;
+            DWRITE_FONT_FACE_TYPE faces = DWRITE_FONT_FACE_TYPE_UNKNOWN;
+            UINT32 count = 0;
+            if (SUCCEEDED(file->Analyze(&supported, &type, &faces, &count))) {
+                for (UINT32 i = 0; i < count; i++) {
+                    IDWriteFontFaceReference *face = nullptr;
+                    if (SUCCEEDED(three->CreateFontFaceReference(file, i, DWRITE_FONT_SIMULATIONS_NONE,
+                                                                 &face)) &&
+                        face) {
+                        builder->AddFontFaceReference(face);
+                        face->Release();
+                    }
+                }
+            }
+            if (SUCCEEDED(builder->CreateFontSet(&set)) && set)
+                three->CreateFontCollectionFromFontSet(set, &collection);
+        }
+        if (collection) {
+            std::wstring family;
+            IDWriteFontFamily *first = nullptr;
+            if (SUCCEEDED(collection->GetFontFamily(0, &first)) && first) {
+                IDWriteLocalizedStrings *names = nullptr;
+                if (SUCCEEDED(first->GetFamilyNames(&names)) && names) {
+                    UINT32 index = 0;
+                    BOOL exists = FALSE;
+                    // The English name when the file carries one, and whatever it has when it does not:
+                    // the name is handed back to DirectWrite to look the family up in this collection.
+                    if (FAILED(names->FindLocaleName(L"en-us", &index, &exists)) || !exists) index = 0;
+                    UINT32 len = 0;
+                    if (SUCCEEDED(names->GetStringLength(index, &len)) && len) {
+                        family.resize((size_t)len + 1, L'\0');
+                        if (SUCCEEDED(names->GetString(index, &family[0], len + 1)))
+                            family.resize(len);
+                        else
+                            family.clear();
+                    }
+                    names->Release();
+                }
+                first->Release();
+            }
+            if (!family.empty())
+                dw->CreateTextFormat(family.c_str(), collection, weight,
+                                     italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, size, L"", &format);
+        }
+        // The format keeps the collection alive -- measured, a format made from one holds a reference to
+        // it -- so the file, the set and the collection are all let go here and the font outlives them.
+        if (format) {
+            format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+        if (collection) collection->Release();
+        if (set) set->Release();
+        if (builder) builder->Release();
+        if (file) file->Release();
+        three->Release();
+        five->Release();
+        return Owned(format);
     }
 
 private:
