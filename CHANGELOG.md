@@ -21,6 +21,19 @@ library can be: a minor version may break.
   per keystroke.
 - **`TextBox::SetTextRaw`,** the unchecked half of `SetText`: for a page that has validated a value
   itself, or that is restoring one the field's rules would refuse again.
+- **`TextBox::mode`,** a `TextMode` of `SingleLine`, `Multiline` or `RichText`. A multi-line field
+  wraps its text, Enter breaks the line rather than finishing the value -- leaving the field and
+  Ctrl+Enter are how a value is finished there -- and the caret, the selection and the hit test
+  follow the text down its lines instead of assuming there is one. What a single-line field does with
+  a line break is unchanged: it stops at the first one, which is what pasting into it has always
+  done, and the rule now sits at the single door every way in goes through. `RichText` is declared
+  and **not built**: it behaves as `Multiline` until somebody writes the runs, the editor and the
+  toolbar that would make it mean something.
+- **`TextBox::lines`** -- three by default -- and **`TextBox::maxLines`,** zero for no limit. The box
+  is not measured from the text: a field that grew as somebody typed into it would move everything
+  under it on every keystroke, so it is as tall as its own number of lines and the text scrolls
+  inside it. A break past `maxLines`, like a character past `maxLength`, is refused and reported.
+- **`Refusal::Lines`,** for the one rule a page cannot talk the field out of: its own shape.
 
 ### Fixed
 
