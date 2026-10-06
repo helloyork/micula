@@ -66,6 +66,14 @@ library can be: a minor version may break.
   the field hands it the text and asks it to fill the runs, once per change and once more whenever
   `Reformat` says so -- so an engine never has to keep the offsets across an edit, where a page that sets
   `runs` by hand owns that itself. A run that runs past the end of the text is treated as ending there.
+- **The keys of a field with more than one line.** Up and Down move one of the *layout's* lines and take
+  the column with them: walking up through a line shorter than that column clamps the caret while it is
+  there and gives the column back on the far side, instead of sliding a character leftwards for every
+  line -- which is what an editor does, and the reason a caret comes back to rest between the two
+  characters it was between before. Home and End are the line the caret is on, which in a field that
+  wraps is the wrap and not the paragraph, and Ctrl+Home and Ctrl+End are the whole text, which is what
+  the plain keys used to be. Up at the first line stays put and Down at the last goes to the end of the
+  text, and both keys are taken rather than left to move the focus out of the field.
 - **`Run`, `TextBox::runs` and `TextBox::formatRuns`,** which are what a syntax highlighter needs --
   and what a search that lights up its hits, a validator that marks the part it did not like, or a log
   coloured by the level of each row needs as well. A `Run` is one run of the text -- `{at, len}` -- drawn
@@ -79,6 +87,9 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A line break is one step.** Left and Right used to stop between the `\r` and the `\n`, which is a
+  place nothing can be typed, and Backspace and Delete took away half of one and left a lone carriage
+  return behind. Both halves of a break now move and go as one thing.
 - **The field's own shape is changed through setters.** `SetMode`, `SetLines` and `SetLineSpacing`
   set the property and mark the tree's arrangement stale, which is what a page owes after changing any
   of the three: the box is `lines` of these, and it was the page's layout that decided how tall the

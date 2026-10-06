@@ -111,6 +111,11 @@ struct TextBox : Widget {
     std::wstring text;
     size_t caret  = 0;      // index into `text`
     size_t anchor = 0;      // the other end of the selection; equal to caret when none
+    // **Where the caret is trying to be, while the keys moving it are vertical ones.** Down through a line
+    // shorter than the column somebody was on clamps the caret to that line's end, and the run of presses
+    // has to come back out to the column it started from rather than creep leftwards -- see `VK_UP`. In the
+    // layout's own x, and -1 when there is no such run.
+    float preferredX = -1.0f;
     float  scroll = 0.0f;   // how far the text is scrolled left, in DIPs
     float  scrollY = 0.0f;  // and up, which a field with one line has no use for
     // The bar, a child of the field. Hidden unless there is something to scroll -- see `BarNumbers`
@@ -209,6 +214,9 @@ struct TextBox : Widget {
     // setting, which of its own rules is switched on.
     void Reformat() {
         if (formatRuns) { runs.clear(); formatRuns(text, runs); }
+        // The text is not what somebody was aiming at any more: whatever column a run of vertical moves
+        // was holding, it was about the text as it was.
+        preferredX = -1.0f;
         Dirty();
         Invalidate();
     }
@@ -253,8 +261,8 @@ struct TextBox : Widget {
 
     bool Focusable() const override { return true; }
     bool TextCursor() const override { return true; }
-    void OnFocus() override { atFocus = text; ClearState(); }
-    void OnBlur() override { Commit(); ClearState(); }
+    void OnFocus() override { atFocus = text; ClearState(); preferredX = -1.0f; }
+    void OnBlur() override { Commit(); ClearState(); preferredX = -1.0f; }
 
     // A field is as wide as the room it is given -- it is the thing a page stretches. **One control
     // tall while it holds one line, and one line taller for each line after that**: the box is not
@@ -619,6 +627,48 @@ struct TextBox : Widget {
         Surface *w = surface();
         return w ? RowH(w->fonts) * (Wraps() ? lineSpacing : 1.0f) : 0.0f;
     }
+    // The lines the *layout* makes of the text, as `{first, end}` for each, with any line break left out of
+    // the end. **A field that wraps has lines its text does not have**, and every key below is about these:
+    // the end of a line somebody is looking at is the end of a wrap, not of a paragraph.
+    struct Line {
+        size_t first = 0;
+        size_t end   = 0;
+    };
+    std::vector<Line> Lines() const {
+        std::vector<Line> out;
+        Ensure();
+        if (!layout) return out;
+        DWRITE_TEXT_METRICS tm = {};
+        if (FAILED(layout->GetMetrics(&tm)) || tm.lineCount == 0) return out;
+        std::vector<DWRITE_LINE_METRICS> lm((size_t)tm.lineCount);
+        UINT32 got = 0;
+        if (FAILED(layout->GetLineMetrics(lm.data(), tm.lineCount, &got)) || got == 0) return out;
+        size_t at = 0;
+        for (UINT32 i = 0; i < got; i++) {
+            const size_t len  = (size_t)lm[i].length;
+            const size_t brk  = (size_t)lm[i].newlineLength;
+            out.push_back({ at, at + len - (brk <= len ? brk : 0) });
+            at += len;
+        }
+        return out;
+    }
+    // Which of them holds a position. **The end of a line belongs to it**: a caret at the end of a line is
+    // on that line and not on the next one, which is the whole difference between End and Down.
+    static size_t LineAt(const std::vector<Line> &lines, size_t index) {
+        for (size_t i = 0; i < lines.size(); i++)
+            if (index <= lines[i].end) return i;
+        return lines.empty() ? 0 : lines.size() - 1;
+    }
+    // **A step over a line break is one step.** Both halves of a CRLF are one thing to whoever is pressing
+    // the key, and a caret that could stop between them would be a caret in a place nothing can be typed.
+    size_t PrevIndex(size_t i) const {
+        if (i >= 2 && text[i - 1] == L'\n' && text[i - 2] == L'\r') return i - 2;
+        return i > 0 ? i - 1 : 0;
+    }
+    size_t NextIndex(size_t i) const {
+        if (i + 1 < text.size() && text[i] == L'\r' && text[i + 1] == L'\n') return i + 2;
+        return i < text.size() ? i + 1 : text.size();
+    }
 
     // --- the bar, and the two ways a field is scrolled -------------------------------------------
 
@@ -845,11 +895,20 @@ struct TextBox : Widget {
         if (!enabled) return false;
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        // **The column is kept across a run of vertical moves and nothing else.** A letter, a click, the
+        // clipboard move the caret somewhere somebody chose, and a column remembered from before that is
+        // not the column they are on. See `preferredX`.
+        const bool vertical = (vk == VK_UP || vk == VK_DOWN);
+        if (!vertical) preferredX = -1.0f;
 
         if (ctrl) {
             HWND hwnd = surface() ? surface()->hwnd : nullptr;
             switch (vk) {
             case 'A': anchor = 0; caret = text.size(); return true;
+            // **The whole text**, which is what Home and End used to be before a field could have more
+            // than one line of them; the plain keys are the line's. See VK_HOME below.
+            case VK_HOME: caret = 0; if (!shift) anchor = caret; return true;
+            case VK_END:  caret = text.size(); if (!shift) anchor = caret; return true;
             // **The other way to finish a value**, and the one a field with more than one line
             // needs: Enter is a line break there, so leaving the field is what a commit would
             // otherwise have to wait for. See VK_RETURN below.
@@ -902,30 +961,73 @@ struct TextBox : Widget {
             // not also read it as "operate the focused control" -- see OnClick.
             return true;
         case VK_LEFT:
-            if (caret > 0) caret--;
+            caret = PrevIndex(caret);
             if (!shift) anchor = caret;
             break;
         case VK_RIGHT:
-            if (caret < text.size()) caret++;
+            caret = NextIndex(caret);
             if (!shift) anchor = caret;
             break;
         case VK_HOME:
-            caret = 0;
+        case VK_END: {
+            // **The line the caret is on**, as the layout drew it: wrapping means the end of a line is the
+            // end of a wrap rather than of a paragraph, and that is what somebody pressing End is looking
+            // at. A field with one line has one of these, so this is what it has always done there.
+            const std::vector<Line> rows = Lines();
+            if (rows.empty()) caret = vk == VK_HOME ? 0 : text.size();
+            else {
+                const size_t at = LineAt(rows, caret);
+                caret = vk == VK_HOME ? rows[at].first : rows[at].end;
+            }
             if (!shift) anchor = caret;
             break;
-        case VK_END:
-            caret = text.size();
+        }
+        case VK_UP:
+        case VK_DOWN: {
+            // **Up and down move a line, and take the column with them.** The x is remembered across the
+            // whole run of presses, so a short line in the middle clamps the caret while it is there and
+            // gives the column back on the far side -- without it, walking a paragraph of uneven lines
+            // slides the caret steadily leftwards. See `preferredX`.
+            const std::vector<Line> rows = Lines();
+            if (rows.empty()) return true;
+            const size_t at = LineAt(rows, caret);
+            const float  pitch = LineH();
+            if (preferredX < 0.0f) preferredX = CaretAt(caret).x;
+            const bool   up = (vk == VK_UP);
+            if (up ? at == 0 : at + 1 >= rows.size()) {
+                // The end of the field: Down goes to the end of the text, which is where the Windows edit
+                // control puts it and what "nowhere left to go" means in a field; Up stays where it is.
+                // Either way the key is taken, or the window moves the focus with it.
+                if (!up) caret = text.size();
+            } else {
+                const size_t to = up ? at - 1 : at + 1;
+                // The middle of the line, so that a point exactly on a boundary is not read as the line
+                // above it, and clamped to the line afterwards for the same reason `preferredX` exists.
+                caret = IndexAt(preferredX, (float)to * pitch + pitch * 0.5f);
+                caret = (std::min)((std::max)(caret, rows[to].first), rows[to].end);
+            }
             if (!shift) anchor = caret;
             break;
+        }
         case VK_BACK:
             if (HasSelection()) DeleteSelection();
-            else if (caret > 0) { text.erase(caret - 1, 1); caret = anchor = caret - 1; }
+            else if (caret > 0) {
+                // A line break in one press, both halves of it: half a CRLF left behind is a lone carriage
+                // return, which is a line break with nothing to say it is one.
+                const size_t n = (caret >= 2 && text[caret - 1] == L'\n' && text[caret - 2] == L'\r') ? 2 : 1;
+                text.erase(caret - n, n);
+                caret = anchor = caret - n;
+            }
             else return true;
             Changed();
             break;
         case VK_DELETE:
             if (HasSelection()) DeleteSelection();
-            else if (caret < text.size()) text.erase(caret, 1);
+            else if (caret < text.size()) {
+                const size_t n = (caret + 1 < text.size() && text[caret] == L'\r' &&
+                                  text[caret + 1] == L'\n') ? 2 : 1;
+                text.erase(caret, n);
+            }
             else return true;
             Changed();
             break;
