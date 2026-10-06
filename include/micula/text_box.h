@@ -69,6 +69,31 @@ enum class TextMode {
     RichText,     // not built -- see above
 };
 
+// One run of the text, drawn differently from the field's own font.
+//
+// **The run is the primitive, not the line**: a line's look is whatever its runs add up to, so anything
+// a page wants to say about a line -- a heading, a quoted block, the row of a log -- is said by giving
+// that line's characters a run. Nothing here knows what a line is, and that is what leaves the wrapping,
+// the caret, the hit test and the scroll alone -- they go on being the one layout's answers, and simply
+// follow the runs. A colour or an underline moves nothing at all; a *format* can change how wide a word
+// is, which is exactly what a page that asked for one asked for.
+//
+// Offsets are into `TextBox::text`, so a page that edits the text owns their upkeep -- which is what
+// `TextBox::format` exists to avoid: an engine asked for the runs again whenever the text changes never
+// has to know how it changed.
+struct Span {
+    size_t at = 0;                 // where in the text the run starts
+    size_t len = 0;                // how much of it is drawn this way
+    // **What is different about it, and every part of it means "the field's own" when unset.** The
+    // format is one the page made, like a field's own `font`: one for a keyword, one for a string, the
+    // same object used again for every run that wants it. Per-range formatting is expressed to DirectWrite
+    // in pieces rather than as a format, and a page should not have to know that.
+    IDWriteTextFormat *font = nullptr;
+    bool hasColor = false;
+    D2D1_COLOR_F color = {};
+    bool underline = false;
+};
+
 struct TextBox;
 struct ClearButton;
 
@@ -160,6 +185,33 @@ struct TextBox : Widget {
     // Both halves are needed: the DirectWrite layout was made with the old format (`Dirty`) and the box
     // was measured against it (`InvalidateLayout`).
     void SetFont(IDWriteTextFormat *f) { font = f; Dirty(); InvalidateLayout(); }
+
+    // **The runs the text is drawn with, and the engine that answers them.** See `Span`.
+    //
+    // A syntax highlighter is the case this exists for, and it is not the only one: a search that lights
+    // up its hits, a validator that marks the part it did not like, a log coloured by the level of each
+    // row -- all of them are this one function. The field hands it the text and asks it to fill the runs,
+    // once per change, and the drawing, the caret and the hit test are the field's again. It is asked with
+    // a vector to fill rather than one to return, so an engine that keeps a scratch vector pays nothing
+    // per call; and it is asked for *all* of the runs rather than for what changed, so an engine that
+    // wants to be incremental can compare inside itself and one that does not is correct by construction.
+    std::function<void(const std::wstring &text, std::vector<Span> &out)> formatSpans;
+    // What it answered, or what a page set by hand with no engine at all. **Set by hand, a page owns
+    // their upkeep** -- every edit moves the offsets after it, and the field does not move them -- so a
+    // page that intends to edit the text wants `formatSpans`.
+    std::vector<Span> spans;
+    void SetSpans(std::vector<Span> s) {
+        spans.swap(s);
+        Dirty();
+        Invalidate();
+    }
+    // Ask the engine again, for a page whose answer comes from something other than the text: a theme, a
+    // setting, which of its own rules is switched on.
+    void Reformat() {
+        if (formatSpans) { spans.clear(); formatSpans(text, spans); }
+        Dirty();
+        Invalidate();
+    }
     // More than one line: wrapping, line breaks that stay, and a box that is `lines` of them tall.
     bool Wraps() const { return mode != TextMode::SingleLine; }
     // `RichText` is not built: see `TextMode`.
@@ -195,7 +247,7 @@ struct TextBox : Widget {
     // at one spacing, and these two are the whole of what it is good for.
     mutable float layoutSpacing = -1.0f;
 
-    ~TextBox() override { if (layout) layout->Release(); }
+    ~TextBox() override { if (layout) layout->Release(); ReleaseBrushes(); }
     // The field makes its own bar. See the end of this header for what a field's layout arranges.
     TextBox();
 
@@ -282,9 +334,9 @@ struct TextBox : Widget {
         if (Wraps() || text.empty()) return false;
         Surface *w = surface();
         if (!w) return false;
-        IDWriteTextFormat *format = TextFont(w->fonts);
-        if (!format) return false;
-        const FLOAT em = format->GetFontSize();
+        IDWriteTextFormat *typeface = TextFont(w->fonts);
+        if (!typeface) return false;
+        const FLOAT em = typeface->GetFontSize();
         if (em <= 0.0f) return false;
         // "Minimum width for TextBox with DeleteButton visible is 5em."
         return Width(rect) > 5.0f * (float)em;
@@ -400,6 +452,7 @@ struct TextBox : Widget {
         Dirty();
         validationStale = true;
         Resolve(true);
+        Reformat();
         ClearState();
     }
     // The same, unchecked: for a page that has validated the value itself, or that is restoring a
@@ -412,6 +465,7 @@ struct TextBox : Widget {
         caret = anchor = text.size();
         Dirty();
         validationStale = true;
+        Reformat();
         ClearState();
     }
     // **A layout is only good for the width it was made at**, and a wrapped one is the whole reason:
@@ -425,15 +479,22 @@ struct TextBox : Widget {
     void Ensure() const {
         Surface *w = surface();
         if (!w || !w->fonts.dw) return;
-        IDWriteTextFormat *format = TextFont(w->fonts);
-        if (!format) return;
+        IDWriteTextFormat *typeface = TextFont(w->fonts);
+        if (!typeface) return;
         const float want = Wraps() ? InnerWidth() : 0.0f;
         // A single line has nothing to space, and its own line height is left alone: a spaced single
         // line would be a line lower in its box rather than a box that grew.
         const float spacing = Wraps() ? lineSpacing : 1.0f;
+        // **A new device takes the runs with it.** The layout was handed brushes and the brushes were
+        // the device's, so both go and both are built again -- which is what the surface's count is for.
+        if (w->deviceGen != brushesFor) {
+            ReleaseBrushes();
+            brushesFor = w->deviceGen;
+            Dirty();
+        }
         if (layout && (layoutW != want || layoutSpacing != spacing)) Dirty();
         if (layout) return;
-        w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), format,
+        w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), typeface,
                                       Wraps() ? want : 100000.0f, 100000.0f, &layout);
         if (!layout) return;
         // The shared body format is vertically centred, because every other call site
@@ -463,6 +524,69 @@ struct TextBox : Widget {
         }
         layoutW = want;
         layoutSpacing = spacing;
+        ApplySpans();
+    }
+
+    // --- the runs, and the brushes they are drawn with ---------------------------------------------------
+
+    // **A brush belongs to the device that made it**, and a layout that has been given one holds on to
+    // it: the brushes cannot be the painter's own -- that one is recoloured per call, so every run would
+    // end up the last colour set -- and they cannot be made per paint either. So they are made with the
+    // layout, one per colour in use, kept beside it and released with it. See `Surface::deviceGen` for
+    // what happens when the device goes away, which is `Ensure`'s business and not this.
+    mutable std::vector<ID2D1SolidColorBrush *> brushes;
+    mutable unsigned brushesFor = 0;
+
+    void ReleaseBrushes() const {
+        for (ID2D1SolidColorBrush *b : brushes)
+            if (b) b->Release();
+        brushes.clear();
+    }
+    ID2D1SolidColorBrush *BrushFor(const D2D1_COLOR_F &c) const {
+        for (ID2D1SolidColorBrush *b : brushes) {
+            if (!b) continue;
+            const D2D1_COLOR_F got = b->GetColor();
+            if (got.r == c.r && got.g == c.g && got.b == c.b && got.a == c.a) return b;
+        }
+        Surface *w = surface();
+        if (!w || !w->dc) return nullptr;
+        ID2D1SolidColorBrush *made = nullptr;
+        if (FAILED(w->dc->CreateSolidColorBrush(c, &made))) return nullptr;
+        brushes.push_back(made);
+        return made;
+    }
+    // **The runs, laid on the one layout, once.** How much of the text is drawn how is this function's
+    // whole business, and nothing else in the field has to know about runs at all: the wrapping, the
+    // caret, the hit test and the scroll are still the layout's own answers, and follow the runs because
+    // the layout does.
+    void ApplySpans() const {
+        if (!layout || text.empty()) return;
+        // Out of range is not something an engine has to avoid: a run that runs past the end is treated as
+        // ending there, and one that starts past the end is not drawn at all. An engine answering from a
+        // text a keystroke out of date is a frame, not a crash.
+        const DWRITE_TEXT_RANGE all = { 0, (UINT32)text.size() };
+        layout->SetDrawingEffect(nullptr, all);
+        for (const Span &s : spans) {
+            if (s.len == 0 || s.at >= text.size()) continue;
+            const DWRITE_TEXT_RANGE r = { (UINT32)s.at,
+                                          (UINT32)(std::min)(s.len, text.size() - s.at) };
+            if (s.font) {
+                layout->SetFontSize(s.font->GetFontSize(), r);
+                layout->SetFontWeight(s.font->GetFontWeight(), r);
+                layout->SetFontStyle(s.font->GetFontStyle(), r);
+                const UINT32 n = s.font->GetFontFamilyNameLength();
+                if (n) {
+                    std::wstring name((size_t)n + 1, L'\0');
+                    if (SUCCEEDED(s.font->GetFontFamilyName(&name[0], n + 1))) {
+                        name.resize(n);
+                        layout->SetFontFamilyName(name.c_str(), r);
+                    }
+                }
+            }
+            layout->SetUnderline(s.underline ? TRUE : FALSE, r);
+            if (s.hasColor)
+                if (ID2D1SolidColorBrush *b = BrushFor(s.color)) layout->SetDrawingEffect(b, r);
+        }
     }
     // Where the caret for an index sits, in the layout's own space: its own line and column, which is
     // the whole difference between a field that can hold more than one line and one that cannot.
@@ -588,6 +712,7 @@ struct TextBox : Widget {
         Dirty();
         validationStale = true;
         Resolve(true);
+        Reformat();
         ClearState();
         if (onChange) onChange(text);
     }

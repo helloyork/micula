@@ -57,6 +57,16 @@ library can be: a minor version may break.
   *shape* like `lines` and `lineSpacing`: the lines are measured with it, so the box, the caret and the
   5em the clear button follows all come from it, which is what a monospace field needs in order to be a
   monospace field rather than a body-font field with monospace text in it.
+- **`Span`, `TextBox::spans` and `TextBox::formatSpans`,** which are what a syntax highlighter needs --
+  and what a search that lights up its hits, a validator that marks the part it did not like, or a log
+  coloured by the level of each row needs as well. A `Span` is a run of the text -- `{at, len}` -- drawn
+  with a format and a colour of its own, and that is the primitive rather than the line: a line's look is
+  whatever its runs add up to, so `Span` never has to know what a line is, and the wrapping, the caret,
+  the hit test and the scroll stay one DirectWrite layout's answers. `formatSpans` is the engine: the
+  field hands it the text and asks it to fill the runs, once per change and once more whenever `Reformat`
+  says so, so an engine never has to keep the offsets across an edit -- a page that sets `spans` by hand
+  owns that itself. A run that runs past the end of the text is treated as ending there rather than being
+  a page's fault to avoid.
 
 ### Fixed
 
