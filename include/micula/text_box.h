@@ -401,7 +401,14 @@ struct TextBox : Widget {
         if (text.empty() && !placeholder.empty()) {
             p.Text(placeholder, inner, p.font->body, c.textDisabled);
         } else if (layout) {
-            if (HasSelection()) {
+            // **The selection is the field's; the highlight is the focus's.** A selection survives a
+            // blur -- clicking elsewhere must not throw away what was picked, and neither Windows' own
+            // edit control nor WinUI clears it -- but the highlight does not. WinUI keeps two brushes
+            // for exactly this pair, `SelectionHighlightColor` and
+            // `SelectionHighlightColorWhenNotFocused`, and the second one's default is *transparent*:
+            // a field that is not being worked on holds a selection that cannot be seen, and shows it
+            // again the moment it is focused. What is drawn here is the first of the two.
+            if (active && HasSelection()) {
                 const float a = XOf(SelLo()) - scroll, b = XOf(SelHi()) - scroll;
                 // The accent at a third, which is what Fluent's selection highlight
                 // is: the text stays its own colour and reads through it.

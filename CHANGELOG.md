@@ -6,6 +6,17 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unfocused text field no longer paints its selection.** The selection itself is kept -- clicking
+  elsewhere must not throw away what was picked, and neither Windows' own edit control nor WinUI
+  clears it -- but the highlight belongs to the focus, and it was painted whether the field had the
+  focus or not. WinUI keeps two brushes for that pair, `SelectionHighlightColor` and
+  `SelectionHighlightColorWhenNotFocused`, and the second one's default is transparent: what a field
+  shows while it is not being worked on is the selection without the wash of accent over it, and it
+  shows that wash again the moment it is focused. The caret was already the focus's, and the accent
+  underline already was as well.
+
 ## [0.11.1] - 2026-10-05
 
 ### Fixed
