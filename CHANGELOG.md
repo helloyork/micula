@@ -47,6 +47,11 @@ library can be: a minor version may break.
   empties the field through the same door as the keyboard, so a rule the page set still holds, and
   `onChange` hears about it. The glyph is `glyph::kClear` -- `\uE894`, the one WinUI's own text box
   draws -- and the text stops short of the button rather than running under it.
+- **`TextBox::lineSpacing`,** how far apart the lines are as a multiple of one line -- 1 by default,
+  which is what the font calls a line. The box grows with it, so a field of three lines at 1.5 is
+  three lines of one and a half, and the caret, the selection, a click and a notch all follow, because
+  every one of them takes the row height from the one function that asks the font. It means nothing to
+  a single-line field: there is no spacing between one line.
 
 ### Fixed
 

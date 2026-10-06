@@ -137,6 +137,14 @@ struct TextBox : Widget {
     // that was already coming. See `Widget::InvalidateLayout`.
     TextMode mode = TextMode::SingleLine;
     size_t lines = 3;
+    // **How far apart the lines are, as a multiple of one line.** 1 is what the font calls a line and
+    // anything else multiplies it, which is all a "line height" setting ever is. It means nothing to
+    // a field with one line: there is no spacing between one line.
+    //
+    // A property like `mode` and `lines`, and changed the same way: before the field is arranged, or
+    // followed by `InvalidateLayout()`, because the box is `lines` of these and a page is allowed to
+    // decide when it is rearranged.
+    float lineSpacing = 1.0f;
     // More than one line: wrapping, line breaks that stay, and a box that is `lines` of them tall.
     bool Wraps() const { return mode != TextMode::SingleLine; }
     // `RichText` is not built: see `TextMode`.
@@ -168,6 +176,9 @@ struct TextBox : Widget {
     mutable IDWriteTextLayout *layout = nullptr;
     // The width the layout above was made at, or -1 when there is none. See `Ensure`.
     mutable float layoutW = -1.0f;
+    // And the line spacing it was made at, for the same reason: a wrapped layout is one set of lines
+    // at one spacing, and these two are the whole of what it is good for.
+    mutable float layoutSpacing = -1.0f;
 
     ~TextBox() override { if (layout) layout->Release(); }
     // The field makes its own bar. See the end of this header for what a field's layout arranges.
@@ -185,7 +196,7 @@ struct TextBox : Widget {
     micula::Want Measure(const Room &room) const override {
         float h = room.spec->controlH;
         const size_t rows = Rows();
-        if (rows > 1 && room.fonts) h += (float)(rows - 1) * RowH(*room.fonts);
+        if (rows > 1 && room.fonts) h += (float)(rows - 1) * RowH(*room.fonts) * lineSpacing;
         return micula::Want(Axis::Fill(), Axis::Fixed(h));
     }
 
@@ -392,12 +403,16 @@ struct TextBox : Widget {
     void Dirty() const {
         if (layout) { layout->Release(); layout = nullptr; }
         layoutW = -1.0f;
+        layoutSpacing = -1.0f;
     }
     void Ensure() const {
         Surface *w = surface();
         if (!w || !w->fonts.dw || !w->fonts.body) return;
         const float want = Wraps() ? InnerWidth() : 0.0f;
-        if (layout && layoutW != want) Dirty();
+        // A single line has nothing to space, and its own line height is left alone: a spaced single
+        // line would be a line lower in its box rather than a box that grew.
+        const float spacing = Wraps() ? lineSpacing : 1.0f;
+        if (layout && (layoutW != want || layoutSpacing != spacing)) Dirty();
         if (layout) return;
         w->fonts.dw->CreateTextLayout(text.c_str(), (UINT32)text.size(), w->fonts.body,
                                       Wraps() ? want : 100000.0f, 100000.0f, &layout);
@@ -411,7 +426,24 @@ struct TextBox : Widget {
         // which is a fault that looks like the text was never set.
         layout->SetWordWrapping(Wraps() ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
         layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        // **The spacing, taken from the layout's own first line.** DirectWrite's uniform method wants a
+        // line height and a baseline, and this layout already knows both -- the height the line would
+        // have had and where the baseline sits in it -- so they are read back and multiplied rather
+        // than worked out again from font metrics, which is the other way the box and the caret could
+        // come to disagree about how tall a line is.
+        if (spacing != 1.0f) {
+            DWRITE_TEXT_METRICS tm = {};
+            if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.lineCount > 0) {
+                std::vector<DWRITE_LINE_METRICS> rows((size_t)tm.lineCount);
+                UINT32 got = 0;
+                if (SUCCEEDED(layout->GetLineMetrics(rows.data(), tm.lineCount, &got)) && got > 0)
+                    layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                                           rows[0].height * spacing,
+                                           rows[0].baseline * spacing);
+            }
+        }
         layoutW = want;
+        layoutSpacing = spacing;
     }
     // Where the caret for an index sits, in the layout's own space: its own line and column, which is
     // the whole difference between a field that can hold more than one line and one that cannot.
@@ -437,11 +469,12 @@ struct TextBox : Widget {
         return w ? RowH(w->fonts) : 0.0f;
     }
     // One line, which is what a caret is drawn as tall and what a scroll moves by. **Asked of the
-    // fonts, the same way `Measure` asks**: the box and the caret then cannot disagree about how tall
-    // a line is, which is the one thing a field with several of them has to get right.
+    // fonts, the same way `Measure` asks**, and multiplied by the field's own spacing: the box, the
+    // caret, a notch and a click then cannot disagree about how tall a line is, which is the one thing
+    // a field with several of them has to get right.
     float LineH() const {
         Surface *w = surface();
-        return w ? RowH(w->fonts) : 0.0f;
+        return w ? RowH(w->fonts) * (Wraps() ? lineSpacing : 1.0f) : 0.0f;
     }
 
     // --- the bar, and the two ways a field is scrolled -------------------------------------------
@@ -813,7 +846,7 @@ struct TextBox : Widget {
         // have been, every line after it a row lower, and the whole thing raised by however much the
         // caret has needed to stay in view. `TextOrigin` is the same expression, so a click lands
         // where the glyphs are.
-        const float row = p.font ? RowH(*p.font) : 0.0f;
+        const float row = LineH();
         const float originY = Wraps() ? (FirstLineTop(row) - scrollY)
                                       : (rect.top + (Height(rect) - TextHeight()) / 2);
         const float originX = inner.left - scroll;
