@@ -52,20 +52,17 @@ library can be: a minor version may break.
   three lines of one and a half, and the caret, the selection, a click and a notch all follow, because
   every one of them takes the row height from the one function that asks the font. It means nothing to
   a single-line field: there is no spacing between one line.
-- **A field can be given a font of its own.** `TextBox::font` is an `IDWriteTextFormat` the page owns --
-  null, the default, means the library's body font -- and `SetFont` is the setter. It is the field's
-  *shape* like `lines` and `lineSpacing`: the lines are measured with it, so the box, the caret and the
-  5em the clear button follows all come from it, which is what a monospace field needs in order to be a
-  monospace field rather than a body-font field with monospace text in it.
-- **`Run`, `TextBox::runs` and `TextBox::formatRuns`,** which are what a syntax highlighter needs -- and
-  what a search that lights up its hits, a validator that marks the part it did not like, or a log
-  coloured by the level of each row needs as well. A `Run` is one run of the text -- `{at, len}` -- drawn
-  with a format and a colour of its own, and the *run* is the primitive rather than the line: a line's
-  look is whatever its runs add up to, so `Run` never has to know what a line is, and the wrapping, the
-  caret, the hit test and the scroll stay one DirectWrite layout's answers. `formatRuns` is the engine --
-  the field hands it the text and asks it to fill the runs, once per change and once more whenever
-  `Reformat` says so -- so an engine never has to keep the offsets across an edit, where a page that sets
-  `runs` by hand owns that itself. A run that runs past the end of the text is treated as ending there.
+- **`Font`,** a text format a page owns a share of. `Font::Make(L"Cascadia Mono", 18.0f)` makes one from
+  a family name, and an empty `Font` means the library's own body font, which is what everything uses
+  unless it was told otherwise. It is a handle rather than a pointer: copying it takes another share and
+  the last one to go releases the format, so what a page hands over goes on living as long as the thing
+  drawing with it needs it -- which is what a page that rebuilds its formats when the theme changes
+  wants.
+- **A field can be given a font of its own.** `TextBox::font` is a `Font` -- empty, the default, means
+  the library's body font -- and `SetFont` is the setter. It is the field's *shape* like `lines` and
+  `lineSpacing`: the lines are measured with it, so the box, the caret and the 5em the clear button
+  follows all come from it, which is what a monospace field needs in order to be a monospace field
+  rather than a body-font field with monospace text in it.
 - **The keys of a field with more than one line.** Up and Down move one of the *layout's* lines and take
   the column with them: walking up through a line shorter than that column clamps the caret while it is
   there and gives the column back on the far side, instead of sliding a character leftwards for every
@@ -83,7 +80,7 @@ library can be: a minor version may break.
 - **`Run`, `TextBox::runs` and `TextBox::formatRuns`,** which are what a syntax highlighter needs --
   and what a search that lights up its hits, a validator that marks the part it did not like, or a log
   coloured by the level of each row needs as well. A `Run` is one run of the text -- `{at, len}` -- drawn
-  with a format and a colour of its own, and that is the primitive rather than the line: a line's look is
+  with a `Font` and a colour of its own, and that is the primitive rather than the line: a line's look is
   whatever its runs add up to, so `Run` never has to know what a line is, and the wrapping, the caret,
   the hit test and the scroll stay one DirectWrite layout's answers. `formatRuns` is the engine: the
   field hands it the text and asks it to fill the runs, once per change and once more whenever `Reformat`

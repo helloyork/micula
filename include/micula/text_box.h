@@ -87,8 +87,10 @@ struct Run {
     // **What is different about it, and every part of it means "the field's own" when unset.** The
     // format is one the page made, like a field's own `font`: one for a keyword, one for a string, the
     // same object used again for every run that wants it. Per-range formatting is expressed to DirectWrite
-    // in pieces rather than as a format, and a page should not have to know that.
-    IDWriteTextFormat *font = nullptr;
+    // in pieces rather than as a format, and a page should not have to know that. **Held rather than
+    // borrowed**: a run keeps its format alive, so an engine that rebuilds its formats when something
+    // else changes -- a theme, a setting -- can hand a fresh set over and stop thinking about the old one.
+    Font font;
     bool hasColor = false;
     D2D1_COLOR_F color = {};
     bool underline = false;
@@ -182,16 +184,16 @@ struct TextBox : Widget {
     void SetMode(TextMode m) { mode = m; InvalidateLayout(); }
     void SetLines(size_t n) { lines = n; InvalidateLayout(); }
     void SetLineSpacing(float multiple) { lineSpacing = multiple; InvalidateLayout(); }
-    // **The format the field draws with, or null for the library's body font.** A page that wants a
+    // **The font the field draws with, or empty for the library's body font.** A page that wants a
     // field in something other than the body font -- a monospace for a path, a log, a code sample --
     // brings its own, and it is the field's *shape* like the three above: the lines are measured with
-    // it, so the box, the caret and the 5em the clear button follows all come from it. The format is
-    // the page's and the field never releases it; null is the whole of what an ordinary field needs.
-    IDWriteTextFormat *font = nullptr;
-    IDWriteTextFormat *TextFont(const Fonts &f) const { return font ? font : f.body; }
+    // it, so the box, the caret and the 5em the clear button follows all come from it. The field holds
+    // a *share* of it, so a page may let go of its own as soon as it has handed it over -- see `Font`.
+    Font font;
+    IDWriteTextFormat *TextFont(const Fonts &f) const { return font.TextFormat(f); }
     // Both halves are needed: the DirectWrite layout was made with the old format (`Dirty`) and the box
     // was measured against it (`InvalidateLayout`).
-    void SetFont(IDWriteTextFormat *f) { font = f; Dirty(); InvalidateLayout(); }
+    void SetFont(const Font &f) { font = f; Dirty(); InvalidateLayout(); }
 
     // **The runs the text is drawn with, and the engine that answers them.** See `Run`.
     //
@@ -580,14 +582,15 @@ struct TextBox : Widget {
             if (r.len == 0 || r.at >= text.size()) continue;
             const DWRITE_TEXT_RANGE range = { (UINT32)r.at,
                                              (UINT32)(std::min)(r.len, text.size() - r.at) };
-            if (r.font) {
-                layout->SetFontSize(r.font->GetFontSize(), range);
-                layout->SetFontWeight(r.font->GetFontWeight(), range);
-                layout->SetFontStyle(r.font->GetFontStyle(), range);
-                const UINT32 n = r.font->GetFontFamilyNameLength();
+            if (!r.font.Empty()) {
+                IDWriteTextFormat *typeface = r.font.Get();
+                layout->SetFontSize(typeface->GetFontSize(), range);
+                layout->SetFontWeight(typeface->GetFontWeight(), range);
+                layout->SetFontStyle(typeface->GetFontStyle(), range);
+                const UINT32 n = typeface->GetFontFamilyNameLength();
                 if (n) {
                     std::wstring name((size_t)n + 1, L'\0');
-                    if (SUCCEEDED(r.font->GetFontFamilyName(&name[0], n + 1))) {
+                    if (SUCCEEDED(typeface->GetFontFamilyName(&name[0], n + 1))) {
                         name.resize(n);
                         layout->SetFontFamilyName(name.c_str(), range);
                     }

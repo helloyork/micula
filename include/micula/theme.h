@@ -745,13 +745,14 @@ struct Fonts {
 };
 
 inline IDWriteTextFormat *MakeFormat(IDWriteFactory *dw, const wchar_t *family,
-                                     DWRITE_FONT_WEIGHT weight, float size) {
+                                     DWRITE_FONT_WEIGHT weight, float size,
+                                     DWRITE_FONT_STYLE style = DWRITE_FONT_STYLE_NORMAL) {
     IDWriteTextFormat *f = nullptr;
     // The locale name is the empty string on purpose. DirectWrite uses it to pick
     // language-specific glyph forms, and a window may show Chinese or Japanese text on
     // a machine whose UI language is anything; asking for "en-us" here is how CJK text
     // gets the wrong regional variants of a handful of shared characters.
-    if (FAILED(dw->CreateTextFormat(family, nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+    if (FAILED(dw->CreateTextFormat(family, nullptr, weight, style,
                                     DWRITE_FONT_STRETCH_NORMAL, size, L"", &f)))
         return nullptr;
     f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -831,6 +832,74 @@ inline Fonts &CurrentFonts() {
     }
     return f;
 }
+
+// ---------------------------------------------------------------- a font of your own
+
+// **A text format you own a share of.** A page that wants a field, a run or a label in something other
+// than the library's stack -- a monospace for a path, a face it ships with its own application -- makes
+// one of these and hands it over, and what it handed over goes on living for as long as the thing that
+// is drawing with it needs it. Two `Font`s naming the same format are two shares of it and the last one
+// to go releases it, so copying one is ordinary copying rather than a transfer of ownership -- which is
+// what makes a `std::vector<Run>` full of them safe to rebuild, and what lets a highlighter rebuild its
+// formats when the theme changes without wondering who is still holding the old ones.
+//
+// **Empty is the library's own body font**, which is what everything uses when nobody said otherwise.
+// Asking for the format to draw with therefore takes the font stack -- `TextFormat(fonts)` -- because a
+// `Font` on its own cannot reach one: there is no global theme here, and a widget is drawn with the
+// stack its window was built from.
+struct Font {
+    Font() = default;
+    // An existing format, of which this takes a share. Not explicit on purpose: a share is what a
+    // hand-made `IDWriteTextFormat` wants to become in the one place a page has one, and `Run` is
+    // filled in by listing its parts.
+    Font(IDWriteTextFormat *format) : format(format) { if (format) format->AddRef(); }
+    Font(const Font &other) : format(other.format) { if (format) format->AddRef(); }
+    Font(Font &&other) noexcept : format(other.format) { other.format = nullptr; }
+    Font &operator=(const Font &other) {
+        if (this != &other) {
+            IDWriteTextFormat *incoming = other.format;
+            if (incoming) incoming->AddRef();
+            if (format) format->Release();
+            format = incoming;
+        }
+        return *this;
+    }
+    Font &operator=(Font &&other) noexcept {
+        if (this != &other) {
+            if (format) format->Release();
+            format = other.format;
+            other.format = nullptr;
+        }
+        return *this;
+    }
+    ~Font() { if (format) format->Release(); }
+
+    bool Empty() const { return format == nullptr; }
+    IDWriteTextFormat *Get() const { return format; }
+    // The one to draw with: this font, or the stack's own body font when this one is empty.
+    IDWriteTextFormat *TextFormat(const Fonts &fonts) const { return format ? format : fonts.body; }
+
+    // **A font by family name**, from the library's own DirectWrite factory. The size is in DIPs. A
+    // family the machine has not got is not refused -- DirectWrite substitutes silently, which is what
+    // `HasFamily` exists to see round -- and a family that has only one face answers with it, thickened
+    // or slanted to whatever weight and slope were asked for.
+    static Font Make(const wchar_t *family, float size,
+                     DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL, bool italic = false) {
+        Fonts &fonts = CurrentFonts();
+        if (!fonts.dw) return Font();
+        return Owned(MakeFormat(fonts.dw, family, weight, size,
+                                italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL));
+    }
+
+private:
+    // Adopt a reference that is already ours -- what `CreateTextFormat` hands back.
+    static Font Owned(IDWriteTextFormat *format) {
+        Font f;
+        f.format = format;
+        return f;
+    }
+    IDWriteTextFormat *format = nullptr;
+};
 
 inline float Fonts::Measure(IDWriteTextFormat *fmt, const std::wstring &s) const {
     if (!dw || !fmt || s.empty()) return 0.0f;
