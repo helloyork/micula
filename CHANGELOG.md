@@ -40,6 +40,13 @@ library can be: a minor version may break.
   is over the field and does not care where the focus is, which is the opposite of the drop-down's
   rule on purpose: there the wheel changes a value, and here it scrolls. A notch with nowhere to go is
   passed on to the page, the way `ScrollView` passes one on.
+- **A field can be given a clear button.** `TextBox::showClearButton` asks for one -- off by default, and
+  `clearLabel` is the word a screen reader is told. Once it is asked for, *when* it is there is WinUI's
+  own rule for the delete button in its text box, whole: the field is enabled and has the focus, holds
+  something, is a single line with no wrapping, and is wider than five times its font size. Pressing it
+  empties the field through the same door as the keyboard, so a rule the page set still holds, and
+  `onChange` hears about it. The glyph is `glyph::kClear` -- `\uE894`, the one WinUI's own text box
+  draws -- and the text stops short of the button rather than running under it.
 
 ### Fixed
 

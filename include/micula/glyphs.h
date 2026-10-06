@@ -61,6 +61,10 @@ constexpr const wchar_t *kClose      = L"\uE8BB";  // ChromeClose
 // puts beside it; this is the thin one, which is what a page's own button wants next to something
 // like Refresh. Both are in Segoe MDL2 Assets at the same code point.
 constexpr const wchar_t *kCancel     = L"\uE711";  // Cancel
+// The cross a field is emptied with, and the one WinUI's own text box draws in its delete button
+// (TextBox_themeresources.xaml). The heavier of the two crosses, which is what a button wants and
+// what the thin `kCancel` beside a Refresh is not.
+constexpr const wchar_t *kClear      = L"\uE894";  // Clear
 // The switch a session is turned off with, beside a Refresh. Fluent draws it as the power button,
 // which is what a button that ends a session is.
 constexpr const wchar_t *kPower      = L"\uE7E8";  // PowerButton

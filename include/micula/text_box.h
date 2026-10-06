@@ -70,6 +70,7 @@ enum class TextMode {
 };
 
 struct TextBox;
+struct ClearButton;
 
 // What arranges a field's own children, of which there is one: the bar. A field has no layout of a
 // page's kind -- the page arranges *it* -- so this is only about the bar at the right-hand edge,
@@ -90,6 +91,14 @@ struct TextBox : Widget {
     // The bar, a child of the field. Hidden unless there is something to scroll -- see `BarNumbers`
     // -- and laid out by `FieldLayout`.
     ScrollBar *bar = nullptr;
+    // **The clear button, and it is the page's to ask for.** Off by default: a field is not always a
+    // field whose value can be emptied by a click, and the ones that can say so.
+    bool showClearButton = false;
+    // What a screen reader is told it is -- the glyph says nothing out loud -- and a library has no
+    // language, so the page puts its own word here.
+    std::wstring clearLabel = L"Clear";
+    // The button itself, a child of the field like the bar and arranged by `FieldLayout`.
+    ClearButton *clear = nullptr;
     std::wstring placeholder;
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
@@ -166,8 +175,8 @@ struct TextBox : Widget {
 
     bool Focusable() const override { return true; }
     bool TextCursor() const override { return true; }
-    void OnFocus() override { atFocus = text; }
-    void OnBlur() override { Commit(); }
+    void OnFocus() override { atFocus = text; ClearState(); }
+    void OnBlur() override { Commit(); ClearState(); }
 
     // A field is as wide as the room it is given -- it is the thing a page stretches. **One control
     // tall while it holds one line, and one line taller for each line after that**: the box is not
@@ -216,8 +225,62 @@ struct TextBox : Widget {
     // Fluent's text field padding: 11 DIPs each side, and the border's own DIP is what the clip is
     // inset by. See `Paint`.
     float InnerLeft() const  { return rect.left + 11.0f; }
-    float InnerWidth() const { return Width(rect) - 22.0f; }
+    // **The text stops short of the clear button when it is there**, which is the difference between
+    // the button and the bar: the bar lies over the text, because a field is as wide as it was given
+    // and one that took a column of it would narrow the text on the frames it appeared -- and a button
+    // that lay over the text would be a button over somebody's last character. WinUI's own button
+    // takes a column of its template, and so does this one.
+    float InnerWidth() const { return Width(rect) - 22.0f - (ClearShown() ? ClearSize() : 0.0f); }
     float InnerHeight() const { return Height(rect) - 2.0f; }
+
+    // --- the clear button -------------------------------------------------------------------------
+
+    // A square as tall as the field's inside, which is the height WinUI keeps its own button at as
+    // the field's height changes ("In order to maintain square button, set the width whenever height
+    // is changed").
+    float ClearSize() const { return (std::max)(0.0f, Height(rect) - 2.0f); }
+    // **Where the button goes, taken from the box `Arrange` was given rather than from `rect`**: a
+    // child's rectangle is measured in its parent's *own* space -- the box the field was handed -- and
+    // the field's `rect` is measured in the space above that.
+    static D2D1_RECT_F ClearBoxIn(const D2D1_RECT_F &box) {
+        const float s = (std::max)(0.0f, Height(box) - 2.0f);
+        return { box.right - 1.0f - s, box.top + 1.0f, box.right - 1.0f, box.bottom - 1.0f };
+    }
+    // **WinUI's own rule for its delete button, whole** -- `CTextBox::CanInvokeDeleteButton` and the
+    // 5em part of its `ArrangeOverride`: the page asked for it, the field is enabled and has the
+    // focus, it holds something, and it is a *single line with no wrapping*. A field that wraps is a
+    // field somebody is writing in, and a button that empties it is not what a hand is looking for
+    // there -- so WinUI shows none, and neither does this.
+    bool ClearShown() const {
+        if (!showClearButton || !clear || !enabled || !focus) return false;
+        if (Wraps() || text.empty()) return false;
+        Surface *w = surface();
+        if (!w || !w->fonts.body) return false;
+        const FLOAT em = w->fonts.body->GetFontSize();
+        if (em <= 0.0f) return false;
+        // "Minimum width for TextBox with DeleteButton visible is 5em."
+        return Width(rect) > 5.0f * (float)em;
+    }
+    // The button's own state, kept where the bar's numbers are kept and for the same reason: a
+    // keystroke, a blur or a click must not each be a reason to lay a page out again. See
+    // `BarNumbers`. Defined under the class, because the button it writes to is declared here and
+    // defined at the end of this header.
+    void ClearState();
+    // **What the button does, and it goes through the one door**: what a click may leave in the field
+    // is what the keyboard and the clipboard may, so a field with a rule cannot be emptied behind it.
+    // `Changed` is what this is, too -- a click that empties a field is a change somebody made, and
+    // the page hears about it the way it hears about a keystroke. The caret and the scroll go with
+    // the text: a field with nothing in it has one place for the caret to be.
+    void Clear() {
+        text = Admitted(std::wstring(), 0, false);
+        caret = anchor = text.size();
+        scroll = 0.0f;
+        Dirty();
+        Changed();
+        ScrollToCaret();
+        ClearState();
+        Invalidate();
+    }
 
     // One line of the body font, which is what a field with more than one line is made of. Asked of
     // the fonts rather than of a layout, because `Measure` has no layout to ask -- and the two agree
@@ -309,6 +372,7 @@ struct TextBox : Widget {
         Dirty();
         validationStale = true;
         Resolve(true);
+        ClearState();
     }
     // The same, unchecked: for a page that has validated the value itself, or that is restoring a
     // value the field refused long ago and would refuse again. **Nothing else skips the rules** --
@@ -320,6 +384,7 @@ struct TextBox : Widget {
         caret = anchor = text.size();
         Dirty();
         validationStale = true;
+        ClearState();
     }
     // **A layout is only good for the width it was made at**, and a wrapped one is the whole reason:
     // the same text at another width is another set of lines. Remade when the width moves, and not
@@ -471,6 +536,7 @@ struct TextBox : Widget {
         Dirty();
         validationStale = true;
         Resolve(true);
+        ClearState();
         if (onChange) onChange(text);
     }
 
@@ -738,7 +804,8 @@ struct TextBox : Widget {
 
         Ensure();
 
-        const D2D1_RECT_F inner = { InnerLeft(), rect.top + 1, rect.right - 11, rect.bottom - 1 };
+        const D2D1_RECT_F inner = { InnerLeft(), rect.top + 1, InnerLeft() + InnerWidth(),
+                                    rect.bottom - 1 };
         p.rt->PushAxisAlignedClip(inner, D2D1_ANTIALIAS_MODE_ALIASED);
 
         // **Where the layout goes.** One line: where the text has always been centred, and the hit
@@ -811,6 +878,49 @@ struct TextBox : Widget {
     }
 };
 
+// The field's clear button: one glyph in a square, at the field's right-hand edge.
+//
+// **A widget of its own rather than a `Button`**, for the reason the bar has one: what it is worth is
+// the field's metric -- a square as tall as the field -- and when it is there is the field's state, so
+// there is nothing left for a page to set but the word a screen reader reads. Its click is `OnClick`,
+// which is what a `Button` answers and what a client's own invoke reaches, so it is a button to
+// everything that asks.
+struct ClearButton : Widget {
+    TextBox *field = nullptr;
+
+    int AccessibleType() const override { return UIA_ButtonControlTypeId; }
+    // The glyph says nothing out loud, so the field's `clearLabel` is what it is called.
+    const wchar_t *AccessibleName() const override {
+        return field && !field->clearLabel.empty() ? field->clearLabel.c_str() : L"Clear";
+    }
+    // **A glyph is not text and the pointer over it is over a button**: WinUI sets an arrow over its
+    // own delete button rather than leaving the field's I-beam, and this is that.
+    bool TextCursor() const override { return false; }
+    void OnClick() override { if (field) field->Clear(); }
+
+    void Paint(const Painter &p) override {
+        const Palette &c = *p.pal;
+        // Subtle: no box at all until the pointer is on it, which is what WinUI's button inside a
+        // field is. A filled square in the corner of every field is the other thing this could be.
+        if (enabled && hoverT > 0.0f)
+            p.FillRound(rect, metric::kRadiusControl,
+                        Fade(Mix(c.subtleHover, c.subtlePressed, pressT), hoverT));
+        // Centred by measuring the glyph, because the icon format aligns leading like every other
+        // format and a glyph is not a paragraph.
+        const float gw = p.MeasureWidth(glyph::kClear, p.font->icon);
+        const D2D1_RECT_F box = { rect.left + (Width(rect) - gw) * 0.5f, rect.top,
+                                  rect.left + (Width(rect) + gw) * 0.5f, rect.bottom };
+        p.Text(glyph::kClear, box, p.font->icon,
+               enabled ? (hoverT > 0.0f ? c.textPrimary : c.textSecondary) : c.textDisabled);
+    }
+};
+
+// The field's side of the button, which needs the button to be a complete type: where a click on it
+// leaves the field is `TextBox::Clear`, and when it is there is `ClearShown`.
+inline void TextBox::ClearState() {
+    if (clear) clear->visible = ClearShown();
+}
+
 // What a field's own layout arranges: the bar, over the right-hand edge rather than in a column of
 // its own, the way WinUI's lies over the page it belongs to. Its numbers are the field's business and
 // are kept up to date by `BarNumbers` -- a scroll must not be a reason to lay a page out again.
@@ -833,10 +943,15 @@ inline void FieldLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     // goes.
     f->bar->area = box;
     f->BarNumbers();
+    // The clear button, in the same space. Its *state* is the field's -- see `ClearState` -- but a box
+    // that has just changed size is where the 5em rule can change, so it is asked for again here.
+    if (f->clear) f->clear->rect = TextBox::ClearBoxIn(box);
+    f->ClearState();
 }
 
 inline TextBox::TextBox() {
-    // The field's own layout, which arranges the bar and nothing else: the page arranges the field.
+    // The field's own layout, which arranges the bar and the button and nothing else: the page
+    // arranges the field.
     SetLayout(new FieldLayout());
     // Qualified, because this class hides `Add`: the bar is the field's own child rather than
     // something a page is putting in it.
@@ -844,6 +959,12 @@ inline TextBox::TextBox() {
     // Nothing to scroll yet, and a bar that has never been arranged would otherwise flash at the
     // right-hand edge before the first arrangement. See ScrollBar::Poll, which puts it away itself.
     bar->visible = false;
+    // The button is made whether or not the page ever asks for it, and hidden until it does: a control
+    // that appeared later would be a control arriving in the tree after a layout, and there is nothing
+    // saved by waiting.
+    clear = Widget::Add(new ClearButton());
+    clear->field = this;
+    clear->visible = false;
 }
 
 }  // namespace micula
