@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-08
+
 ### Added
 
 - **A field can be told what may go into it.** `TextBox::filter` takes a character or leaves it,
