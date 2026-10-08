@@ -1193,13 +1193,18 @@ struct TextBox : Widget {
         // still drawn either way -- that edge is the field's own bottom, and not drawing it would leave
         // the rounded stroke open -- and an `Invalid` answer is painted here whatever the flag says,
         // because a report is not an emphasis.
+        // **What the window is, not only what the widget is.** A window somebody has alt-tabbed away from
+        // still has a focused field, and the field is still where the keyboard would go -- but the keyboard
+        // is not there, so nothing about it is lit: no accent along the bottom edge and no caret. The fill
+        // is left alone, because that one is about the widget rather than about the window.
+        const bool hasKeyboard = active && (!surface() || surface()->Active());
         Resolve(false);
         const bool bad = validation == Validation::Invalid;
-        const bool lit = active && enabled && (bad || showAccentUnderline);
+        const bool lit = hasKeyboard && enabled && (bad || showAccentUnderline);
         p.Line(rect.left + metric::kRadiusControl, rect.bottom - 1,
                rect.right - metric::kRadiusControl, rect.bottom - 1,
                bad ? c.bad
-                   : (active && enabled && showAccentUnderline ? c.accent : c.controlStrokeBottom),
+                   : (hasKeyboard && enabled && showAccentUnderline ? c.accent : c.controlStrokeBottom),
                lit ? 2.0f : 1.0f);
 
         Ensure();
@@ -1262,7 +1267,7 @@ struct TextBox : Widget {
                                  D2D1_DRAW_TEXT_OPTIONS_NONE);
         }
 
-        if (active && enabled) {
+        if (hasKeyboard && enabled) {
             Surface *w = surface();
             if (w && w->caretOn) {
                 const D2D1_POINT_2F at = CaretAt(caret);

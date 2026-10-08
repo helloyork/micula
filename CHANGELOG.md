@@ -114,6 +114,11 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **An inactive window's field is drawn as one without the keyboard.** A window somebody has alt-tabbed away
+  from keeps its focused field, and that field went on being drawn with the accent line along its bottom edge
+  and a blinking caret -- the caret even kept blinking in the background, half the work of a surface nobody
+  is looking at. Neither is lit now, and the caret comes back showing the moment the window takes the
+  keyboard again.
 - **A key that moves nothing does not start the caret's period over.** A read-only field takes every typing
   key and refuses it -- deliberately, so that the window cannot use it as a mnemonic -- and the caret was
   starting over for each one, so a hand resting on the keys of a field nobody can type into set the blink

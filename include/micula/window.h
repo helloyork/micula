@@ -1466,6 +1466,9 @@ struct Window : Surface {
     // rather than switching, and the close button is the one people notice.
     float captionT[3] = { 0.0f, 0.0f, 0.0f };
     bool active = true;
+    // What the controls ask: `Surface::Active`. Nothing else in this header answers it, so a window that
+    // forgets to say would leave every field in it looking focused.
+    bool Active() const override { return active; }
 
     // The window's own: the stand-in for the frame loop while Windows runs a modal size or move loop
     // of its own. See `Surface::BeginPump` for the clocks and the caret.
@@ -4931,6 +4934,11 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         break;
     case WM_ACTIVATE:
         self->active = LOWORD(wp) != WA_INACTIVE;
+        // **And the caret goes with it.** A window that has just been activated takes its caret back, on
+        // screen and at the start of a period; one that has lost the keyboard draws none at all -- which
+        // its controls work out from `Active()` rather than being told. See `Surface::BlinkCaret`.
+        if (self->active) self->WakeCaret();
+        self->Invalidate();
         // A window that has just been alt-tabbed away from must not leave a flyout
         // hanging open over its own page, waiting for a click it will never get -- nor a
         // control lit under the pointer it no longer has. Alt-tab moves no mouse, so
