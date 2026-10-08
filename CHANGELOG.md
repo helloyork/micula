@@ -110,6 +110,9 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A control that is switched off is not keyboard focusable to a client.** The property was answered
+  from a control's own `Focusable()` and not from whether it was enabled, so a client was told it could
+  put the keyboard focus somewhere no click and no Tab reaches.
 - **A check box and a switch say whether a client may change them.** Both answered with the default,
   "may not be changed", so a client asking about the one kind of control that exists in order to be
   toggled was told no. A read-only box is the case where the answer is the other way round.

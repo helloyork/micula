@@ -3900,7 +3900,10 @@ struct UiaElement : IRawElementProviderSimple,
         // See `VisibleArea`.
         case UIA_IsOffscreenPropertyId:
             return Flag(out, !w->visible || (isItem ? !it.onscreen : BoxIsEmpty(VisibleBox(*w))));
-        case UIA_IsKeyboardFocusablePropertyId:      return Flag(out, !isItem && w->Focusable());
+        // A control that is switched off is not one the focus can be put on: the tab order and the
+        // hit test both pass it by, and a client asking this is told the same thing they are.
+        case UIA_IsKeyboardFocusablePropertyId:
+            return Flag(out, !isItem && w->enabled && w->Focusable());
         case UIA_HasKeyboardFocusPropertyId:         return Flag(out, !isItem && win->focused == w);
         case UIA_IsControlElementPropertyId:
         case UIA_IsContentElementPropertyId:         return Flag(out, true);
