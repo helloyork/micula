@@ -3386,8 +3386,8 @@ private:
     // Any surface that wants frames, with each one's own `animOn` kept in step: it is what
     // Invalidate() asks before deciding whether to set an update region. See Surface::Invalidate.
     bool Moving();
-    // One message, inside the guard of the window it is for -- found from the handle rather than
-    // from the list, because a message can arrive for a window that is in no app at all.
+    // One message, inside the guard of the window it is for -- found from this list rather than from
+    // the window's user data, which is not this library's to read: see the note on the definition.
     void PumpMessage(MSG *msg);
 };
 
@@ -3471,8 +3471,27 @@ inline bool App::Moving() {
     return any;
 }
 
+// One message, inside the guard of the window it is for.
+//
+// **The handle is looked up in this app's own list, because `GWLP_USERDATA` cannot answer it.** That slot
+// says nothing about who wrote it. The IME's own windows -- its composition window, its candidate list,
+// the `Default IME` window -- are created in *this* process and on this thread, so their messages come out
+// of this same queue, and the value in that slot is the IME's business. Read as a `Surface *` it is a wild
+// one, and the guard then does `--target->dispatchDepth` on whatever it points at and clears a `retired`
+// vector that was never there: a Pinyin composition started in the caret demo faulted in `~Dispatch` with
+// `retired.size()` of 18446744073171763200 and a widget at 0x100700000.
+//
+// The list answers the case the handle was chosen for just as well: a message for a window that is in no
+// app -- which is every one of the IME's -- is dispatched and otherwise left alone. The scan costs a few
+// pointer compares against the handful of windows a loop has.
 inline void App::PumpMessage(MSG *msg) {
-    Surface *target = reinterpret_cast<Surface *>(GetWindowLongPtrW(msg->hwnd, GWLP_USERDATA));
+    Surface *target = nullptr;
+    for (Surface *s : surfaces) {
+        if (s->hwnd == msg->hwnd) {
+            target = s;
+            break;
+        }
+    }
     if (!target) { DispatchMessageW(msg); return; }
     // The guard is the *target's*, and that is the whole point of looking it up: a page on the
     // second surface that lays itself out in a callback would otherwise free the widgets its own

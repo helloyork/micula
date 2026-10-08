@@ -114,6 +114,10 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **Typing through an input method no longer takes the process down.** A message for a window that is not
+  the application's own -- an input method's windows are created in the application's process, so their
+  messages arrive in the same queue -- was taken for one of the loop's own surfaces and dispatched under
+  its guard.
 - **An inactive window's field is drawn as one without the keyboard.** A window somebody has alt-tabbed away
   from keeps its focused field, and that field went on being drawn with the accent line along its bottom edge
   and a blinking caret -- the caret even kept blinking in the background, half the work of a surface nobody
