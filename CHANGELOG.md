@@ -127,11 +127,11 @@ library can be: a minor version may break.
   answers on a default machine, so nothing looked wrong -- and somebody who had changed the caret's blink in
   Settings, including to "no blinking", was ignored. The period is asked for on every operation now, so a
   change lands on the next keystroke rather than on the next launch.
-- **The caret starts its period over whenever it is operated on.** A keystroke, a click that moves it, a
-  composition and taking the focus all put the caret back on screen *and* put its two periods back to zero,
-  which is what Windows' own edit control does. It used to turn the caret on and leave the timer where it
-  was, so an operation landing late in a period showed the caret for the few milliseconds that were left of
-  it -- a keystroke 422 ms into the off half showed it for 109 ms, against a period of 531.
+- **The caret starts its period over whenever it is operated on.** A keystroke, a click that moves it and
+  taking the focus all put the caret back on screen *and* put its two periods back to zero, which is what
+  Windows' own edit control does. It used to turn the caret on and leave the timer where it was, so an
+  operation landing late in a period showed the caret for the few milliseconds that were left of it -- a
+  keystroke 422 ms into the off half showed it for 109 ms, against a period of 531.
 - **A field scrolled to its end shows the whole last line.** The text does not begin at the top of what
   it is clipped to -- a wrapped field centres its first line in one control's height -- so the limit every
   scroll is clamped to came out that inset short, and the bottom of the line, which is the descent, was

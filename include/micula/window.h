@@ -3520,15 +3520,21 @@ inline bool Surface::CaretMoved(const D2D1_POINT_2F &before) const {
 }
 
 inline void Surface::StartCaretBlink() {
-    if (caretTimer.Running()) caretTimer.Stop();
     // **The period is the system's, asked for every operation rather than remembered.** It is what somebody
     // changes in Settings -- including to "no blinking at all", which this answers as `INFINITE` and which
     // means the caret simply stays showing -- so asking here means a change lands on the next keystroke
     // instead of on the next launch. It was a hardcoded 530, which is the default this machine answers
     // anyway, so nothing about the blinking ever looked wrong: it was the setting that was ignored. A call
     // that fails answers zero, and 530 is the documented default it would have answered.
+    //
+    // **The timer is moved, not replaced.** `Timer::Start` is documented as starting a timer *or moving
+    // one*, so restarting the period needs no `Stop` in front of it -- and one fewer `KillTimer`/`SetTimer`
+    // pair per operation is one fewer thing happening between a message and the IME's own processing of it.
     const UINT ms = GetCaretBlinkTime();
-    if (ms == 0xFFFFFFFFu) return;
+    if (ms == 0xFFFFFFFFu) {
+        if (caretTimer.Running()) caretTimer.Stop();   // "no blinking": nothing to move, so end it
+        return;
+    }
     caretTimer.Start(this, ms ? ms : 530u, [this] { BlinkCaret(); });
 }
 
@@ -5125,9 +5131,10 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_IME_STARTCOMPOSITION:
-        // A composition is an operation on the caret too, and the candidate window is about to be put at
-        // it: the caret has no business being out while somebody is composing into it.
-        self->WakeCaret();
+        // **Nothing here touches the caret.** A composition is drawn by the IME itself, and its committed
+        // text arrives as `WM_IME_CHAR` and restarts the blink there; waking the caret *here* -- which this
+        // did, briefly -- adds a call into the timer machinery in the middle of the IME's own message, and
+        // buys a caret that is visible for a moment rather than blinking, which is not worth it.
         self->PlaceImeAtCaret();
         return DefWindowProcW(h, m, wp, lp);
     case WM_KEYDOWN: {
