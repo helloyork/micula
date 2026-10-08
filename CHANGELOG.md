@@ -114,6 +114,10 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **The caret's blink is the system's period.** It was a hardcoded 530 ms -- which is what `GetCaretBlinkTime`
+  answers on a default machine, so nothing looked wrong -- and somebody who had changed the caret's blink in
+  Settings, including to "no blinking", was ignored. The period is asked for on every operation now, so a
+  change lands on the next keystroke rather than on the next launch.
 - **The caret starts its period over whenever it is operated on.** A keystroke, a click that moves it, a
   composition and taking the focus all put the caret back on screen *and* put its two periods back to zero,
   which is what Windows' own edit control does. It used to turn the caret on and leave the timer where it

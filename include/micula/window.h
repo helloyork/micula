@@ -3486,8 +3486,8 @@ inline void Surface::BeginPump() {
     // this readable: every frame divides by it.
     QueryPerformanceFrequency(&qpcFreq);
     QueryPerformanceCounter(&qpcLast);
-    // GetCaretBlinkTime's own default period. The surface owns this timer the way a control owns
-    // its own; see Timer, and see `WakeCaret` for the other half of what the caret does.
+    // The caret's timer, at the system's own blink period: see `StartCaretBlink`. The surface owns this
+    // timer the way a control owns its own; see Timer, and see `WakeCaret` for the other half of it.
     StartCaretBlink();
 }
 
@@ -3500,7 +3500,16 @@ inline void Surface::BlinkCaret() {
 }
 
 inline void Surface::StartCaretBlink() {
-    caretTimer.Start(this, 530, [this] { BlinkCaret(); });
+    if (caretTimer.Running()) caretTimer.Stop();
+    // **The period is the system's, asked for every operation rather than remembered.** It is what somebody
+    // changes in Settings -- including to "no blinking at all", which this answers as `INFINITE` and which
+    // means the caret simply stays showing -- so asking here means a change lands on the next keystroke
+    // instead of on the next launch. It was a hardcoded 530, which is the default this machine answers
+    // anyway, so nothing about the blinking ever looked wrong: it was the setting that was ignored. A call
+    // that fails answers zero, and 530 is the documented default it would have answered.
+    const UINT ms = GetCaretBlinkTime();
+    if (ms == 0xFFFFFFFFu) return;
+    caretTimer.Start(this, ms ? ms : 530u, [this] { BlinkCaret(); });
 }
 
 // **The caret starts over, showing, whenever somebody does something to it.** Windows' own edit control
