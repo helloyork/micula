@@ -498,6 +498,7 @@ struct TextBox : Widget {
         Resolve(true);
         Reformat();
         ClearState();
+        ClampScroll();
     }
     // The same, unchecked: for a page that has validated the value itself, or that is restoring a
     // value the field refused long ago and would refuse again. **Nothing else skips the rules** --
@@ -511,6 +512,7 @@ struct TextBox : Widget {
         validationStale = true;
         Reformat();
         ClearState();
+        ClampScroll();
     }
     // **A layout is only good for the width it was made at**, and a wrapped one is the whole reason:
     // the same text at another width is another set of lines. Remade when the width moves, and not
@@ -752,11 +754,28 @@ struct TextBox : Widget {
         bar->visible = Wraps() && all > box;
         bar->Poll();
     }
+    // **How far the text can be scrolled before its last line is at the top of the box.** This is the
+    // clamp every scroll goes through, and the number a page needs in order to know whether the reader
+    // is at the bottom: `scrollY >= MaxScrollY()` is "pinned", and following the text only while
+    // somebody is watching the end of it is then the page's to do -- a field has no business deciding
+    // that. See `ClampScroll`.
+    float MaxScrollY() const { return (std::max)(0.0f, TextHeight() - InnerHeight()); }
+    // **Both scrolls are re-clamped when the page sets the text**, because they belong to the text that
+    // was there: a value the page shortened would otherwise leave the field scrolled past its own last
+    // line -- a field showing nothing at all -- until something else happened to scroll it back. No
+    // caret is followed here: where the scroll *should* be when the text changes is the page's answer,
+    // and this only makes sure the one it left is one the text can still reach.
+    void ClampScroll() {
+        if (scroll == 0.0f && scrollY == 0.0f) return;   // nothing to clamp, and no layout to build
+        scrollY = std::clamp(scrollY, 0.0f, MaxScrollY());
+        const float full = CaretAt(text.size()).x;
+        scroll = std::clamp(scroll, 0.0f, (std::max)(0.0f, full - InnerWidth()));
+        BarNumbers();
+    }
     // Scroll the text, from a notch or from the bar being dragged. Clamped to the text: the last line
     // is readable to its end rather than scrolled past.
     void ScrollTo(float to) {
-        const float most = (std::max)(0.0f, TextHeight() - InnerHeight());
-        const float at = std::clamp(to, 0.0f, most);
+        const float at = std::clamp(to, 0.0f, MaxScrollY());
         if (at == scrollY) return;
         scrollY = at;
         if (bar) bar->Wake();
@@ -773,7 +792,7 @@ struct TextBox : Widget {
     // scrolled to its end is not in the way of the page's own scroll.
     bool OnWheel(float, float, float notches) override {
         if (!Wraps() || notches == 0.0f) return false;
-        if (TextHeight() - InnerHeight() <= 0.0f) return false;
+        if (MaxScrollY() <= 0.0f) return false;
         const float perNotch = SystemWheelLines();
         ScrollTo(scrollY - notches * (perNotch > 0.0f ? perNotch : 3.0f) * LineH());
         return true;
@@ -853,7 +872,7 @@ struct TextBox : Widget {
         const float box = InnerHeight();
         if (at.y - scrollY + row > box) scrollY = at.y + row - box;
         if (at.y - scrollY < 0)         scrollY = at.y;
-        scrollY = std::clamp(scrollY, 0.0f, (std::max)(0.0f, TextHeight() - box));
+        scrollY = std::clamp(scrollY, 0.0f, MaxScrollY());
         BarNumbers();
     }
 

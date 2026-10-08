@@ -97,9 +97,16 @@ library can be: a minor version may break.
   the value as read-only rather than as a value that quietly did not change. Enter finishes nothing
   there either -- a commit is a change, and a field being read has none to make -- and the IME is not
   opened for it, so there is no candidate window over a field that would refuse what it composed.
+- **`TextBox::MaxScrollY`,** the furthest the text can be scrolled. It is the clamp every scroll goes
+  through and the number a page needs in order to know whether the reader is at the bottom of it, so
+  that following a growing text only while somebody is watching the end of it is the page's to do --
+  with `scrollY` and `ScrollTo`, and with `SetTextRaw` leaving both where they were.
 
 ### Fixed
 
+- **A field re-clamps its scroll when the page sets the text.** A value the page shortened used to leave
+  the field scrolled past its own last line -- showing nothing at all -- until something else happened to
+  scroll it back.
 - **A line break is one step.** Left and Right used to stop between the `\r` and the `\n`, which is a
   place nothing can be typed, and Backspace and Delete took away half of one and left a lone carriage
   return behind. Both halves of a break now move and go as one thing.

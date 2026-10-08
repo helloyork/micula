@@ -433,6 +433,7 @@ TextBox();
 | `bool pathField` | For file system paths. Paste also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
 | `std::function<void(const std::wstring &)> onChange` | Called after every edit. |
 | `std::function<void(const std::wstring &)> onCommit` | Called on Enter and when the field loses focus, and only when the text has changed since the field was focused: a field clicked into and clicked out of again has nothing to commit. Save here. |
+| `float MaxScrollY() const` | The furthest the text can be scrolled. A page that follows a growing text compares `scrollY` against it to tell whether the bottom of it is in view. |
 
 ```cpp
 auto *t = Add(new micula::TextBox());
