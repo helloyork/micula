@@ -107,6 +107,10 @@ library can be: a minor version may break.
   keeps its colour and only the box changes -- to the accent's own disabled pair, so it reads as set and
   not as pressable -- which is what showing a state somebody else owns needs, since a disabled box goes
   pale all over.
+- **`TextBox::showAccentUnderline`,** for a field whose focus has no business lighting up its bottom
+  edge: off, a focused field keeps the edge it has at rest instead of the accent line. The fill and the
+  caret still say where the keyboard is, and an `Invalid` answer is still painted there, because that is
+  a report rather than an emphasis.
 
 ### Fixed
 

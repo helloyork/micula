@@ -433,6 +433,7 @@ TextBox();
 | `void SetReadOnly(bool on)` | Sets `readOnly`. |
 | `std::wstring placeholder` | Shown in the disabled text color while the field is empty. |
 | `bool pathField` | For file system paths. Paste also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
+| `bool showAccentUnderline` | True by default. False leaves the field the bottom edge it has at rest when it takes the focus, instead of the accent line a focused field draws there. For a field that shows a log or a value rather than being worked in. |
 | `std::function<void(const std::wstring &)> onChange` | Called after every edit. |
 | `std::function<void(const std::wstring &)> onCommit` | Called on Enter and when the field loses focus, and only when the text has changed since the field was focused: a field clicked into and clicked out of again has nothing to commit. Save here. |
 | `float MaxScrollY() const` | The furthest the text can be scrolled. A page that follows a growing text compares `scrollY` against it to tell whether the bottom of it is in view. |

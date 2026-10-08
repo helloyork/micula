@@ -154,6 +154,13 @@ struct TextBox : Widget {
         ClearState();   // the clear button is not shown to a field that may not be emptied
         Invalidate();
     }
+    // **The line along the field's bottom edge, and whether taking the focus lights it up.** WinUI gives
+    // a focused text box an accent underline two DIPs thick and this draws the same one -- see `Paint` --
+    // so a page that is *showing* something rather than taking something, a log somebody reads or a value
+    // read back out of a device, can ask for the resting edge instead. What is left is the edge every
+    // other control has; the fill and the caret still say where the keyboard is. An `Invalid` answer is
+    // still painted, because that is a report and not an emphasis.
+    bool showAccentUnderline = true;
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
     // neither is part of the path, and both are what somebody would have to delete by
@@ -1180,13 +1187,20 @@ struct TextBox : Widget {
         // not Fluent's: WinUI changes `BorderThickness` to 0,0,0,2 in a visual-state
         // setter, and a setter has no duration. The fill behind it is the part that
         // crosses over, and it does that above.
+        //
+        // **`showAccentUnderline` is off and there is nothing to light up**: the field keeps the edge it
+        // has at rest, which is what a page showing a log rather than being typed into wants. The line is
+        // still drawn either way -- that edge is the field's own bottom, and not drawing it would leave
+        // the rounded stroke open -- and an `Invalid` answer is painted here whatever the flag says,
+        // because a report is not an emphasis.
         Resolve(false);
+        const bool bad = validation == Validation::Invalid;
+        const bool lit = active && enabled && (bad || showAccentUnderline);
         p.Line(rect.left + metric::kRadiusControl, rect.bottom - 1,
                rect.right - metric::kRadiusControl, rect.bottom - 1,
-               validation == Validation::Invalid
-                   ? c.bad
-                   : (active && enabled ? c.accent : c.controlStrokeBottom),
-               active && enabled ? 2.0f : 1.0f);
+               bad ? c.bad
+                   : (active && enabled && showAccentUnderline ? c.accent : c.controlStrokeBottom),
+               lit ? 2.0f : 1.0f);
 
         Ensure();
 
