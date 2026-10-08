@@ -1671,6 +1671,10 @@ struct Window : Surface {
     // focus and calls this; a surface with no automation tree of its own leaves it empty.
     void FocusMoved() override { UiaFocusChanged(); }
     void PlaceImeAtCaret();
+    // Where the caret is, in the form a TSF input method asks for it. See `IMR_QUERYCHARPOSITION`.
+    bool ImeCharPosition(IMECHARPOSITION *at);
+    // The line both of those answers are built from, in client pixels. See the note on the definition.
+    bool ImeLineRect(LONG *x, LONG *top, LONG *height);
 
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l);
 };
@@ -3095,9 +3099,10 @@ inline void Surface::SetFocusTo(Widget *w) {
     if (focused) { focused->focus = true; focused->OnFocus(); }
     // **The IME follows the focus, and a control that cannot be typed into does not get it.** Windows
     // starts a composition from the keys the *window* receives, whatever the control under the caret
-    // thinks, so a read-only field would still open an IME over itself and a PageUp would still land in
-    // a composition window. Taking the input context away for as long as such a control has the focus is
-    // what stops it; it is handed straight back when one that takes text gets the focus. See `ParkIme`.
+    // thinks, so a read-only field would still open an IME over itself and a PageUp would be taken by a
+    // composition instead of by the control. Taking the input context away for as long as such a control
+    // has the focus is what stops it; it is handed straight back when one that takes text gets the focus.
+    // See `ParkIme`.
     ParkIme(!focused || !focused->AccessibleWritable());
     WakeCaret();
     FocusMoved();
@@ -3154,25 +3159,202 @@ inline void Surface::CollectTab(Widget *w, std::vector<Widget *> &out) {
     }
 }
 
+// A composition string out of the context, as the wide characters it is made of. Both of the strings an
+// input method hands over are read this way, and neither can be read anywhere but here: the context belongs
+// to this window, this process and this thread.
+inline std::wstring ImeString(HIMC imc, DWORD which) {
+    const LONG bytes = ImmGetCompositionStringW(imc, which, nullptr, 0);
+    if (bytes <= 0) return std::wstring();
+    std::wstring text((size_t)bytes / sizeof(wchar_t), L'\0');
+    ImmGetCompositionStringW(imc, which, &text[0], bytes);
+    return text;
+}
+
+// **What GDI says about the font an input method is told about.** The composition is drawn by this library
+// now, so nothing of ours depends on it -- but an input method that is not TSF still draws windows of its
+// own with GDI, from the font it was given, and the ascent of that font is what turns a baseline back into
+// the top of a line: the same `LOGFONT` that produces a sensible glyph size produces GDI's own ascent, and
+// that number is not DirectWrite's. Its own memory DC, so that asking costs nothing and belongs to nobody.
+inline bool ImeFontMetrics(const LOGFONTW &lf, TEXTMETRICW *out) {
+    if (!out) return false;
+    HFONT font = CreateFontIndirectW(&lf);
+    if (!font) return false;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ was = dc ? SelectObject(dc, font) : nullptr;
+    const BOOL ok = dc ? GetTextMetricsW(dc, out) : FALSE;
+    if (dc) {
+        SelectObject(dc, was);
+        DeleteDC(dc);
+    }
+    DeleteObject(font);
+    return ok != FALSE;
+}
+
+// **A `LOGFONT` for a text format.** An input method's own drawing is GDI's, and whatever it draws for
+// itself it takes the face and the size from the input context -- which nothing had ever set, so a window
+// of its own came out in the stock face at the stock size while the field it belonged to was 14 DIP Segoe
+// UI Variable. This library draws the composition now, so the only reader left is an input method that is
+// not TSF: Microsoft Pinyin never was one, a TSF input method taking its font from the text service.
+// Everything here is DIPs, so the surface, which is what knows the scale, is the one that builds this.
+//
+// `lfHeight` is negative, which is how GDI is told a *character* height rather than a cell height, and
+// the weight needs no translation: `DWRITE_FONT_WEIGHT` and `LOGFONT::lfWeight` are the same numbers.
+inline bool ImeLogFont(IDWriteTextFormat *format, float scale, LOGFONTW *out) {
+    if (!out || !format || scale <= 0.0f) return false;
+    const UINT32 room = format->GetFontFamilyNameLength();
+    if (room == 0 || room >= LF_FACESIZE) return false;
+    if (FAILED(format->GetFontFamilyName(out->lfFaceName, LF_FACESIZE))) return false;
+    const float em = format->GetFontSize();
+    if (em <= 0.0f) return false;
+    out->lfHeight = -(LONG)(em * scale + 0.5f);
+    out->lfWeight = (LONG)format->GetFontWeight();
+    out->lfItalic = format->GetFontStyle() == DWRITE_FONT_STYLE_ITALIC ? TRUE : FALSE;
+    out->lfCharSet = DEFAULT_CHARSET;
+    out->lfQuality = CLEARTYPE_QUALITY;
+    return true;
+}
+
+// **Where a widget's own coordinates start, in the window's.** A widget places itself in its parent's
+// space -- `rect` is the parent's coordinates -- so every point a widget answers about, its caret
+// included, is in that space, and the window is where that space ends. Walking up is what the library
+// does wherever else it needs the same answer, and it reaches the window's own `RootBox` on the way: the
+// tree's root is what a window places under its caption, so the caption is in this sum already and must
+// not be added again by the caller. (It was, for one measurement: everything the IME was told sat one
+// caption -- 32 DIP -- below where it belonged, which is why the composition looked like a box attached
+// to the top of the field rather than to its text.)
+inline D2D1_POINT_2F ParentOrigin(const Widget *w) {
+    D2D1_POINT_2F at = {};
+    for (const Widget *up = w ? w->parent : nullptr; up; up = up->parent) {
+        at.x += up->rect.left;
+        at.y += up->rect.top;
+    }
+    return at;
+}
+
+// **The line the caret is on, in client pixels.** Every question an input method asks about position is
+// answered from here -- the windows it puts up itself and `IMR_QUERYCHARPOSITION` both -- so that the two
+// cannot drift apart, and in pixels because GDI's numbers already are.
+//
+// **The top is worked back from the baseline, which is the one number both paths agree on.** A box is what
+// an input method wants -- the top edge of a line and its height -- and the baseline is what the widget
+// states: where the text sits on the line, the same for every line of a field whose spacing is uniform.
+// The ascent that turns it back into a top is GDI's, because an input method's own drawing is GDI's.
+// Measured off the screen with a 22 DIP Cascadia Mono, the two rendering paths did not agree about it: the
+// composition sat five pixels below the text at a point where both line heights matched to a tenth of a
+// pixel. Measured again in a four-line field, the two tops are within one pixel of each other: a line that
+// begins at 283 px goes out as 282.
+inline bool Window::ImeLineRect(LONG *x, LONG *top, LONG *height) {
+    D2D1_POINT_2F pt = {};
+    if (!focused || !focused->CaretPoint(&pt)) return false;
+    const float scale = this->scale();
+    const D2D1_POINT_2F from = ParentOrigin(focused);
+    Widget::CaretLine line;
+    const bool styled = focused->CaretStyle(&line);
+    LOGFONTW lf = {};
+    const bool haveFont = styled && ImeLogFont(line.format, scale, &lf);
+    TEXTMETRICW tm = {};
+    const bool haveMetrics = haveFont && ImeFontMetrics(lf, &tm);
+    if (x) *x = (LONG)((pt.x + from.x) * scale);
+    if (top)
+        *top = styled ? ((LONG)((line.baseline + from.y) * scale) - (haveMetrics ? tm.tmAscent : 0))
+                      : (LONG)((pt.y + from.y) * scale);
+    if (height) *height = haveMetrics ? tm.tmHeight : (styled ? (LONG)(line.height * scale) : 0);
+    return true;
+}
+
 // Put the IME's candidate and composition windows at the caret rather than at the
 // top-left corner of the window, which is where they land by default. On a machine
 // with a Chinese IME that default is the difference between a usable field and one
 // that types into a box floating over the title bar.
+//
+// **Two mechanisms, because there are two kinds of input method.** The `ImmSetCompositionWindow` below
+// is IMM32's and the older IMEs use it; a TSF one -- Microsoft Pinyin -- ignores it and asks for the
+// caret through `IMR_QUERYCHARPOSITION` instead. Both are kept: they cost a line each, and which one is
+// installed is the machine's business rather than this library's. See `ImeCharPosition`.
 inline void Window::PlaceImeAtCaret() {
     D2D1_POINT_2F pt;
     if (!focused || !focused->CaretPoint(&pt)) return;
+    const float scale = this->scale();
+    // **The caret arrives in the widget's own space and the IME wants the window's.** Without this the
+    // whole tree is one caption higher than its coordinates suggest -- the tree starts under the caption
+    // the window draws for itself -- and every candidate and composition window opened 32 DIP above the
+    // field it belonged to, which is what "it is drawn up at the top" was. See `ParentOrigin`.
+    const D2D1_POINT_2F from = ParentOrigin(focused);
+    // **The bottom of the caret's cell, which is where both of these windows belong.** A candidate window
+    // opens under the line and an IMM32 composition window is drawn downwards from its point, so the two
+    // want the same end of the same cell. `CaretPoint` already answers with the bottom for the fields it
+    // knows; one that can name its line answers from that instead. See `Widget::CaretStyle`.
+    Widget::CaretLine line;
+    const bool styled = focused->CaretStyle(&line);
+    const float top = styled ? line.top : pt.y;
+    const float bottom = styled ? (line.top + line.height) : pt.y;
     HIMC imc = ImmGetContext(hwnd);
     if (!imc) return;
+    const POINT at = { (LONG)((pt.x + from.x) * scale), (LONG)((bottom + from.y) * scale) };
+    // **The composition window goes at the top of the line, and the IME is left to adjust it.**
+    // `CFS_POINT` is documented as "subject to adjustment by the IME" and `CFS_FORCE_POSITION` as not,
+    // and the adjustment is not a nicety: forced, the IME puts its own text half a line below the point
+    // (measured -- 20 px at a 22 DIP font, against a line of 28 DIP), and allowed to adjust, the same
+    // point lands the composition on the line. It is the flag that decides, not the value: two builds
+    // with different values and the same flag were out by the same half line. The candidate list is a
+    // different answer: it opens under the line, so it takes the bottom of the cell, which is what `at`
+    // is, and `CFS_CANDIDATEPOS` is the flag that says so.
+    const POINT topLeft = { at.x, (LONG)((top + from.y) * scale) };
     COMPOSITIONFORM cf = {};
     cf.dwStyle = CFS_POINT;
-    cf.ptCurrentPos.x = (LONG)(pt.x * scale());
-    cf.ptCurrentPos.y = (LONG)(pt.y * scale());
+    cf.ptCurrentPos = topLeft;
     ImmSetCompositionWindow(imc, &cf);
     CANDIDATEFORM caf = {};
     caf.dwStyle = CFS_CANDIDATEPOS;
-    caf.ptCurrentPos = cf.ptCurrentPos;
+    caf.ptCurrentPos = at;
     ImmSetCandidateWindow(imc, &caf);
+    // **And the face it is told about**, which is what an input method that draws for itself has to go on:
+    // left unset it uses the stock face at the stock size. This library draws the composition, so nothing
+    // here depends on it; an IMM32 input method's own windows still do, and Microsoft Pinyin never did.
+    // See `ImeLogFont`.
+    if (styled) {
+        LOGFONTW lf = {};
+        if (ImeLogFont(line.format, scale, &lf)) ImmSetCompositionFontW(imc, &lf);
+    }
     ImmReleaseContext(hwnd, imc);
+}
+
+// **Where the caret is, in the form a TSF input method asks for it.** `IMR_QUERYCHARPOSITION` is a
+// request rather than a notification: the IME hands over an `IMECHARPOSITION` and the application fills
+// it in -- screen pixels, the height of the line, and the document's rectangle -- and answers TRUE. It
+// asks about the line the caret is on, not about the pre-edit: the composition is drawn by this library
+// (see `TextBox::OnComposition`), and what is placed from this answer is the input method's own candidate
+// list, one line-height below the top of this line. Left unanswered, Pinyin has nothing to go on and puts
+// its list in the corner of the screen.
+//
+// `dwCharPos` is left as it arrived: every character the field can be asked about is on the line the
+// caret is on, and that line is the one answer this has.
+inline bool Window::ImeCharPosition(IMECHARPOSITION *at) {
+    if (!at || at->dwSize < sizeof(IMECHARPOSITION)) return false;
+    LONG x = 0, top = 0, height = 0;
+    if (!ImeLineRect(&x, &top, &height)) return false;
+    POINT screen = { x, top };
+    if (!ClientToScreen(hwnd, &screen)) return false;
+    at->pt = screen;
+    if (height > 0) at->cLineHeight = (UINT)height;
+    // **The field is the document, and this rectangle is what an input method keeps its own windows
+    // inside.** Given the window's client rectangle instead, a long composition was wrapped at the edge of
+    // the window and carried onto a second line, in a field that has one. An edit control reports its own
+    // box here for the same reason: what outgrows its field then stays inside the field.
+    const float scale = this->scale();
+    const D2D1_POINT_2F from = ParentOrigin(focused);
+    const auto box = focused->rect;
+    POINT corners[2] = {
+        { (LONG)((box.left + from.x) * scale), (LONG)((box.top + from.y) * scale) },
+        { (LONG)((box.right + from.x) * scale), (LONG)((box.bottom + from.y) * scale) },
+    };
+    if (ClientToScreen(hwnd, &corners[0]) && ClientToScreen(hwnd, &corners[1])) {
+        at->rcDocument.left = corners[0].x;
+        at->rcDocument.top = corners[0].y;
+        at->rcDocument.right = corners[1].x;
+        at->rcDocument.bottom = corners[1].y;
+    }
+    return true;
 }
 
 inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
@@ -3522,6 +3704,13 @@ inline void Surface::BeginPump() {
     // The caret's timer, at the system's own blink period: see `StartCaretBlink`. The surface owns this
     // timer the way a control owns its own; see Timer, and see `WakeCaret` for the other half of it.
     StartCaretBlink();
+    // **An input method is for a control that takes text.** A surface that starts with the focus on nothing
+    // -- which is every window until a page or a person puts it somewhere -- has nothing to type into, and
+    // an input method left associated with it still starts a composition from a key the *window* received,
+    // in a window where no field can draw it: the pre-edit appears in its own little window at the corner
+    // of the screen. Parking it here is the other half of what `SetFocusTo` does on every change of focus.
+    // See `ParkIme`.
+    ParkIme(!focused || !focused->AccessibleWritable());
 }
 
 // **One period of the caret's blink**, and nothing at all when there is no caret to blink: a surface that
@@ -5149,11 +5338,74 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    case WM_IME_SETCONTEXT:
+        // **The composition is drawn by this library rather than by the input method.** This bit is what
+        // makes an IME show its own composition window: a box beside the caret, in the IME's font, with the
+        // IME's own caret in it, placed by the IME's metrics rather than by this field's. With the bit gone
+        // the IME still asks where the caret is and still shows its candidate list; what it stops doing is
+        // drawing the pre-edit. See `TextBox::OnComposition` for the drawing and `WM_IME_COMPOSITION` for
+        // where the string comes from.
+        return DefWindowProcW(h, m, wp, lp & ~(LPARAM)ISC_SHOWUICOMPOSITIONWINDOW);
+    case WM_IME_COMPOSITION: {
+        // **An input method's text, read where alone it can be read.** The composition and the committed
+        // string both arrive here, and the context they come out of belongs to this window's process and
+        // thread.
+        if (!self->focused) return DefWindowProcW(h, m, wp, lp);
+        HIMC imc = ImmGetContext(h);
+        if (!imc) return DefWindowProcW(h, m, wp, lp);
+        bool moved = false;
+        if (lp & GCS_COMPSTR) {
+            // The whole pre-edit each time rather than what changed in it, which is what the IME answers
+            // with: a field has nothing to reconcile.
+            const int at = (int)ImmGetCompositionStringW(imc, GCS_CURSORPOS, nullptr, 0);
+            self->focused->OnComposition(ImeString(imc, GCS_COMPSTR), at);
+            moved = true;
+        }
+        if (lp & GCS_RESULTSTR) {
+            // The committed text, fed to the field a character at a time through the same door a keystroke
+            // uses, so that everything the field does with one -- the filter, a refusal, the length rules,
+            // the undo step -- happens to a composition exactly as it happens to typing.
+            const std::wstring taken = ImeString(imc, GCS_RESULTSTR);
+            for (wchar_t ch : taken)
+                if (ch >= 0x20 || ch == L'\t') self->focused->OnChar(ch);
+            moved = true;
+        }
+        ImmReleaseContext(h, imc);
+        if (moved) self->WakeCaret(); else self->Invalidate();
+        return 0;
+    }
+    case WM_IME_ENDCOMPOSITION:
+        // Nothing to commit and nothing to keep: the composition is over, whatever happened to it.
+        if (self->focused) self->focused->OnComposition(std::wstring(), 0);
+        return DefWindowProcW(h, m, wp, lp);
+    case WM_IME_REQUEST:
+        // **The IME asking where the caret is, which is how a TSF input method places its composition
+        // window.** `IMR_QUERYCHARPOSITION` hands over an `IMECHARPOSITION` to fill in and wants TRUE
+        // back; the other three ask the application to move the windows itself or to set the font that
+        // will be drawn in, which is the same `ImmSet*` work `PlaceImeAtCaret` already does. The
+        // reconversion requests are left unanswered -- a field that does not offer its text back for
+        // reconversion is a field that says so by refusing, and returning FALSE is how it says it.
+        switch (wp) {
+        case IMR_QUERYCHARPOSITION:
+            if (self->ImeCharPosition(reinterpret_cast<IMECHARPOSITION *>(lp))) return TRUE;
+            break;
+        case IMR_COMPOSITIONWINDOW:
+        case IMR_CANDIDATEWINDOW:
+        case IMR_COMPOSITIONFONT:
+            self->PlaceImeAtCaret();
+            return TRUE;
+        default:
+            break;
+        }
+        return DefWindowProcW(h, m, wp, lp);
     case WM_IME_STARTCOMPOSITION:
-        // **Nothing here touches the caret.** A composition is drawn by the IME itself, and its committed
-        // text arrives as `WM_IME_CHAR` and restarts the blink there; waking the caret *here* -- which this
-        // did, briefly -- adds a call into the timer machinery in the middle of the IME's own message, and
-        // buys a caret that is visible for a moment rather than blinking, which is not worth it.
+        // **Nothing here touches the caret.** The composition is drawn by this library rather than by the
+        // input method -- see `WM_IME_SETCONTEXT` for the bit that stops the input method drawing its own,
+        // and `TextBox::OnComposition` for the drawing -- and its committed text arrives as
+        // `WM_IME_COMPOSITION`'s result string, which wakes the caret there. Waking the caret *here* --
+        // which this did, briefly -- adds a call into the timer machinery in the middle of the IME's own
+        // message, and buys a caret that is visible for a moment rather than blinking, which is not worth
+        // it.
         self->PlaceImeAtCaret();
         return DefWindowProcW(h, m, wp, lp);
     case WM_KEYDOWN: {

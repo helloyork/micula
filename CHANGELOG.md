@@ -111,6 +111,26 @@ library can be: a minor version may break.
   edge: off, a focused field keeps the edge it has at rest instead of the accent line. The fill and the
   caret still say where the keyboard is, and an `Invalid` answer is still painted there, because that is
   a report rather than an emphasis.
+- **A field draws its own composition, and draws it as content.** What an input method is holding used to
+  be a window of the input method's own -- its own font, its own size, its own place beside the caret. It
+  is laid out now with the field's own font, in the field's own layout, at the caret, so a sentence that
+  outgrows the line it started on wraps onto the next one and carries what follows it down with it -- and
+  the composition itself breaks between any two of its characters, because it is a run of letters being
+  typed rather than a word: it fills the line it is on instead of moving down whole, which would leave the
+  rest of that line empty. A field with one line pushes what follows it along and scrolls to it the way it
+  scrolls to the caret, and the caret sits where the input method says it is rather than at the insertion
+  point in front of the pre-edit. A dotted line runs under it, one to a line. It is drawn in an empty field
+  that is showing a placeholder as well, which the placeholder used to be drawn over.
+- **A selection is where a composition stands.** Typing over one is what replaces it, so the composition is
+  drawn in the selection's place rather than beside it -- and the selection is neither drawn under that nor
+  spent: cancelling the composition gives it back exactly as it was.
+- **`Widget::OnComposition` and `Widget::CaretStyle`.** A control is handed what an input method is
+  composing -- `OnComposition(preedit, caret)`, an empty string when it is over -- and answers where its
+  caret's line is with `CaretStyle`, which is both what a composition is drawn against and what an input
+  method is told about.
+- **An input method's candidate list is placed from the line the caret is on.** The line is handed over
+  through `IMR_QUERYCHARPOSITION` -- its top edge, its height, and the field's own box as the document to
+  wrap inside -- so the list opens under the line being typed on rather than in the corner of the window.
 
 ### Fixed
 

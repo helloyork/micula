@@ -156,15 +156,41 @@ struct Widget {
     virtual void Dismiss() {}
     virtual bool OnKey(WPARAM /*vk*/) { return false; }
     virtual bool OnChar(wchar_t /*c*/) { return false; }
+    // **What an input method is composing, before any of it is committed.** An application that draws its
+    // own composition is handed the pre-edit as it changes and is expected to draw it where the caret is;
+    // that is what makes a composition sit *in* the text instead of in a window over it, in the field's own
+    // font and next to the field's own caret. An empty `preedit` means the composition is over, and `caret`
+    // is an index into it rather than into the text.
+    virtual void OnComposition(const std::wstring & /*preedit*/, int /*caret*/) {}
     virtual void OnFocus() {}
     virtual void OnBlur() {}
     // The mouse went up on a widget that had capture, wherever the pointer ended up. OnClick is not
     // the same event and cannot stand in for it: it fires only when the release lands back inside
     // the widget, which is exactly what a drag does not do.
     virtual void OnRelease() {}
-    // Where the IME should put its composition window, in this widget's own space. Only meaningful
-    // for one that takes text; ignored otherwise.
+    // **Where an input method should put what it puts up itself**, in this widget's own space: its
+    // candidate list, and, for the ones that still draw a window of their own, that window as well. The
+    // composition is drawn by the widget now -- see `OnComposition` -- so this is no longer about the
+    // pre-edit: the list of characters to choose from is the input method's own interface, and it is
+    // placed from here.
     virtual bool CaretPoint(D2D1_POINT_2F * /*out*/) const { return false; }
+    // **The line the caret is on, which is what an input method's own windows are placed against.**
+    // `CaretPoint` answers *where*; a candidate list is placed against a line rather than against a
+    // point -- one line-height below the top of this one -- so an input method needs the line's own box:
+    // how tall it is and where the text sits on it. The format comes with it because only the widget
+    // knows which one it draws with -- a log field in a monospace and a heading do not use the same one,
+    // and nothing here is published to GDI, so the window is the one place that turns it into a `LOGFONT`
+    // (an input method's own drawing is GDI's). A widget with no answer leaves the input method its own
+    // defaults, which are the stock face at the stock size.
+    struct CaretLine {
+        float top = 0;                        // DIPs, this widget's own space, as `CaretPoint` answers
+        float baseline = 0;                   // DIPs, the same space: where the text sits on the line
+        float height = 0;                     // DIPs, the height of that line
+        IDWriteTextFormat *format = nullptr;  // borrowed, and may be null
+    };
+    // The type is the *line* rather than the style because a member type and a member function cannot
+    // share a name, and the question this asks is what the IME wants: the line under the caret.
+    virtual bool CaretStyle(CaretLine * /*out*/) const { return false; }
     virtual bool HandCursor() const { return false; }
     virtual bool TextCursor() const { return false; }
     // This widget draws something that follows the pointer *inside* itself: an open flyout's hovered
