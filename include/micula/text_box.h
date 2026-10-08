@@ -420,6 +420,14 @@ struct TextBox : Widget {
     // At least one line, always: a field that holds nothing still holds a line to type it into.
     size_t Rows() const { return Wraps() && lines > 0 ? lines : 1; }
 
+    // **How far down what it is clipped to the text begins.** A wrapped field centres its *first line*
+    // in one control's height -- see `FirstLineTop` -- so the text does not start at the clip's top, and
+    // every question about where the text *ends* has to add this. Leaving it out is what left the last
+    // line of a scrolled field short, by the inset less the border: with the body font in a three-line
+    // box, 5.7 DIP, which is the descenders. The pitch is `LineH` and not `RowH` because that is what
+    // `Paint` centres the first line with, and the two have to be the same number.
+    float TextTop() const { return Wraps() ? FirstLineTop(LineH()) - (rect.top + 1.0f) : 0.0f; }
+
     // What of `in` the field will take, with `base` as the length the text already stands at once
     // whatever is selected has gone. One pass, and one report per rule rather than one per
     // character: what a page needs to know is that an attempt was refused, and roughly why.
@@ -746,20 +754,28 @@ struct TextBox : Widget {
     void BarNumbers() {
         if (!bar) return;
         const float box = InnerHeight();
-        const float all = TextHeight();
+        // **The text as the scroll sees it**: what begins at the clip's top is `TextTop` lower down, so
+        // the bar's extent is the text plus that inset -- otherwise its own limit is smaller than the
+        // field's and the thumb cannot be dragged to the end of it. See `MaxScrollY`.
+        const float all = TextTop() + TextHeight();
         bar->viewport = box;
         bar->extent = all;
         bar->value = scrollY;
         bar->drawn = scrollY;
-        bar->visible = Wraps() && all > box;
+        bar->visible = Wraps() && MaxScrollY() > 0.0f;
         bar->Poll();
     }
-    // **How far the text can be scrolled before its last line is at the top of the box.** This is the
+    // **How far the text can be scrolled before its last line is at the bottom of the box.** This is the
     // clamp every scroll goes through, and the number a page needs in order to know whether the reader
     // is at the bottom: `scrollY >= MaxScrollY()` is "pinned", and following the text only while
     // somebody is watching the end of it is then the page's to do -- a field has no business deciding
     // that. See `ClampScroll`.
-    float MaxScrollY() const { return (std::max)(0.0f, TextHeight() - InnerHeight()); }
+    //
+    // **It is not `TextHeight - InnerHeight`**, which is the answer only if the text begins at the top
+    // of what it is clipped to. It does not -- see `TextTop` -- so that form leaves the last line short
+    // by the inset less the border, and the bottom of a line is the descent: the tail of a `g` and the
+    // foot of a `p`, on the last line of a log.
+    float MaxScrollY() const { return (std::max)(0.0f, TextTop() + TextHeight() - InnerHeight()); }
     // **Both scrolls are re-clamped when the page sets the text**, because they belong to the text that
     // was there: a value the page shortened would otherwise leave the field scrolled past its own last
     // line -- a field showing nothing at all -- until something else happened to scroll it back. No
@@ -870,8 +886,9 @@ struct TextBox : Widget {
         }
         const float row = LineH();
         const float box = InnerHeight();
-        if (at.y - scrollY + row > box) scrollY = at.y + row - box;
-        if (at.y - scrollY < 0)         scrollY = at.y;
+        const float top = TextTop();
+        if (at.y + top - scrollY + row > box) scrollY = at.y + top + row - box;
+        if (at.y + top - scrollY < 0)         scrollY = at.y + top;
         scrollY = std::clamp(scrollY, 0.0f, MaxScrollY());
         BarNumbers();
     }

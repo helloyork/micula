@@ -110,6 +110,10 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A field scrolled to its end shows the whole last line.** The text does not begin at the top of what
+  it is clipped to -- a wrapped field centres its first line in one control's height -- so the limit every
+  scroll is clamped to came out that inset short, and the bottom of the line, which is the descent, was
+  the part that went. The caret's own scroll and the bar's extent were worked out the same way.
 - **A control that is switched off is not keyboard focusable to a client.** The property was answered
   from a control's own `Focusable()` and not from whether it was enabled, so a client was told it could
   put the keyboard focus somewhere no click and no Tab reaches.
