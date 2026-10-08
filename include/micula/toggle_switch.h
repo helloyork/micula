@@ -49,6 +49,9 @@ struct ToggleSwitch : Widget {
     const wchar_t *AccessibleName() const override { return label.c_str(); }
     int AccessibleType() const override { return UIA_ButtonControlTypeId; }
     int AccessibleToggle() const override { return on ? 1 : 0; }
+    // A switch is a client's to flip: this is what the Toggle pattern asks before it acts. True
+    // here, and in `CheckBox` only when the page has not taken the state for itself.
+    bool AccessibleWritable() const override { return true; }
 
     ToggleSwitch(std::wstring text, bool value, std::function<void(bool)> f)
         : label(std::move(text)), on(value), onChange(std::move(f)),

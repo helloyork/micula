@@ -4123,6 +4123,9 @@ struct UiaElement : IRawElementProviderSimple,
         Widget *w = Target();
         if (!w || w->AccessibleToggle() < 0) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
+        // And a control that may not be changed says so -- the same refusal `SetValue` gives --
+        // rather than answering that it toggled something and leaving the state where it was.
+        if (!w->AccessibleWritable()) return UIA_E_INVALIDOPERATION;
         w->OnActivate();
         win->Invalidate();
         return S_OK;

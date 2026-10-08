@@ -108,10 +108,12 @@ CheckBox(std::wstring label, bool checked, std::function<void(bool)> onChange);
 | `std::wstring label` | Text beside the box. |
 | `std::wstring detail` | Optional second line in the secondary text color. Needs a 44-DIP `rect`. |
 | `bool checked` | Current value. |
+| `bool readOnly` | Shows the state rather than taking one: a click, Space and Enter do nothing, and a client asking to toggle it is refused. The box is drawn in the disabled accent colour while the label keeps its own -- which is the difference from `enabled = false`, where the label goes pale as well. |
 | `std::function<void(bool)> onChange` | Called with the new value on click, Space or Enter. |
 
 The box is at the left of `rect`, vertically centered. Use a checkbox for a choice that
-is applied later, such as by an OK button.
+is applied later, such as by an OK button. A read-only box shows a state somebody else
+owns: it takes no click and no key, and its label stays at full strength.
 
 ## ToggleSwitch
 

@@ -101,9 +101,18 @@ library can be: a minor version may break.
   through and the number a page needs in order to know whether the reader is at the bottom of it, so
   that following a growing text only while somebody is watching the end of it is the page's to do --
   with `scrollY` and `ScrollTo`, and with `SetTextRaw` leaving both where they were.
+- **`CheckBox::readOnly`,** a box that shows a state rather than taking one. A click, Space and Enter do
+  nothing to it, and a client that asks to toggle it is refused rather than answered and left alone,
+  while its state is still what a screen reader reads back. **It is not `enabled = false`:** the label
+  keeps its colour and only the box changes -- to the accent's own disabled pair, so it reads as set and
+  not as pressable -- which is what showing a state somebody else owns needs, since a disabled box goes
+  pale all over.
 
 ### Fixed
 
+- **A check box and a switch say whether a client may change them.** Both answered with the default,
+  "may not be changed", so a client asking about the one kind of control that exists in order to be
+  toggled was told no. A read-only box is the case where the answer is the other way round.
 - **A field re-clamps its scroll when the page sets the text.** A value the page shortened used to leave
   the field scrolled past its own last line -- showing nothing at all -- until something else happened to
   scroll it back.
