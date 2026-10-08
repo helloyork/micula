@@ -16,7 +16,7 @@ Callbacks may call `Layout()`, except `Slider::onChange` during a drag (see
 | [Segmented](#segmented) | 32 | `selected` | `onChange(int)` |
 | [Slider](#slider) | 32 | `value` | `onChange(float)`, `onCommit(float)` |
 | [DropDown](#dropdown) | 32 | `selected` | `onChange(int)` |
-| [TextBox](#textbox) | 32 | `text` | `onChange(text)`, `onCommit(text)` |
+| [TextBox](#textbox) | 32, or `lines` of them | `text` | `onChange(text)`, `onCommit(text)` |
 | [ProgressBar](#progressbar) | any | `value` | |
 | [ProgressRing](#progressring) | any, square | `value` | |
 | [ScrollBar](#scrollbar) | 12 wide | `value` | `onScroll(to, glide)` |
@@ -427,16 +427,103 @@ TextBox();
 
 | Member | Description |
 |---|---|
-| `std::wstring text` | Current text. Read it; set it with `SetText`. |
-| `void SetText(const std::wstring &s)` | Replaces the text and puts the caret at the end. Does not call `onChange`. |
-| `bool readOnly` | Typing, Backspace, Delete, a line break, cut and paste are refused; the caret, the selection, Ctrl+A, Ctrl+C and the wheel are kept, and the clear button is not shown. `SetText` and `Clear` still take a value, so a page can go on filling a field that is being read. |
-| `void SetReadOnly(bool on)` | Sets `readOnly`. |
+| `std::wstring text` | The text. Read it; set it with `SetText`. |
+| `size_t caret` | Where the caret is, as an index into `text`. |
+| `size_t anchor` | The other end of the selection, equal to `caret` when nothing is selected. |
 | `std::wstring placeholder` | Shown in the disabled text color while the field is empty. |
-| `bool pathField` | For file system paths. Paste also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
+| `bool pathField` | For file system paths: pasting also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
 | `bool showAccentUnderline` | True by default. False leaves the field the bottom edge it has at rest when it takes the focus, instead of the accent line a focused field draws there. For a field that shows a log or a value rather than being worked in. |
+| `bool showClearButton` | Asks for a button at the field's right-hand edge that empties it. `clearLabel` is the word a screen reader is told it is, "Clear" by default, and `clearButton` is the widget, so a page can reach it. |
+| `bool readOnly` | Typing, Backspace, Delete, a line break, cut and paste are refused -- and only those: the caret, the selection, Ctrl+A, Ctrl+C and the wheel are kept, the clear button is not shown, and no composition is opened over it. `SetText`, `SetTextRaw`, `Clear` and `SetRuns` still take a value, because a field showing a log is a field the page is still filling. Not the same as `enabled = false`, which greys the field out and answers none of it. |
+| `void SetReadOnly(bool on)` | Sets `readOnly`. |
+| `TextMode mode` | `SingleLine` -- the default -- `Multiline`, or `RichText`. See below. |
+| `size_t lines` | How many lines the box has room for. Three by default. |
+| `float lineSpacing` | How far apart the lines are, as a multiple of one line. One by default, and meaningless to a field with one line. |
+| `Font font` | The face the field draws with, and empty for the library's body font. |
+| `size_t maxLength` | The most characters the field will hold, or zero for no limit. |
+| `size_t maxLines` | The most lines a field with more than one will hold, or zero for no limit. |
+| `std::function<bool(wchar_t)> filter` | Takes a character or leaves it. |
+| `std::function<Validation(const std::wstring &)> validate` | What the text stands at: `Acceptable`, `Intermediate` or `Invalid`. |
+| `Validation State() const` | The last thing `validate` said. |
+| `std::function<void(Refusal, const std::wstring &)> onRefused` | Told what was turned away, and the text that was offered. |
 | `std::function<void(const std::wstring &)> onChange` | Called after every edit. |
 | `std::function<void(const std::wstring &)> onCommit` | Called on Enter and when the field loses focus, and only when the text has changed since the field was focused: a field clicked into and clicked out of again has nothing to commit. Save here. |
-| `float MaxScrollY() const` | The furthest the text can be scrolled. A page that follows a growing text compares `scrollY` against it to tell whether the bottom of it is in view. |
+| `std::function<void(const std::wstring &, std::vector<Run> &)> formatRuns` | Fills the runs, once per change. See below. |
+| `std::vector<Run> runs` | The runs themselves, for a page that would rather fill them than be asked. |
+| `float scrollY` | How far up the text is scrolled, for a field with more than one line. |
+| `float MaxScrollY() const` | The furthest it can be scrolled. A page that follows a growing text compares `scrollY` against it to tell whether the bottom of it is in view. |
+| `void ScrollTo(float to)` | Scrolls to a `scrollY`, clamped to the text. |
+| `void SetText(const std::wstring &s)` | Replaces the text and puts the caret at the end, through the field's own rules -- what they refuse, this refuses, and `onRefused` is told. Does not call `onChange`. |
+| `void SetTextRaw(const std::wstring &s)` | The same, with none of the rules in front of it: for a value the page has validated itself, or one it is restoring. Does not call `onChange` either. |
+| `void SetRuns(std::vector<Run> s)` | Sets the runs by hand. |
+| `void Reformat()` | Asks `formatRuns` again, for a page whose answer comes from something other than the text. |
+| `void Clear()` | Empties the field through the same door as the keyboard, so a rule the page set still holds, and calls `onChange`: a click that empties a field is a change somebody made. |
+| `void SetMode(TextMode)` / `SetLines(size_t)` / `SetLineSpacing(float)` / `SetFont(const Font &)` | The setters for the four fields above. A page may write those fields itself -- they are fields -- but the box therefore owes an `InvalidateLayout()`, and these are the way that cannot be forgotten. |
+
+**One line, or more.** `SingleLine` is a field as tall as the control height: Enter finishes the
+value, and pasted text keeps only its first line. `Multiline` wraps its text, Enter is a line
+break rather than a finish -- Ctrl+Enter and leaving the field are how a value is finished there
+-- and the box has room for `lines` lines. The box is *not* measured from the text: a field that
+grew as somebody typed into it would move everything under it on every keystroke, so it is as
+tall as its own number of lines and the text scrolls inside it. `lineSpacing` scales the rows,
+and the box grows with it. `font` decides what a line is, so a field given a monospace is a
+monospace field rather than a body-font field with monospace text in it. `RichText` is declared
+and not built: it behaves as `Multiline` until the runs, the editor and the toolbar that would
+make it mean something exist.
+
+**A field that wraps scrolls.** Its bar is the library's own `ScrollBar`, along the field's
+right-hand edge rather than in a column of its own, and it appears only when the text is taller
+than the box. The wheel scrolls the field whenever the pointer is over it, whatever has the focus
+-- the opposite of the drop-down's rule, where the wheel changes a value and only a control being
+worked on should do that -- and a notch with nowhere to go is passed on to the page. `scrollY` is
+where the field is and `MaxScrollY()` is the far end of it; a page sets it with `ScrollTo`, and
+following the end of a growing text is the page's decision rather than the field's.
+
+**What may go into it.** `filter` is offered every character and takes it or leaves it, `maxLength`
+and `maxLines` say how much there is room for, and `validate` answers what the text stands at. The
+middle answer is the one that makes a prefix typeable at all: an address, a duration or a number
+being typed a digit at a time is `Intermediate` until it is `Acceptable` or `Invalid`. The rules
+apply to the keyboard, to the clipboard and to `SetText` alike, because a rule that only the
+keyboard obeys is not a rule. `onRefused` is told with a `Refusal` -- `Character`, `Length`,
+`Lines` or `Invalid` -- and the text that was offered, once per attempt rather than once per
+character, and the `Invalid` one when the answer *becomes* invalid rather than on every keystroke
+that leaves it so. `SetTextRaw` is the door with none of this in front of it.
+
+**Runs.** A `Run` is one stretch of the text drawn with a format and a colour of its own:
+`{at, len}`, an optional `Font`, an optional colour, and an optional underline. `formatRuns` is
+asked for the whole set once per change, so an engine for a syntax highlighter never has to move
+the offsets across an edit; a page that fills `runs` by hand owns that upkeep itself. The
+wrapping, the caret, the hit test and the scroll follow the runs because the layout does: a colour
+or an underline moves nothing, while a format that changes how wide a word is changes where the
+lines break -- which is what a page that asked for one asked for.
+
+**The keyboard.** Left and Right move the caret, with Shift to select, and step over a line break
+whole, as Backspace and Delete do. Home and End are the line the caret is on, which in a field
+that wraps is the wrap and not the paragraph, and Ctrl+Home and Ctrl+End are the whole text. Up
+and Down move a line and take the column with them; PageUp and PageDown move the whole lines on
+screen less one, so that a line already read stays in view. A move that would land on the line the
+caret is already on is not a move. **A field with one line takes none of the four vertical keys**:
+the caret of a long line jumping to its end because somebody brushed a key is an annoyance with
+nothing behind it, so the key is handed on. Ctrl+A selects everything, Ctrl+C, Ctrl+X and Ctrl+V
+are the clipboard, and Tab moves the focus.
+
+**The mouse.** The caret moves on the press rather than on the release, which is what leaves a drag
+somewhere to start from. A double-click selects a piece -- up to the next space, `\` or `/` -- and
+a Shift+click extends the selection.
+
+**Composing.** What an input method is holding is drawn by the field itself: in the field's own
+font, in the field's own layout, at the caret, breaking between any two of its characters so that
+it fills the line it is on -- and in a field with one line pushing what follows it along, with the
+field scrolling to it the way it scrolls to the caret. It stands where a selection is, because
+typing over one is what replaces it, and an input method's candidate list opens under the line
+being typed on. A page does nothing for any of this; `preedit` and `preeditCaret` are there for one
+that wants to know a composition is in progress.
+
+**To a screen reader** a field is an edit control whose value is its text. Name it with
+`accessibleName` -- the words beside it -- rather than leaving `placeholder` to be read out: a
+placeholder is a hint about the format and not a label. A `readOnly` field is published as
+read-only, and a client that sets a value is refused what the field refuses rather than answered
+and left alone.
 
 ```cpp
 auto *t = Add(new micula::TextBox());
@@ -446,12 +533,10 @@ t->onChange = [this](const std::wstring &s) { folder = s; };
 t->rect = micula::Rect(24, y, 320, micula::metric::kControlH);
 ```
 
-Supported: caret and selection with mouse and keyboard, double-click to select a word
-(separated by spaces, `\` and `/`), Shift+click, Left, Right, Home, End (with Shift to
-select), Backspace, Delete, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, IME input. Paste keeps only
-the first line.
+Supported: caret and selection with mouse and keyboard, double-click to select a word, Shift+click,
+the keys above, cut, copy, paste, and input methods.
 
-Not supported: multiple lines, undo, context menu, drag and drop, right-to-left text.
+Not built: undo, a context menu, drag and drop, right-to-left text, and `RichText`.
 
 ## ProgressBar
 
