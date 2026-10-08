@@ -134,6 +134,9 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **`micula/card.h` and `micula/text.h` compile on their own.** Both draw through `Painter`, which they
+  used without including the header that defines it, so a page that included the one it draws -- which is
+  what a control header is for -- got an error about an undefined type instead.
 - **Typing through an input method no longer takes the process down.** A message for a window that is not
   the application's own -- an input method's windows are created in the application's process, so their
   messages arrive in the same queue -- was taken for one of the loop's own surfaces and dispatched under

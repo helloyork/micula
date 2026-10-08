@@ -23,7 +23,7 @@
 // with a control beside them. It is a box of controls, and it is laid out as one: its contents run
 // from its own left edge to its right, and nothing is reserved. See `CardLayout::Arrange`.
 
-#include "widget.h"
+#include "window.h"   // `Painter`, which a card draws through, and the tree it stands in
 
 #include <algorithm>
 #include <functional>

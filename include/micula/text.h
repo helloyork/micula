@@ -7,7 +7,7 @@
 // meant the text could not be arranged, could not scroll on its own, and was invisible to a screen
 // reader. A heading is a thing on the page like a button is, and it measures and paints like one.
 
-#include "widget.h"
+#include "window.h"   // `Painter`, which a line of text is drawn through
 
 namespace micula {
 
