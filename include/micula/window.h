@@ -949,6 +949,9 @@ struct Surface {
     Hand capturing = Hand::Mouse;
     Widget *capture = nullptr;    // the widget the pointer went down on
     Widget *focused = nullptr;
+    // The IME's context for this window while it is put aside: zero when the focus is somewhere that can
+    // be typed into, which is the state of every window until it is not. See `ParkIme`.
+    HIMC imeParked = nullptr;
     // The touch pointer being followed, or 0. A pen is one pointer by definition and needs no such
     // thing; a finger does, because a second one is another pointer entirely.
     UINT32 finger = 0;
@@ -1151,6 +1154,9 @@ struct Surface {
     // is told about it. `Window` overrides `FocusMoved` to raise the focus event; a surface that
     // publishes no automation tree has nothing to say and does not override it.
     void SetFocusTo(Widget *w);
+    // Give the IME to the focused control, or take it away from one that cannot be typed into: "can this
+    // be typed into" is `AccessibleWritable`, which is the same question a client asks. See `SetFocusTo`.
+    void ParkIme(bool park);
     virtual void FocusMoved() {}
 
     // The layer calls the keyboard goes through first -- the last visible one in the tree, which is the
@@ -3058,9 +3064,31 @@ inline void Surface::SetFocusTo(Widget *w) {
     if (focused) { focused->focus = false; focused->OnBlur(); }
     focused = w;
     if (focused) { focused->focus = true; focused->OnFocus(); }
+    // **The IME follows the focus, and a control that cannot be typed into does not get it.** Windows
+    // starts a composition from the keys the *window* receives, whatever the control under the caret
+    // thinks, so a read-only field would still open an IME over itself and a PageUp would still land in
+    // a composition window. Taking the input context away for as long as such a control has the focus is
+    // what stops it; it is handed straight back when one that takes text gets the focus. See `ParkIme`.
+    ParkIme(!focused || !focused->AccessibleWritable());
     caretOn = true;
     Invalidate();
     FocusMoved();
+}
+
+// **The IME's context for this window, put aside while nobody can type into it.** `ImmAssociateContext`
+// hands back what was there, which is what is kept here until a control that takes text wants it again
+// -- and it takes any composition in progress with it, which is the other half of what this is for: a
+// field that goes read-only under somebody's hands should not go on composing.
+inline void Surface::ParkIme(bool park) {
+    if (!hwnd) return;
+    if (park) {
+        if (!imeParked) imeParked = ImmAssociateContext(hwnd, nullptr);
+        return;
+    }
+    if (imeParked) {
+        ImmAssociateContext(hwnd, imeParked);
+        imeParked = nullptr;
+    }
 }
 
 inline void Window::MoveFocus(int delta) {

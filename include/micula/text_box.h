@@ -134,6 +134,26 @@ struct TextBox : Widget {
     // The button itself, a child of the field like the bar and arranged by `FieldLayout`.
     ClearButton *clearButton = nullptr;
     std::wstring placeholder;
+    // **A field that shows rather than takes.** Typing, the clipboard's cut and paste, Backspace, Delete
+    // and a new line are refused -- and *only* those. The caret still moves, a drag still selects,
+    // Ctrl+A still selects all, Ctrl+C still copies and the wheel still scrolls, which is the whole
+    // difference between this and `enabled = false`: a disabled field is greyed out and answers none of
+    // it. Measured against the platform's own read-only edit control, which refuses exactly that set and
+    // keeps exactly that one.
+    //
+    // **The page is not who is being refused.** `SetText`, `SetTextRaw`, `Clear` and `SetRuns` take a
+    // value whatever this says, because a field showing a log is a field whose page is still putting text
+    // into it -- and a log is what this is for: a field somebody reads and copies out of while it grows.
+    // What it does say to the outside is that a *client* cannot type into it either; see
+    // `AccessibleWritable`.
+    bool readOnly = false;
+    // Refusing a keystroke is the field's answer, not the window's: a read-only field that returned false
+    // would be handing its keys to the window as mnemonics. See `OnChar` and `OnKey`.
+    void SetReadOnly(bool on) {
+        readOnly = on;
+        ClearState();   // the clear button is not shown to a field that may not be emptied
+        Invalidate();
+    }
     // The field holds a file-system path. Paste then also drops the quotes that
     // Explorer's "Copy as path" puts round what it copies, and any trailing spaces --
     // neither is part of the path, and both are what somebody would have to delete by
@@ -282,7 +302,12 @@ struct TextBox : Widget {
     // Fires onCommit when there is something to commit, and not otherwise. The baseline is taken
     // again after the callback, because a page is allowed to put the value back into the field -- a
     // port of 0080 is 80 -- and what it put back is the value the field now stands for.
+    //
+    // **A read-only field never commits**: there is no value of the user's to finish, and Enter on one is
+    // a key that arrived at a field showing something rather than a field they are filling in. This is
+    // where that lives rather than at the two keys, so that a blur cannot commit one either.
     void Commit() {
+        if (readOnly) return;
         if (text == atFocus) return;
         if (onCommit) onCommit(text);
         atFocus = text;
@@ -298,8 +323,15 @@ struct TextBox : Widget {
     // a client has just filled in is a field that has been filled in -- a page that only listens for a
     // commit would otherwise never hear about it -- and the caret goes to the end, as it does after a
     // paste. `SetText` is what a page uses to put a value in without anybody having typed it.
-    bool AccessibleWritable() const override { return true; }
+    //
+    // This is also what the window asks before it hands the IME to a control, so a read-only field gets
+    // no composition and no candidate window: see `Surface::SetFocusTo`.
+    bool AccessibleWritable() const override { return !readOnly; }
     bool AccessibleSetValue(const std::wstring &s) override {
+        // A client filling the field in is somebody typing, not the page: a read-only field refuses it
+        // the way it refuses a keystroke, and the answer reaches the client as "this control is read
+        // only" rather than as a value that quietly did not change.
+        if (readOnly) return false;
         SetText(s);
         if (onChange) onChange(text);
         if (onCommit) onCommit(text);
@@ -337,12 +369,12 @@ struct TextBox : Widget {
         return { box.right - 1.0f - s, box.top + 1.0f, box.right - 1.0f, box.bottom - 1.0f };
     }
     // **WinUI's own rule for its delete button, whole** -- `CTextBox::CanInvokeDeleteButton` and the
-    // 5em part of its `ArrangeOverride`: the page asked for it, the field is enabled and has the
-    // focus, it holds something, and it is a *single line with no wrapping*. A field that wraps is a
-    // field somebody is writing in, and a button that empties it is not what a hand is looking for
-    // there -- so WinUI shows none, and neither does this.
+    // 5em part of its `ArrangeOverride`: the page asked for it, the field is enabled and may be typed
+    // into, has the focus and holds something, and it is a *single line with no wrapping*. A field that
+    // wraps is a field somebody is writing in, and a button that empties it is not what a hand is
+    // looking for there -- so WinUI shows none, and neither does this.
     bool ClearShown() const {
-        if (!showClearButton || !clearButton || !enabled || !focus) return false;
+        if (!showClearButton || !clearButton || !enabled || readOnly || !focus) return false;
         if (Wraps() || text.empty()) return false;
         Surface *w = surface();
         if (!w) return false;
@@ -910,6 +942,11 @@ struct TextBox : Widget {
 
     bool OnChar(wchar_t ch) override {
         if (!enabled) return false;
+        // **A read-only field still answers for the character**, with "no": handing it back would let
+        // the window read it as a mnemonic, which is the one thing worse than ignoring it. See
+        // `readOnly`. The IME's committed text arrives here too -- `WM_CHAR` and `WM_IME_CHAR` are both
+        // this function -- so it is refused the same way.
+        if (readOnly) return true;
         // Asked before anything moves: what fits depends on the length the text will stand at, and
         // the selection is on its way out. Answered either way -- a character this field will not
         // take is still this field's to answer for, and returning false here would hand it to the
@@ -948,13 +985,16 @@ struct TextBox : Widget {
             case VK_RETURN: Commit(); return true;
             case 'C': if (HasSelection()) micula::SetClipboardText(hwnd, Selected());
                       return true;
-            case 'X': if (HasSelection()) {
+            // **Cut and paste are the clipboard changing the text**, which a read-only field does not
+            // do; copy is the field answering, which it does. See `readOnly`.
+            case 'X': if (!readOnly && HasSelection()) {
                           micula::SetClipboardText(hwnd, Selected());
                           DeleteSelection();
                           Changed();
                       }
                       return true;
             case 'V': {
+                if (readOnly) return true;
                 const std::wstring in = Admitted(Pasted(micula::ClipboardText(hwnd)), Base(), false);
                 if (in.empty()) return true;
                 DeleteSelection();
@@ -980,6 +1020,9 @@ struct TextBox : Widget {
                 Commit();
                 return true;
             }
+            // A line break is text arriving, which is what a read-only field is for refusing. The
+            // commit above is not: what the field *stands for* is not changed by being asked about.
+            if (readOnly) return true;
             const std::wstring ok = Admitted(L"\r\n", Base(), false);
             if (ok.empty()) return true;
             DeleteSelection();
@@ -1036,6 +1079,7 @@ struct TextBox : Widget {
             break;
         }
         case VK_BACK:
+            if (readOnly) return true;
             if (HasSelection()) DeleteSelection();
             else if (caret > 0) {
                 // A line break in one press, both halves of it: half a CRLF left behind is a lone carriage
@@ -1048,6 +1092,7 @@ struct TextBox : Widget {
             Changed();
             break;
         case VK_DELETE:
+            if (readOnly) return true;
             if (HasSelection()) DeleteSelection();
             else if (caret < text.size()) {
                 const size_t n = (caret + 1 < text.size() && text[caret] == L'\r' &&

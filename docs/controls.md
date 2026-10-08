@@ -427,6 +427,8 @@ TextBox();
 |---|---|
 | `std::wstring text` | Current text. Read it; set it with `SetText`. |
 | `void SetText(const std::wstring &s)` | Replaces the text and puts the caret at the end. Does not call `onChange`. |
+| `bool readOnly` | Typing, Backspace, Delete, a line break, cut and paste are refused; the caret, the selection, Ctrl+A, Ctrl+C and the wheel are kept, and the clear button is not shown. `SetText` and `Clear` still take a value, so a page can go on filling a field that is being read. |
+| `void SetReadOnly(bool on)` | Sets `readOnly`. |
 | `std::wstring placeholder` | Shown in the disabled text color while the field is empty. |
 | `bool pathField` | For file system paths. Paste also removes surrounding quotes, as added by Explorer's Copy as path, and trailing spaces. |
 | `std::function<void(const std::wstring &)> onChange` | Called after every edit. |

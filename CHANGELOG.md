@@ -89,6 +89,14 @@ library can be: a minor version may break.
   says so, so an engine never has to keep the offsets across an edit -- a page that sets `runs` by hand
   owns that itself. A run that runs past the end of the text is treated as ending there rather than being
   a page's fault to avoid.
+- **`TextBox::readOnly`,** which is not the same thing as `enabled = false`: typing, Backspace, Delete, a
+  new line, cut and paste are refused, and the caret, the selection, Ctrl+A, Ctrl+C and the wheel are
+  kept -- a disabled field is greyed out and answers none of that. It refuses the *user* rather than the
+  page: `SetText`, `SetTextRaw` and `Clear` still take a value, so a field can show something that keeps
+  arriving while it is being read. The clear button is not shown to a read-only field, and a client sees
+  the value as read-only rather than as a value that quietly did not change. Enter finishes nothing
+  there either -- a commit is a change, and a field being read has none to make -- and the IME is not
+  opened for it, so there is no candidate window over a field that would refuse what it composed.
 
 ### Fixed
 
