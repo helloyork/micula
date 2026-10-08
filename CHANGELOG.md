@@ -114,6 +114,10 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- **A key that moves nothing does not start the caret's period over.** A read-only field takes every typing
+  key and refuses it -- deliberately, so that the window cannot use it as a mnemonic -- and the caret was
+  starting over for each one, so a hand resting on the keys of a field nobody can type into set the blink
+  running. What is asked now is whether the caret actually went somewhere.
 - **The caret's blink is the system's period.** It was a hardcoded 530 ms -- which is what `GetCaretBlinkTime`
   answers on a default machine, so nothing looked wrong -- and somebody who had changed the caret's blink in
   Settings, including to "no blinking", was ignored. The period is asked for on every operation now, so a

@@ -1166,6 +1166,17 @@ struct Surface {
     // One period of the blink, and the two halves `WakeCaret` is made of.
     void BlinkCaret();
     void StartCaretBlink();
+    // **Whether the caret is somewhere other than it was.** A key a control *takes* is not a key that moved
+    // anything: a read-only field takes every typing key and refuses it, deliberately, so that the window
+    // cannot use it as a mnemonic -- and a caret that started over for those would blink to the rhythm of a
+    // hand on keys that change nothing. The widget answers where its caret is (`CaretPoint`), which is the
+    // one question about a caret that every control with one can answer.
+    bool CaretMoved(const D2D1_POINT_2F &before) const;
+    // **Whether the window this surface belongs to has the keyboard.** A window somebody alt-tabbed away
+    // from still has a focused field, and that field is still where the keyboard would go -- but the
+    // keyboard is not there, so nothing about it is lit: no accent along the bottom edge, no blinking
+    // caret. A surface with no window of its own (a menu, a flyout) is always its own to be active in.
+    virtual bool Active() const { return true; }
     virtual void FocusMoved() {}
 
     // The layer calls the keyboard goes through first -- the last visible one in the tree, which is the
@@ -3494,9 +3505,15 @@ inline void Surface::BeginPump() {
 // **One period of the caret's blink**, and nothing at all when there is no caret to blink: a surface that
 // invalidates twice a second forever is a surface that keeps a laptop's GPU awake.
 inline void Surface::BlinkCaret() {
-    if (!focused || !focused->CaretPoint(nullptr)) return;
+    if (!Active() || !focused || !focused->CaretPoint(nullptr)) return;
     caretOn = !caretOn;
     Invalidate();
+}
+
+inline bool Surface::CaretMoved(const D2D1_POINT_2F &before) const {
+    D2D1_POINT_2F after = {};
+    if (!focused || !focused->CaretPoint(&after)) return false;
+    return after.x != before.x || after.y != before.y;
 }
 
 inline void Surface::StartCaretBlink() {
@@ -5087,8 +5104,14 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // keyboard input and, on most IMEs, the committed result as well; WM_IME_CHAR
         // is what some of them send instead.
         const wchar_t ch = (wchar_t)wp;
+        // **Where the caret was before the key.** A read-only field takes every typing key and refuses it,
+        // so "the field took it" and "the caret moved" are two different questions -- and this is the one
+        // the blink is about. See `CaretMoved`.
+        D2D1_POINT_2F before = {};
+        const bool hadCaret = self->focused && self->focused->CaretPoint(&before);
         if (self->focused && ch >= 0x20 && ch != 0x7F && self->focused->OnChar(ch)) {
-            self->WakeCaret();
+            if (!hadCaret || self->CaretMoved(before)) self->WakeCaret();
+            else self->Invalidate();
             return 0;
         }
         return 0;
@@ -5099,11 +5122,18 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         self->WakeCaret();
         self->PlaceImeAtCaret();
         return DefWindowProcW(h, m, wp, lp);
-    case WM_KEYDOWN:
+    case WM_KEYDOWN: {
+        // The same question as `WM_CHAR`'s: an arrow pressed against the end of the text is taken and moves
+        // nothing, and a caret that restarted for it would be a caret that blinks to the keyboard rather
+        // than to what the text did.
+        D2D1_POINT_2F before = {};
+        const bool hadCaret = self->focused && self->focused->CaretPoint(&before);
         if (self->focused && self->focused->OnKey(wp)) {
-            self->WakeCaret();
+            if (!hadCaret || self->CaretMoved(before)) self->WakeCaret();
+            else self->Invalidate();
             return 0;
         }
+    }
         switch (wp) {
         case VK_TAB:
             self->MoveFocus((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
