@@ -1157,6 +1157,15 @@ struct Surface {
     // Give the IME to the focused control, or take it away from one that cannot be typed into: "can this
     // be typed into" is `AccessibleWritable`, which is the same question a client asks. See `SetFocusTo`.
     void ParkIme(bool park);
+    // **Starting the caret's period over, showing.** `Timer::Start` moves a running timer, so this turns
+    // the caret on *and* puts its period back to zero -- which is what Windows' own edit control does on
+    // every keystroke and every click that moves the caret, and what makes typing feel solid instead of
+    // the caret going out from under a hand that is still on the keys. Called from `SetFocusTo`, from the
+    // press and the release, and from the keyboard and the IME in `Window::Proc`.
+    void WakeCaret();
+    // One period of the blink, and the two halves `WakeCaret` is made of.
+    void BlinkCaret();
+    void StartCaretBlink();
     virtual void FocusMoved() {}
 
     // The layer calls the keyboard goes through first -- the last visible one in the tree, which is the
@@ -2645,6 +2654,9 @@ inline bool Surface::HandMessage(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 // handlers, and the hand decides only what a hand really decides. See `Hand`, and the two handlers in
 // `Proc`.
 inline void Surface::PressAt(float x, float y, Hand hand) {
+    // **A press is an operation on the caret**, whether or not it turns out to move it: it is where the
+    // caret goes next, and Windows' own edit control puts the caret back on screen for it. See `WakeCaret`.
+    WakeCaret();
     pressX = x;
     pressY = y;
     pointerX = x;
@@ -2799,6 +2811,9 @@ inline bool Surface::MoveTo(float x, float y, Hand hand, bool contact) {
 
 inline void Surface::ReleaseAt(Hand hand) {
     if (hand != capturing) return;
+    // The hand is off: whatever the press and any drag did to the caret is finished with, and the caret
+    // starts its period over, showing. See `WakeCaret`.
+    WakeCaret();
     Widget *w = capture;
     Widget *pan = panning;
     const float speed = panSpeedY;
@@ -3070,8 +3085,7 @@ inline void Surface::SetFocusTo(Widget *w) {
     // a composition window. Taking the input context away for as long as such a control has the focus is
     // what stops it; it is handed straight back when one that takes text gets the focus. See `ParkIme`.
     ParkIme(!focused || !focused->AccessibleWritable());
-    caretOn = true;
-    Invalidate();
+    WakeCaret();
     FocusMoved();
 }
 
@@ -3473,15 +3487,32 @@ inline void Surface::BeginPump() {
     QueryPerformanceFrequency(&qpcFreq);
     QueryPerformanceCounter(&qpcLast);
     // GetCaretBlinkTime's own default period. The surface owns this timer the way a control owns
-    // its own; see Timer.
-    caretTimer.Start(this, 530, [this] {
-        // Only repaint when there is a caret to blink. A surface that invalidates twice a second
-        // forever is a surface that keeps a laptop's GPU awake.
-        if (focused && focused->CaretPoint(nullptr)) {
-            caretOn = !caretOn;
-            Invalidate();
-        }
-    });
+    // its own; see Timer, and see `WakeCaret` for the other half of what the caret does.
+    StartCaretBlink();
+}
+
+// **One period of the caret's blink**, and nothing at all when there is no caret to blink: a surface that
+// invalidates twice a second forever is a surface that keeps a laptop's GPU awake.
+inline void Surface::BlinkCaret() {
+    if (!focused || !focused->CaretPoint(nullptr)) return;
+    caretOn = !caretOn;
+    Invalidate();
+}
+
+inline void Surface::StartCaretBlink() {
+    caretTimer.Start(this, 530, [this] { BlinkCaret(); });
+}
+
+// **The caret starts over, showing, whenever somebody does something to it.** Windows' own edit control
+// does this: every keystroke, every click that moves the caret and every composition puts the caret back on
+// screen and starts its two periods from the beginning. micula turned the caret on and left the timer where
+// it was, so an operation landing late in a period showed the caret for the few milliseconds left of it --
+// measured, a keystroke 422 ms into the off half showed it for 109 ms, against the 531 the period is.
+// `caretOn` on its own is the half that does not work; moving the timer is the rest.
+inline void Surface::WakeCaret() {
+    caretOn = true;
+    StartCaretBlink();
+    Invalidate();
 }
 
 // Nothing is left to fire at, and the surface is about to go back to whoever showed it: the caret's
@@ -5048,19 +5079,20 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         // is what some of them send instead.
         const wchar_t ch = (wchar_t)wp;
         if (self->focused && ch >= 0x20 && ch != 0x7F && self->focused->OnChar(ch)) {
-            self->caretOn = true;
-            self->Invalidate();
+            self->WakeCaret();
             return 0;
         }
         return 0;
     }
     case WM_IME_STARTCOMPOSITION:
+        // A composition is an operation on the caret too, and the candidate window is about to be put at
+        // it: the caret has no business being out while somebody is composing into it.
+        self->WakeCaret();
         self->PlaceImeAtCaret();
         return DefWindowProcW(h, m, wp, lp);
     case WM_KEYDOWN:
         if (self->focused && self->focused->OnKey(wp)) {
-            self->caretOn = true;
-            self->Invalidate();
+            self->WakeCaret();
             return 0;
         }
         switch (wp) {
