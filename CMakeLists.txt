@@ -65,7 +65,7 @@ option(MICULA_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 # off at run time with `micula::debug::layout = false`, without a rebuild.
 option(MICULA_DEBUG_LAYOUT "Build the examples with the layout debug overlay" OFF)
 if(MICULA_BUILD_EXAMPLES)
-    # All three examples are written against the tree. Each is a *console* program rather than a WIN32
+    # The examples are written against the tree. Each is a *console* program rather than a WIN32
     # one because of its `--dump`: the rectangles a layout came out as are printed instead of drawn,
     # and that needs somewhere to print. Each drops the console it was given when it was launched from
     # Explorer and keeps the one it was launched from a terminal with.
@@ -80,10 +80,13 @@ if(MICULA_BUILD_EXAMPLES)
     target_link_libraries(micula-nav PRIVATE micula::micula)
     add_executable(micula-settings examples/settings/settings.cpp)
     target_link_libraries(micula-settings PRIVATE micula::micula)
+    add_executable(micula-cards examples/cards/cards.cpp)
+    target_link_libraries(micula-cards PRIVATE micula::micula)
     if(MICULA_DEBUG_LAYOUT)
         target_compile_definitions(micula-gallery PRIVATE MICULA_DEBUG_LAYOUT=1)
         target_compile_definitions(micula-nav PRIVATE MICULA_DEBUG_LAYOUT=1)
         target_compile_definitions(micula-settings PRIVATE MICULA_DEBUG_LAYOUT=1)
+        target_compile_definitions(micula-cards PRIVATE MICULA_DEBUG_LAYOUT=1)
     endif()
     # The entry point is wmain, which MSVC's linker finds on its own from the subsystem (and from
     # the startup code, for a console program) and MinGW's does not: without -municode it looks for
@@ -94,6 +97,7 @@ if(MICULA_BUILD_EXAMPLES)
         target_link_options(micula-gallery PRIVATE -municode)
         target_link_options(micula-nav PRIVATE -municode)
         target_link_options(micula-settings PRIVATE -municode)
+        target_link_options(micula-cards PRIVATE -municode)
         target_link_libraries(micula-settings PRIVATE shell32)
     endif()
     if(MSVC)
@@ -105,6 +109,7 @@ if(MICULA_BUILD_EXAMPLES)
         target_compile_options(micula-gallery PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(micula-nav PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(micula-settings PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(micula-cards PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 

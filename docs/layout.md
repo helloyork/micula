@@ -138,6 +138,9 @@ Built-in layouts, in the order they are needed:
 
 ## The spec is a thing
 
+Grouped card surfaces, expandable detail groups and optional centred width limits are described in
+[Grouped and expandable cards](cards.md), with a complete example and window-free verification modes.
+
 The numbers in today's pages are not arbitrary: a page margin of 24, cards 64 DIP high and 4 apart, a
 control slot 16 DIP from the card's right edge, a page title 44 high with 8 above it, headings 30 high
 with 24 above them, a control height of 32. They are the platform's own settings-page numbers, the same in every Windows app, which is

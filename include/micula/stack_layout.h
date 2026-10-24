@@ -30,6 +30,14 @@ struct StackLayout : Layout {
     float padY = 0.0f;
     Align align = Align::Stretch;   // the cross axis: a card and a field want the whole width
     bool gaps = true;               // put spec.gap between the children
+    // Optional limit on the content column, after padding. Zero is unlimited. The whole column is
+    // centred, including children that Fill, so headings and groups share the same left edge.
+    float maxWidth = 0.0f;
+
+    float ColumnWidth(float available) const {
+        available = (std::max)(0.0f, available);
+        return maxWidth > 0.0f ? (std::min)(available, maxWidth) : available;
+    }
 
     float PadX() const { return padX >= 0.0f ? padX : spec.pagePad; }
 
@@ -37,7 +45,10 @@ struct StackLayout : Layout {
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
     D2D1_RECT_F ContentBox(const D2D1_RECT_F &box) const override {
         const float px = PadX();
-        return { box.left + px, box.top + padY, box.right - px, box.bottom - padY };
+        const float available = (std::max)(0.0f, box.right - box.left - 2 * px);
+        const float width = ColumnWidth(available);
+        const float left = box.left + px + (available - width) * 0.5f;
+        return { left, box.top + padY, left + width, box.bottom - padY };
     }
 };
 
@@ -47,7 +58,7 @@ struct StackLayout : Layout {
 inline Want StackLayout::Measure(const Room &room) const {
     const float pad = PadX();
     Room inner = room;
-    inner.width = (std::max)(0.0f, room.width - 2 * pad);
+    inner.width = ColumnWidth(room.width - 2 * pad);
 
     float width = 0.0f, height = 2 * padY;
     bool fillW = false, fillH = false, first = true;
@@ -71,7 +82,7 @@ inline Want StackLayout::Measure(const Room &room) const {
 inline void StackLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     const float pad = PadX();
     Room inner = room;
-    inner.width = (std::max)(0.0f, box.right - box.left - 2 * pad);
+    inner.width = ColumnWidth(box.right - box.left - 2 * pad);
     inner.height = (std::max)(0.0f, box.bottom - box.top - 2 * padY);
 
     // Two passes, because the children that fill need to know what the others left. Measuring is
@@ -90,7 +101,8 @@ inline void StackLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     }
     const float share = filling > 0.0f ? (std::max)(0.0f, inner.height - used) / filling : 0.0f;
 
-    const float left = box.left + pad;
+    const float available = (std::max)(0.0f, box.right - box.left - 2 * pad);
+    const float left = box.left + pad + (available - inner.width) * 0.5f;
     float y = box.top + padY;
     int i = 0;
     for (auto &child : host_->children) {

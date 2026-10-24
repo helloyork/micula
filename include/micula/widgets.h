@@ -46,6 +46,7 @@
 
 #include "button.h"
 #include "card.h"
+#include "card_group.h"
 #include "check_box.h"
 #include "dialog.h"
 #include "drop_down.h"

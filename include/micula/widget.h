@@ -302,6 +302,11 @@ struct Widget {
     // sees, so it is the drawn box that has to hold. See `Clips`, `VisibleArea`, and `Flyout::Reveal`,
     // which is a panel arriving: the window onto the rows is what grows, and the rows stand still.
     virtual D2D1_RECT_F ClipBox() const { return rect; }
+    // Optional rounded window onto children; zero keeps the inexpensive rectangular clip.
+    virtual Corners ClipCorners() const { return {}; }
+    // Called after a layout changes the drawn box. A container whose child windows follow that
+    // box can update them in the same frame, after the parent's glide rather than one tick late.
+    virtual void OnGeometryChanged() {}
     // ---- animation --------------------------------------------------------------------------
     // Whether this widget is animating **what it draws**: the three pointer states it paints, and
     // whatever its own Tick advances.
@@ -384,6 +389,11 @@ struct Widget {
     // What the page calls this widget, for the times the page knows a name the widget does not. The
     // words beside a switch are page text and are not part of it. Set, and it wins over the virtual.
     std::wstring accessibleName;
+    // A subtree may still be painting its closing animation after it has logically collapsed.
+    // Its elements leave the automation tree immediately, without destroying the widgets.
+    virtual bool AccessibleVisible() const { return visible; }
+    // Structural panels remain in the raw tree, but are skipped by UIA's control/content views.
+    virtual bool AccessibleControlElement() const { return true; }
     virtual const wchar_t *AccessibleName() const { return nullptr; }
     const wchar_t *AccessibleLabel() const {
         return accessibleName.empty() ? AccessibleName() : accessibleName.c_str();
@@ -533,10 +543,12 @@ inline bool Layout::Glide(float dt) {
             // transition anybody asked for.
             w->drawn = w->rect;
             w->placed = true;
+            w->OnGeometryChanged();
             continue;
         }
         if (!Animations()) {
             w->drawn = w->rect;
+            w->OnGeometryChanged();
             continue;
         }
         // All four edges, every frame: Follow is also what puts a value on its target when
@@ -546,6 +558,7 @@ inline bool Layout::Glide(float dt) {
         m = motion::Follow(w->drawn.right, w->rect.right, dt, glideLag, glideSnap) || m;
         m = motion::Follow(w->drawn.bottom, w->rect.bottom, dt, glideLag, glideSnap) || m;
         moving = moving || m;
+        w->OnGeometryChanged();
     }
     return moving;
 }
@@ -598,6 +611,7 @@ inline void PlaceSubtree(Widget *w) {
     w->placed = true;
     for (auto &child : w->children)
         if (child->visible) PlaceSubtree(child.get());
+    w->OnGeometryChanged();
 }
 
 // Everything under `w`, as if it had never been arranged: the next arrangement *places* it where it

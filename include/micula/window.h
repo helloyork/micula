@@ -516,71 +516,70 @@ struct Painter {
     //
     // The path is built per call rather than cached, which is what a page with a handful of
     // panels can afford. A page that draws hundreds of them wants its own cache.
+    // Shared by panel painting and a container's rounded clip. The caller owns the geometry.
+    ID2D1PathGeometry *PanelPath(const D2D1_RECT_F &box, const Corners &k,
+                               unsigned on = edge::kAll) const {
+        ID2D1Factory *factory = nullptr;
+        rt->GetFactory(&factory);
+        if (!factory) return nullptr;
+        float tl = k.r[0], tr = k.r[1], bottomRight = k.r[2], bl = k.r[3];
+        // No two radii on one side may overlap, or the curve crosses itself and the fill comes
+        // out inside out. XAML scales the pair down the same way.
+        const float w = box.right - box.left, h = box.bottom - box.top;
+        if (tl + tr > 0.0f) { const float s = (std::min)(1.0f, w / (tl + tr)); tl *= s; tr *= s; }
+        if (bl + bottomRight > 0.0f) { const float s = (std::min)(1.0f, w / (bl + bottomRight)); bl *= s; bottomRight *= s; }
+        if (tl + bl > 0.0f) { const float s = (std::min)(1.0f, h / (tl + bl)); tl *= s; bl *= s; }
+        if (tr + bottomRight > 0.0f) { const float s = (std::min)(1.0f, h / (tr + bottomRight)); tr *= s; bottomRight *= s; }
+        const D2D1_POINT_2F pt[9] = {
+            D2D1::Point2F(box.left + tl, box.top),     D2D1::Point2F(box.right - tr, box.top),
+            D2D1::Point2F(box.right, box.top + tr),    D2D1::Point2F(box.right, box.bottom - bottomRight),
+            D2D1::Point2F(box.right - bottomRight, box.bottom), D2D1::Point2F(box.left + bl, box.bottom),
+            D2D1::Point2F(box.left, box.bottom - bl),  D2D1::Point2F(box.left, box.top + tl),
+            D2D1::Point2F(box.left + tl, box.top),
+        };
+        const float rad[8] = { 0.0f, tr, 0.0f, bottomRight, 0.0f, bl, 0.0f, tl };
+        const bool lit[8] = {
+            (on & edge::kTop) != 0,
+            (on & edge::kTop) != 0 && (on & edge::kRight) != 0,
+            (on & edge::kRight) != 0,
+            (on & edge::kRight) != 0 && (on & edge::kBottom) != 0,
+            (on & edge::kBottom) != 0,
+            (on & edge::kBottom) != 0 && (on & edge::kLeft) != 0,
+            (on & edge::kLeft) != 0,
+            (on & edge::kLeft) != 0 && (on & edge::kTop) != 0,
+        };
+        ID2D1PathGeometry *path = nullptr;
+        if (FAILED(factory->CreatePathGeometry(&path)) || !path) { factory->Release(); return nullptr; }
+        ID2D1GeometrySink *sink = nullptr;
+        if (FAILED(path->Open(&sink)) || !sink) { path->Release(); factory->Release(); return nullptr; }
+        for (int i = 0; i < 8;) {
+            if (!lit[i]) { i++; continue; }
+            int j = i;
+            while (j < 8 && lit[j]) j++;
+            sink->BeginFigure(pt[i], D2D1_FIGURE_BEGIN_FILLED);
+            for (int p = i; p < j; p++) {
+                if (rad[p] > 0.0f)
+                    sink->AddArc(D2D1::ArcSegment(pt[p + 1], D2D1::SizeF(rad[p], rad[p]), 0.0f,
+                                                  D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                                                  D2D1_ARC_SIZE_SMALL));
+                else
+                    sink->AddLine(pt[p + 1]);
+            }
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            i = j;
+        }
+        sink->Close();
+        sink->Release();
+        factory->Release();
+        return path;
+    }
+
     void Panel(const D2D1_RECT_F &r, const Corners &c, const D2D1_COLOR_F &fill,
                const D2D1_COLOR_F &border = D2D1::ColorF(0, 0.0f),
                unsigned edges = edge::kAll, float width = 1.0f) const {
-        ID2D1Factory *factory = nullptr;
-        rt->GetFactory(&factory);
-        if (!factory) return;
-        // One figure per run of neighbouring pieces, and the pieces themselves in drawing order:
-        // the top edge, the arc joining it to the right edge, the right edge, and so on round, so
-        // that piece `i` runs from `pt[i]` to `pt[i + 1]`. A corner is an arc where two edges meet
-        // -- and half an arc is not a corner, which is why a corner needs both of its edges.
-        auto shape = [&](const D2D1_RECT_F &box, const Corners &k,
-                         unsigned on) -> ID2D1PathGeometry * {
-            float tl = k.r[0], tr = k.r[1], br = k.r[2], bl = k.r[3];
-            // No two radii on one side may overlap, or the curve crosses itself and the fill comes
-            // out inside out. XAML scales the pair down the same way.
-            const float w = box.right - box.left, h = box.bottom - box.top;
-            if (tl + tr > 0.0f) { const float s = (std::min)(1.0f, w / (tl + tr)); tl *= s; tr *= s; }
-            if (bl + br > 0.0f) { const float s = (std::min)(1.0f, w / (bl + br)); bl *= s; br *= s; }
-            if (tl + bl > 0.0f) { const float s = (std::min)(1.0f, h / (tl + bl)); tl *= s; bl *= s; }
-            if (tr + br > 0.0f) { const float s = (std::min)(1.0f, h / (tr + br)); tr *= s; br *= s; }
-            const D2D1_POINT_2F pt[9] = {
-                D2D1::Point2F(box.left + tl, box.top),     D2D1::Point2F(box.right - tr, box.top),
-                D2D1::Point2F(box.right, box.top + tr),    D2D1::Point2F(box.right, box.bottom - br),
-                D2D1::Point2F(box.right - br, box.bottom), D2D1::Point2F(box.left + bl, box.bottom),
-                D2D1::Point2F(box.left, box.bottom - bl),  D2D1::Point2F(box.left, box.top + tl),
-                D2D1::Point2F(box.left + tl, box.top),
-            };
-            const float rad[8] = { 0.0f, tr, 0.0f, br, 0.0f, bl, 0.0f, tl };
-            const bool lit[8] = {
-                (on & edge::kTop) != 0,
-                (on & edge::kTop) != 0 && (on & edge::kRight) != 0,
-                (on & edge::kRight) != 0,
-                (on & edge::kRight) != 0 && (on & edge::kBottom) != 0,
-                (on & edge::kBottom) != 0,
-                (on & edge::kBottom) != 0 && (on & edge::kLeft) != 0,
-                (on & edge::kLeft) != 0,
-                (on & edge::kLeft) != 0 && (on & edge::kTop) != 0,
-            };
-            ID2D1PathGeometry *path = nullptr;
-            if (FAILED(factory->CreatePathGeometry(&path)) || !path) return nullptr;
-            ID2D1GeometrySink *sink = nullptr;
-            if (FAILED(path->Open(&sink)) || !sink) { path->Release(); return nullptr; }
-            for (int i = 0; i < 8;) {
-                if (!lit[i]) { i++; continue; }
-                int j = i;
-                while (j < 8 && lit[j]) j++;
-                sink->BeginFigure(pt[i], D2D1_FIGURE_BEGIN_FILLED);
-                for (int p = i; p < j; p++) {
-                    if (rad[p] > 0.0f)
-                        sink->AddArc(D2D1::ArcSegment(pt[p + 1], D2D1::SizeF(rad[p], rad[p]), 0.0f,
-                                                      D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                                                      D2D1_ARC_SIZE_SMALL));
-                    else
-                        sink->AddLine(pt[p + 1]);
-                }
-                sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                i = j;
-            }
-            sink->Close();
-            sink->Release();
-            return path;
-        };
         // The fill is the whole shape whatever the border covers, and an open figure is filled as
         // if it were closed, which is what makes the two share one builder.
-        if (ID2D1PathGeometry *p = shape(r, c, edge::kAll)) {
+        if (ID2D1PathGeometry *p = PanelPath(r, c)) {
             rt->FillGeometry(p, Brush(fill));
             p->Release();
         }
@@ -591,12 +590,11 @@ struct Painter {
                                      r.right - width / 2, r.bottom - width / 2 };
             Corners k = c;
             for (float &rad : k.r) rad = rad > width / 2 ? rad - width / 2 : 0.0f;
-            if (ID2D1PathGeometry *p = shape(in, k, edges)) {
+            if (ID2D1PathGeometry *p = PanelPath(in, k, edges)) {
                 rt->DrawGeometry(p, Brush(border), width);
                 p->Release();
             }
         }
-        factory->Release();
     }
 
     // One line, vertically centred in `r`, clipped. CLIP is on because a string that
@@ -1909,10 +1907,23 @@ inline void PaintTree(const Painter &p, Widget *w, float ox, float oy) {
     // sliding list drawn past the panel's edge, and the row at the other edge cut off. See
     // Widget::Clips.
     const bool clips = w->Clips();
-    if (clips) p.rt->PushAxisAlignedClip(w->ClipBox(), D2D1_ANTIALIAS_MODE_ALIASED);
+    ID2D1PathGeometry *mask = nullptr;
+    if (clips) {
+        const Corners radii = w->ClipCorners();
+        if (radii.r[0] || radii.r[1] || radii.r[2] || radii.r[3])
+            mask = p.PanelPath(w->ClipBox(), radii);
+        if (mask)
+            p.rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), mask,
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), 1.0f), nullptr);
+        else
+            p.rt->PushAxisAlignedClip(w->ClipBox(), D2D1_ANTIALIAS_MODE_ALIASED);
+    }
     const float cx = ox + where.left, cy = oy + where.top;
     for (const auto &child : w->children) PaintTree(p, child.get(), cx, cy);
-    if (clips) p.rt->PopAxisAlignedClip();
+    if (clips) {
+        if (mask) { p.rt->PopLayer(); mask->Release(); }
+        else p.rt->PopAxisAlignedClip();
+    }
     if (fading) p.rt->PopLayer();
     p.rt->SetTransform(D2D1::Matrix3x2F::Identity());
 }
@@ -3067,8 +3078,11 @@ inline D2D1_RECT_F Widget::VisibleArea() const {
         // reached in. See Widget::ClipBox.
         const D2D1_POINT_2F there = w->OriginOf(box);
         const D2D1_RECT_F r = box->ClipBox();
-        const D2D1_RECT_F in = { r.left + there.x - mine.x, r.top + there.y - mine.y,
-                                 r.right + there.x - mine.x, r.bottom + there.y - mine.y };
+        // ClipBox is in arranged space; PaintTree applies the widget's own glide translation too.
+        const auto &shown = box->placed ? box->drawn : box->rect;
+        const float dx = there.x - mine.x + shown.left - box->rect.left;
+        const float dy = there.y - mine.y + shown.top - box->rect.top;
+        const D2D1_RECT_F in = { r.left + dx, r.top + dy, r.right + dx, r.bottom + dy };
         out.left = (std::max)(out.left, in.left);
         out.top = (std::max)(out.top, in.top);
         out.right = (std::max)(out.left, (std::min)(out.right, in.right));
@@ -4180,7 +4194,7 @@ struct UiaElement : IRawElementProviderSimple,
             return Flag(out, !isItem && w->enabled && w->Focusable());
         case UIA_HasKeyboardFocusPropertyId:         return Flag(out, !isItem && win->focused == w);
         case UIA_IsControlElementPropertyId:
-        case UIA_IsContentElementPropertyId:         return Flag(out, true);
+        case UIA_IsContentElementPropertyId:         return Flag(out, w->AccessibleControlElement());
         case UIA_FrameworkIdPropertyId:              return Text(out, L"Micula");
         case UIA_BoundingRectanglePropertyId:        return BoxOf(out, box);
         // Where an item sits in the set it belongs to, which is what a screen reader says "3 of 40"
@@ -4440,7 +4454,8 @@ struct UiaElement : IRawElementProviderSimple,
         *out = nullptr;
         Widget *w = Target();
         std::wstring v;
-        if (!w || !w->AccessibleValue(v)) return S_OK;
+        if (!w) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (!w->AccessibleValue(v)) return S_OK;
         *out = SysAllocString(v.c_str());
         return *out ? S_OK : E_OUTOFMEMORY;
     }
@@ -4767,7 +4782,7 @@ private:
         if (host == Target() && item >= 0) return 0;
         int n = 0;
         for (const auto &child : host->children)
-            if (child->visible) n++;
+            if (child->AccessibleVisible()) n++;
         return n;
     }
     UiaElement *ChildAt(const Widget *host, int index) const {
@@ -4776,7 +4791,7 @@ private:
         if (items > 0) return index < items ? new UiaElement(win, host->uid, index) : nullptr;
         if (host == Target() && item >= 0) return nullptr;
         for (const auto &child : host->children)
-            if (child->visible && index-- == 0) return new UiaElement(win, child->uid);
+            if (child->AccessibleVisible() && index-- == 0) return new UiaElement(win, child->uid);
         return nullptr;
     }
     // Where a widget sits among the children its parent reports, which is the order a client visits
@@ -4787,7 +4802,7 @@ private:
         if (!w || !w->parent || w->parent->AccessibleItems() > 0) return -1;
         int n = 0;
         for (const auto &child : w->parent->children) {
-            if (!child->visible) continue;
+            if (!child->AccessibleVisible()) continue;
             if (child.get() == w) return n;
             n++;
         }
@@ -4842,7 +4857,10 @@ inline IRawElementProviderSimple *Surface::UiaRoot() { return new UiaElement(thi
 // controls, on a call that only happens when somebody is running a screen reader.
 inline Widget *Surface::UiaFind(int uid) const {
     if (!uid) return nullptr;
-    return FindUid(content.get(), uid);
+    Widget *w = FindUid(content.get(), uid);
+    for (Widget *at = w; at; at = at->parent)
+        if (!at->AccessibleVisible()) return nullptr;
+    return w;
 }
 
 inline Widget *Surface::FindUid(Widget *w, int uid) const {
@@ -4912,7 +4930,7 @@ inline void Window::UiaAnnounce() {
         s.items = items;
         s.kids.clear();
         for (const auto &child : w->children) {
-            if (!child->visible) continue;
+            if (!child->AccessibleVisible()) continue;
             s.kids.push_back(child->uid);
             look(child.get(), w->uid);
         }

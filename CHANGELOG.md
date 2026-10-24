@@ -6,6 +6,18 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+### Added
+
+- `CardGroup` and `CardExpander` compose existing cards with coordinated corners, configurable
+  gutters, clipped batch transitions and retained content, keyboard navigation and UIA support.
+- `StackLayout::maxWidth` optionally centres a bounded content column. The `micula-cards` example
+  demonstrates the controls and provides headless behaviour checks and Direct2D rendering.
+
+### Fixed
+
+- File-font loading compiles with both Microsoft and MinGW DirectWrite headers.
+- UIA bounds follow moving clip containers, and cached Value providers report unavailable elements.
+
 ## [0.12.0] - 2026-10-08
 
 ### Added

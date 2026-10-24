@@ -926,7 +926,7 @@ struct Font {
         IDWriteFontCollection1 *collection = nullptr;
         IDWriteTextFormat *format = nullptr;
         if (SUCCEEDED(dw->CreateFontFileReference(path.c_str(), nullptr, &file)) && file &&
-            SUCCEEDED(five->CreateFontSetBuilder(&builder)) && builder) {
+            SUCCEEDED(three->CreateFontSetBuilder(&builder)) && builder) {
             // Every face in the file, not the first: one file may hold a regular, a bold and an italic,
             // and which of them answers is then the weight and slope asked for below.
             BOOL supported = FALSE;
@@ -936,8 +936,10 @@ struct Font {
             if (SUCCEEDED(file->Analyze(&supported, &type, &faces, &count))) {
                 for (UINT32 i = 0; i < count; i++) {
                     IDWriteFontFaceReference *face = nullptr;
-                    if (SUCCEEDED(three->CreateFontFaceReference(file, i, DWRITE_FONT_SIMULATIONS_NONE,
-                                                                 &face)) &&
+                    // The path overload has the same name in both SDKs. MinGW calls the file
+                    // overload CreateFontFaceReference_, unlike Microsoft's C++ header.
+                    if (SUCCEEDED(three->CreateFontFaceReference(path.c_str(), nullptr, i,
+                                                                 DWRITE_FONT_SIMULATIONS_NONE, &face)) &&
                         face) {
                         builder->AddFontFaceReference(face);
                         face->Release();
@@ -950,7 +952,8 @@ struct Font {
         if (collection) {
             std::wstring family;
             IDWriteFontFamily *first = nullptr;
-            if (SUCCEEDED(collection->GetFontFamily(0, &first)) && first) {
+            // Select the base overload explicitly; some SDKs hide it with the Family1 overload.
+            if (SUCCEEDED(static_cast<IDWriteFontCollection *>(collection)->GetFontFamily(0, &first)) && first) {
                 IDWriteLocalizedStrings *names = nullptr;
                 if (SUCCEEDED(first->GetFamilyNames(&names)) && names) {
                     UINT32 index = 0;

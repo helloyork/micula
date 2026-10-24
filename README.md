@@ -21,6 +21,10 @@ machine with nothing installed.
 Button, CheckBox, ToggleSwitch, Segmented, Slider, ScrollBar, DropDown, SideNav,
 TextBox, ProgressBar, ProgressRing.
 
+`CardGroup` joins existing cards with coordinated corners, spacing and clipped row transitions; `CardExpander` reveals a group below
+a card header. `StackLayout::maxWidth` optionally centres a bounded content column. See
+[grouped cards](docs/cards.md) and `examples/cards` (`micula-cards.exe`).
+
 Colors, sizes and animation timings come from WinUI's control templates and the Fluent
 design tokens. The accent color and the light or dark theme are read from the system.
 

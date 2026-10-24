@@ -46,14 +46,20 @@ struct CardLayout : Layout {
     Want Measure(const Room &room) const override;
     void Arrange(const Room &room, const D2D1_RECT_F &box) override;
     D2D1_RECT_F ContentBox(const D2D1_RECT_F &box) const override {
-        return { box.left + spec.cardPad, box.top + spec.cardPad,
-                 box.right - spec.cardPad, box.bottom - spec.cardPad };
+        return Content(box);
     }
+    D2D1_RECT_F Content(const D2D1_RECT_F &box) const;
     // What the card's text and icon take off the left of the row, gap included.
     float Reserved(const Room &room) const;
 };
 
 struct Card : Widget {
+    // A group owns these while the card belongs to it. Standalone cards keep all four corners.
+    Corners corners{ metric::kRadiusControl, metric::kRadiusControl,
+                     metric::kRadiusControl, metric::kRadiusControl };
+    unsigned borderEdges = edge::kAll;
+    // Space beyond the controls, for a header's disclosure arrow. It is not a replacement for Set().
+    float trailingSpace = 0.0f;
     std::wstring icon;         // optional Segoe Fluent Icons code point, drawn at the left
     std::wstring text;         // the card's own line
     std::wstring detail;       // optional, secondary colour, under the text
@@ -126,7 +132,7 @@ struct Card : Widget {
         // edge -- 24 DIP at a page margin of 24 -- and nothing else on the page is drawn from a
         // control's rectangle this way.
         float right = content ? rect.left + content->rect.left - spec.cardGap
-                              : rect.right - spec.cardPad;
+                              : rect.right - spec.cardPad - trailingSpace;
         if (value) {
             t.said = value();
             if (!t.said.empty()) {
@@ -149,11 +155,19 @@ struct Card : Widget {
         return t;
     }
 
+    virtual D2D1_COLOR_F Background(const Palette &c) const { return c.cardBg; }
+
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
         const Spec &sp = layout->spec;
-        p.FillRound(rect, metric::kRadiusControl, c.cardBg);
-        p.StrokeRound(rect, metric::kRadiusControl, c.cardStroke);
+        const D2D1_COLOR_F background = Background(c);
+        if (borderEdges == edge::kAll && corners.r[0] == corners.r[1] &&
+            corners.r[0] == corners.r[2] && corners.r[0] == corners.r[3]) {
+            p.FillRound(rect, corners.r[0], background);
+            p.StrokeRound(rect, corners.r[0], c.cardStroke);
+        } else {
+            p.Panel(rect, corners, background, c.cardStroke, borderEdges);
+        }
 
         if (!icon.empty())
             p.Text(icon, { rect.left + sp.cardPad, rect.top, rect.left + sp.cardPad + 20,
@@ -176,6 +190,12 @@ struct Card : Widget {
     const wchar_t *AccessibleName() const override { return text.empty() ? nullptr : text.c_str(); }
     int AccessibleType() const override { return UIA_GroupControlTypeId; }
 };
+
+inline D2D1_RECT_F CardLayout::Content(const D2D1_RECT_F &box) const {
+    const auto *card = static_cast<const Card *>(host_);
+    return { box.left + spec.cardPad, box.top + spec.cardPad,
+             box.right - spec.cardPad - card->trailingSpace, box.bottom - spec.cardPad };
+}
 
 inline float CardLayout::Reserved(const Room &room) const {
     const Card *card = static_cast<const Card *>(host_);
@@ -213,7 +233,7 @@ inline void CardLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     // neighbour, and the row grows to the right from there.
     const bool words = card->HasWording();
     const float left = box.left + spec.cardPad + Reserved(room);
-    const float right = box.right - spec.cardPad;
+    const float right = box.right - spec.cardPad - card->trailingSpace;
     const float mid = (box.top + box.bottom) / 2.0f;
 
     // Two passes, as everywhere else: what the children that are not filling want, then the room the
