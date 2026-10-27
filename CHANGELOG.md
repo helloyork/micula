@@ -17,6 +17,16 @@ library can be: a minor version may break.
 
 - File-font loading compiles with both Microsoft and MinGW DirectWrite headers.
 - UIA bounds follow moving clip containers, and cached Value providers report unavailable elements.
+- **A text field no longer flashes light as it takes or loses the caret.** `Mix` interpolates a
+  colour's channels independently, which is right for the pairs it was written for: each is one
+  colour at two opacities, and cross-fading those is cross-fading an opacity. Dark mode's focused
+  fill is not one of them -- the resting field is white at six percent and the focused one is
+  `#1E1E1E` at seventy -- so halfway through the transition the pigment was still most of the way
+  to white while the alpha had climbed to 38%, and the page showed through the result. Composited,
+  that mid state is a third brighter than either end, which on a dark page reads as a flash of
+  white twice per visit to the field. **`MixOver`** is the interpolation that pair wants: each end
+  weighted by its own opacity, then divided back out by the alpha the blend ended with, so the
+  result never leaves the range between the two ends and no backdrop has to be known.
 
 ## [0.12.0] - 2026-10-08
 

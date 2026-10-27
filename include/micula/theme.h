@@ -557,6 +557,37 @@ inline D2D1_COLOR_F Fade(const D2D1_COLOR_F &c, float mul) {
     return D2D1::ColorF(c.r, c.g, c.b, c.a * mul);
 }
 
+// Two colours mixed across a *change of pigment*, for the one cross-fade in the platform
+// whose two ends are not the same colour at two opacities.
+//
+// `Mix` is right when the pair differs only in alpha over the same white or black, and
+// that is nearly every fill token. It is wrong when the two ends differ in RGB as well,
+// because interpolating RGB and alpha independently puts saturated pigment under a low
+// alpha halfway through, and the backdrop shows through it. Dark mode's field fill is
+// exactly that pair: resting is white at 6% and focused is #1E1E1E at 70%. Straight
+// interpolation gives #8F8F8F at 38% at t=0.5 -- a mid grey the page is 62% visible
+// through, which composites *brighter* than either end and reads as a flash of white
+// every time the field takes or loses the caret.
+//
+// So: weight each end by its own opacity, mix there, and divide the pigment back out by
+// the alpha the blend ended up with. The result never leaves the range between the two
+// ends, because it is what compositing both of them over one backdrop and then cross-
+// fading *those* would have produced, without needing to know the backdrop.
+inline D2D1_COLOR_F MixOver(const D2D1_COLOR_F &a, const D2D1_COLOR_F &b, float t) {
+    if (t <= 0.0f) return a;
+    if (t >= 1.0f) return b;
+
+    const float wa = a.a * (1.0f - t);
+    const float wb = b.a * t;
+    const float sum = wa + wb;
+    if (sum <= 0.0f) return D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
+
+    return D2D1::ColorF((a.r * wa + b.r * wb) / sum,
+                        (a.g * wa + b.g * wb) / sum,
+                        (a.b * wa + b.b * wb) / sum,
+                        sum);
+}
+
 inline Palette MakePalette(bool dark) {
     Palette p;
     p.dark   = dark;

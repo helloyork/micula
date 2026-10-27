@@ -1446,10 +1446,17 @@ struct TextBox : Widget {
         // one Fluent gives a field with the caret in it (ControlFillColorInputActive,
         // which is opaque white in light and 70% #1E1E1E in dark). The focus fill wins
         // over hover, which is why it is the outer mix.
+        //
+        // **The outer one is `MixOver` and the inner one is `Mix`, and the difference is
+        // the whole reason dark mode used to flash white on the caret.** The first two
+        // ends are one colour at two opacities, which is what `Mix` is for; the third is
+        // a different pigment, and mixing it straight in put #8F8F8F at 38% halfway
+        // through -- grey that the page shows through, compositing brighter than either
+        // end. See `MixOver`.
         p.FillRound(rect, metric::kRadiusControl,
                     !enabled ? c.controlBg
-                             : Mix(Mix(c.controlBg, c.controlBgHover, hoverT),
-                                   c.controlBgInput, focusT));
+                             : MixOver(Mix(c.controlBg, c.controlBgHover, hoverT),
+                                       c.controlBgInput, focusT));
         p.StrokeRound(rect, metric::kRadiusControl, c.controlStroke);
         // The accent underline, **whole, the moment the field takes focus.**
         //
