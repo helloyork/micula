@@ -5,6 +5,7 @@
 // surfaces never reveal a neighbouring row through them.
 
 #include "card.h"
+#include "glyphs.h"   // the chevron the expander draws
 #include "view.h"
 
 #include <type_traits>

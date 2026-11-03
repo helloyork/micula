@@ -3,6 +3,7 @@
 #pragma once
 
 #include "window.h"
+#include "glyphs.h"   // the check mark
 
 #include <algorithm>
 #include <cmath>

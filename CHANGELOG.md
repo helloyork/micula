@@ -12,6 +12,49 @@ library can be: a minor version may break.
   gutters, clipped batch transitions and retained content, keyboard navigation and UIA support.
 - `StackLayout::maxWidth` optionally centres a bounded content column. The `micula-cards` example
   demonstrates the controls and provides headless behaviour checks and Direct2D rendering.
+- **`micula/icon.h`: `Icon`, and `IconShape` for an icon a page draws itself.** `Icon` is what a
+  control holds in an icon slot -- 24 bytes, a pointer and a share of a count, copyable -- and a
+  page with an icon of its own subclasses `IconShape` and hands it over as
+  `card->icon = std::make_shared<Badge>()`. `Paint` and `Width` are asked with the `Painter` of the
+  frame and with the icon format the control picked, so a shape never decides how big an icon is.
+  It is the shape that is subclassed rather than `Icon` because an `Icon` is kept by value, and a
+  virtual override does not survive being copied into one.
+- **`Card(Icon, line, under)`**, which is the constructor the old type could not have: see Changed.
+- **Icon sets: an ordered table, and an index that lives in the slot.** `glyph::Set`, and the
+  families named the way Microsoft names them -- `battery`, `mobBattery`, `verticalBattery`,
+  `bandBattery`, plus `align` and `speed` -- turn "one of eleven" into a table lookup instead of
+  a code point plus an offset, which is the only thing that works when a ramp is drawn across
+  three ranges and its last level sits *before* its first. `card->icon = glyph::battery::Levels;`
+  and then `card->icon.Face(percent / 10);` An `Icon` is still 24 bytes, because the index lives
+  in the one allocation a set slot makes.
+- **`tools/glyphaudit.ps1`** checks `glyphs.h` against Microsoft's two published icon tables:
+  every trailing name against the name for that code point, and every grouped family for members
+  it might have missed.
+- **`tools/glyph-names.csv`: the names, copied into the repository.** 1578 code points with the
+  name each of Microsoft's tables gives them, which is the only place a name can come from -- both
+  icon fonts have an empty `post` table and carry none. `glyphpicker.ps1` labels a hovered cell
+  with it (`U+E733 Blocked (仅 Fluent)`, and `无字形` where the installed font has no glyph), and
+  `glyphaudit.ps1 -WriteNames` regenerates the copy, failing when it no longer matches.
+- **`HasFluentIcons()`, `HasGlyph()` and `MICULA_IS_WIN11`: what the running machine can draw.**
+  The glyphs Segoe MDL2 Assets does not have -- the six connection-animation frames, `SpeedHigh2`,
+  two of the battery "unknown" glyphs -- cannot be gated at compile time, because the font is not
+  shipped with the program: a build made on Windows 11 runs on Windows 10, where the glyph is not
+  there. `HasGlyph(glyph)` asks the installed font whether it draws a code point and keeps the
+  answer; `MICULA_IS_WIN11` is `HasFluentIcons()` spelled short, for a page that only wants one
+  fallback line. `glyph::animated` is the first family that needs it.
+
+### Changed
+
+- **An icon is a type, not a string.** The constants in `glyphs.h` are `Glyph` now -- still one
+  pointer, still `constexpr`, so nothing got heavier -- and nothing converts to one from a
+  `const wchar_t *`. The slots that hold an icon (`Card::icon`, `Button::glyph`,
+  `NavItem::glyph`, a menu row's `icon`, and the `icon` parameter of `Menu::Item` and
+  `Menu::Check`) take an `Icon`, which a `Glyph` builds implicitly; a page that has to name a code
+  point of its own writes `Glyph(L"\ue713")`, and `nullptr` still means "none". What this buys is
+  `Card(Icon, line, under)`: with a bare pointer in the slot,
+  `Card(L"Clean up", L"Every week")` is an *exact* match for the icon constructor -- the first of
+  two strings landing in the icon slot -- and no arrangement of overloads can make it not be.
+  `Icon g = L"\ue713"` and `menu.Item(L"Copy", L"\ue8c8")` no longer compile, on purpose.
 
 ### Fixed
 

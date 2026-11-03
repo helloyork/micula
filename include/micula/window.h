@@ -64,6 +64,7 @@
 #pragma once
 
 #include "theme.h"
+#include "glyphs.h"                  // `Glyph`, the code point the painter's icon overloads take
 #include "view.h"                   // the root widget a page builds into, and what a card puts a control in
 #include "widget.h"                 // the tree: Widget, Layout, Spec -- see docs/layout.md
 
@@ -608,6 +609,16 @@ struct Painter {
                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    // A glyph: the same drawing, cut to one code point. **This overload is where the type turns
+    // back into the drawing it stands for** -- `Glyph` is what keeps a code point out of the slots
+    // that want words, and a control that draws a constant of its own no longer has to say
+    // anything about strings to do it. One unit fits a small string, so nothing is allocated.
+    void Text(const Glyph &g, const D2D1_RECT_F &r, IDWriteTextFormat *fmt,
+              const D2D1_COLOR_F &c) const {
+        if (g.empty()) return;
+        Text(std::wstring(g.Code()), r, fmt, c);
+    }
+
     // A laid-out paragraph: wraps, and reports how tall it came out so the caller can
     // put the next thing under it.
     //
@@ -678,6 +689,13 @@ struct Painter {
     // question, and answering it is a DirectWrite layout and a shaping pass.
     float MeasureWidth(const std::wstring &s, IDWriteTextFormat *fmt) const {
         return font->Measure(fmt, s);
+    }
+
+    // The same question for a glyph, which is what a control that centres an icon asks -- a
+    // glyph does not fill its advance, so where it goes in its box is a measurement.
+    float MeasureWidth(const Glyph &g, IDWriteTextFormat *fmt) const {
+        if (g.empty()) return 0.0f;
+        return font->Measure(fmt, std::wstring(g.Code()));
     }
 };
 
@@ -2126,7 +2144,8 @@ inline void Window::PaintCaption(const Painter &p) {
     // Minimise, maximise/restore, close. Segoe Fluent Icons' own caption glyphs, which
     // exist at the same code points in Segoe MDL2 Assets -- see theme.h's fallback.
     const bool zoomed = IsZoomed(hwnd) != 0;
-    const wchar_t *glyphs[3] = { L"\uE921", zoomed ? L"\uE923" : L"\uE922", L"\uE8BB" };
+    const Glyph glyphs[3] = { Glyph(L"\uE921"), Glyph(zoomed ? L"\uE923" : L"\uE922"),
+                              Glyph(L"\uE8BB") };
     for (int i = 0; i < 3; i++) {
         const D2D1_RECT_F r = { w - kCaptionBtnW * (3 - i), 0,
                                 w - kCaptionBtnW * (2 - i), kCaptionH };

@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "window.h"
+#include "icon.h"   // `Icon`, and through it the `Painter` a button draws with
 
 #include <algorithm>
 #include <cmath>
@@ -23,7 +23,7 @@ enum class ButtonStyle {
 
 struct Button : Widget {
     std::wstring label;
-    std::wstring glyph;              // optional Segoe Fluent Icons code point, drawn left
+    Icon         glyph;              // optional, drawn left
     // Left-aligned rather than centred. For a navigation list, where the labels are
     // different lengths and centring each one in its own row makes the column look
     // ragged -- Windows' own Settings left-aligns them against the icon.
@@ -37,6 +37,9 @@ struct Button : Widget {
     bool Focusable() const override { return true; }
     bool HandCursor() const override { return style == ButtonStyle::Link; }
     void OnClick() override { if (enabled && onClick) onClick(); }
+
+    // The same forwarding a card does: only a set that is moving asks for frames. See `Card`.
+    bool Animating() const override { return glyph.AnimationWanted() || Widget::Animating(); }
 
     // As wide as its label and Fluent's 12-DIP side padding, and never narrower than the 100-DIP
     // minimum that keeps a row of buttons even; one control tall.
@@ -124,12 +127,12 @@ struct Button : Widget {
                 // for the same reason: what has to land in the middle is the shape, not the box it
                 // is drawn in. Measured rather than counted, because the two are not the same
                 // width -- the whole point of an icon-only button is that it is as wide as it looks.
-                const float gw = p.MeasureWidth(glyph, p.font->icon);
+                const float gw = glyph.Width(*p.font, p.font->icon);
                 const float gl = box.left + (Width(box) - gw) * 0.5f;
-                p.Text(glyph, { gl, box.top, gl + gw, box.bottom }, p.font->icon, fg);
+                glyph.Paint(p, { gl, box.top, gl + gw, box.bottom }, fg, p.font->icon);
             } else {
                 const D2D1_RECT_F g = { box.left + 12, box.top, box.left + 32, box.bottom };
-                p.Text(glyph, g, p.font->icon, fg);
+                glyph.Paint(p, g, fg, p.font->icon);
                 text.left += 32;
             }
         }

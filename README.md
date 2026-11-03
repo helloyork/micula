@@ -64,7 +64,17 @@ that shape it on the page beside it, for trying them out.
 `tools/glyphpicker.ps1` is a window for choosing the icons in `glyphs.h`: it draws a
 range of code points in a Segoe font, dims the ones the font does not have, marks the
 ones that only one of the two icon fonts has, and copies the literal of the cell you
-click.
+click. Hover a cell and it says what the icon is -- `U+E734 FavoriteStar`,
+`U+E713 Settings/Setting` where the two tables disagree about the name, `U+E733 Blocked
+(仅 Fluent)`, or `U+F106 PageList 无字形` where this machine's font has no glyph for a name
+Microsoft still lists -- out of `tools/glyph-names.csv`.
+
+`tools/glyphaudit.ps1` checks that header against Microsoft's two published icon tables,
+which are the only place the names live: every trailing name is compared with the name
+Microsoft gives that code point, and every family the header groups (the battery ramps,
+the alignments, the speeds) is checked for members it might have missed -- `SettingsBattery`
+is an empty battery whose name is nowhere near the rest of its ramp. It is also what writes
+`glyph-names.csv`, and it fails when that copy no longer matches the tables.
 
 ## Building
 

@@ -775,6 +775,22 @@ struct Fonts {
     // that changes with the window, so the answer is not a property of the string.
     float WrappedHeight(IDWriteTextFormat *fmt, const std::wstring &s, float width) const;
 
+    // **Does the icon font on this machine actually draw this code point?** The one question no
+    // list can answer: the font is not shipped with the program, so a glyph Fluent Icons added is
+    // present on Windows 11 and absent on Windows 10 -- and absent from an older Fluent Icons too,
+    // which is why this asks the font rather than the version.
+    //
+    // The icon font itself, not the fallback chain: an emoji answers false even though DirectWrite
+    // would substitute Segoe UI Emoji for it in a run of text.
+    //
+    // Resolved on first use and kept, both the answer and the font it was asked of: the installed
+    // font does not change while a window is open, and a page asking once per frame is the
+    // ordinary case for a page that draws a connection indicator.
+    bool HasGlyph(const Glyph &g) const;
+    mutable IDWriteFont *iconFont = nullptr;
+    mutable bool iconFontAsked = false;
+    mutable std::unordered_map<UINT32, bool> glyphAnswers;
+
     bool Create(IDWriteFactory *factory);
     void Release();
 };
@@ -847,6 +863,64 @@ inline void Fonts::Release() {    IDWriteTextFormat *all[] = { title, subtitle, 
     for (IDWriteTextFormat *f : all) if (f) f->Release();
     title = subtitle = bodyStrong = body = caption = mono = nullptr;
     icon = iconLarge = iconSmall = iconTiny = nullptr;
+    if (iconFont) iconFont->Release();
+    iconFont = nullptr;
+    iconFontAsked = false;
+    glyphAnswers.clear();
+}
+
+// Resolve the family the icon format asks for, once, and keep the font. A *format* is a request,
+// and DirectWrite answers a request for a family that is not installed by substituting one without
+// saying so -- so the font has to be looked up in the collection to be asked a real question.
+//
+// `HasCharacter` takes a code point, not a UTF-16 unit, so a glyph spelled as a surrogate pair is
+// decoded first rather than truncated to its high half.
+inline UINT32 GlyphCode(const Glyph &g) {
+    if (g.empty()) return 0;
+    const wchar_t *s = g.Code();
+    UINT32 cp = static_cast<UINT32>(s[0]);
+    if (cp >= 0xD800 && cp <= 0xDBFF && s[1] >= 0xDC00 && s[1] <= 0xDFFF)
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<UINT32>(s[1]) - 0xDC00);
+    return cp;
+}
+
+inline bool Fonts::HasGlyph(const Glyph &g) const {
+    const UINT32 cp = GlyphCode(g);
+    if (!cp) return false;
+    const std::unordered_map<UINT32, bool>::const_iterator hit = glyphAnswers.find(cp);
+    if (hit != glyphAnswers.end()) return hit->second;
+
+    if (!iconFontAsked) {
+        iconFontAsked = true;
+        IDWriteFontCollection *sys = nullptr;
+        if (icon && dw && SUCCEEDED(dw->GetSystemFontCollection(&sys)) && sys) {
+            const UINT32 len = icon->GetFontFamilyNameLength();
+            std::wstring family(len > 0 ? len + 1 : 0, L'\0');
+            if (!family.empty() && SUCCEEDED(icon->GetFontFamilyName(&family[0], len + 1))) {
+                UINT32 index = 0; BOOL exists = FALSE;
+                if (SUCCEEDED(sys->FindFamilyName(family.c_str(), &index, &exists)) && exists) {
+                    IDWriteFontFamily *found = nullptr;
+                    if (SUCCEEDED(sys->GetFontFamily(index, &found)) && found) {
+                        IDWriteFont *font = nullptr;
+                        if (SUCCEEDED(found->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL,
+                                                                  DWRITE_FONT_STRETCH_NORMAL,
+                                                                  DWRITE_FONT_STYLE_NORMAL, &font)))
+                            iconFont = font;   // owned from here, released by Release
+                        found->Release();
+                    }
+                }
+            }
+            sys->Release();
+        }
+    }
+
+    bool has = false;
+    if (iconFont) {
+        BOOL exists = FALSE;
+        if (SUCCEEDED(iconFont->HasCharacter(cp, &exists))) has = exists != FALSE;
+    }
+    glyphAnswers[cp] = has;
+    return has;
 }
 
 // **The fonts, made once for the life of the process.** A window closing does not release them: the
@@ -867,6 +941,30 @@ inline Fonts &CurrentFonts() {
     }
     return f;
 }
+
+// ---------------------------------------------------------------- what this machine can draw
+
+// Whether the machine has the modern icon font at all. Windows 11 ships it; Windows 10 does not,
+// unless somebody installed it from Microsoft's design resources -- and that machine draws these
+// icons perfectly well, which is why the question is about the font and not about the version
+// number.
+inline bool HasFluentIcons() {
+    const Fonts &f = CurrentFonts();
+    return f.dw && HasFamily(f.dw, L"Segoe Fluent Icons");
+}
+
+// Whether the installed icon font draws this code point. This is the exact question, and the one
+// `HasFluentIcons` only approximates: an older Fluent Icons is missing glyphs the newest release
+// added, so a page that ships one of those still has to ask.
+inline bool HasGlyph(Glyph g) { return CurrentFonts().HasGlyph(g); }
+
+// **The macro a page writes its fallback with.** The font is not shipped with the program -- one
+// built on Windows 11 runs on Windows 10, where the glyph is not there, and one built on Windows 10
+// runs on Windows 11, where it is -- so this cannot be a preprocessor switch on the target OS. It
+// is a call, spelled short so that the fallback reads as one line:
+//
+//     card->icon = MICULA_IS_WIN11 ? glyph::animated::Bars : glyph::kBug;
+#define MICULA_IS_WIN11 (::micula::HasFluentIcons())
 
 // ---------------------------------------------------------------- a font of your own
 

@@ -9,14 +9,19 @@
     cell on the clipboard. Clicking a cell again takes it back out of the list at the bottom, which a
     button copies in one go.
 
+    Hover a cell and the status line says what it is: `U+E734 FavoriteStar` when both fonts have it,
+    `U+E713 Settings/Setting` where the two tables disagree about the name, `U+E733 Blocked (仅 Fluent)`
+    when only the first has it, `U+F106 PageList 无字形` when that font does not -- the name comes
+    from `glyph-names.csv` beside this script, which is the only place a name can come from: both
+    fonts have an empty `post` table, so neither carries glyph names.
+
     The arrows beside the range flip the page: one page, or ten at a time. PageUp and PageDown do the
     same from the keyboard. The range is the sheet's bounds, so it is typed once and not per page.
 
-    What a picture *means* is the part no tool can answer: both Segoe icon fonts have an empty `post`
-    table, so they carry no glyph names, and Microsoft's own icon lists (Windows Terminal's
-    `SegoeFluentIconList.h`, the WinUI Gallery's `IconsData.json`) are the only place a name can be
-    read from. This is for the other half of the job -- finding the code point once the name, or the
-    shape, is known, and checking that both fonts have it, which every constant in `glyphs.h` must.
+    What a picture *means* is the part no tool can answer, and `tools/glyphaudit.ps1` is what keeps
+    the name table in step with Microsoft's own published lists. This is for the other half of the
+    job -- finding the code point once the name, or the shape, is known, and checking that both fonts
+    have it, which every constant in `glyphs.h` must.
 
 .PARAMETER Both
     Fonts a glyph has to exist in to be drawn in the normal colour. A glyph missing from one of them
@@ -147,6 +152,20 @@ $script:cache  = @{}
 $script:hdc    = [IntPtr]::Zero
 $script:hfonts = @{}
 
+# Microsoft's own names for the code points, copied into the repository by
+# `tools/glyphaudit.ps1 -WriteNames` -- which also checks that the copy is still theirs. Two columns,
+# because the tables do not always agree: `E700` is `GlobalNavButton` in one and
+# `GlobalNavigationButton` in the other, and which one is meant matters when the name is looked up.
+$script:names = @{}
+$nameFile = Join-Path $PSScriptRoot 'glyph-names.csv'
+if (Test-Path $nameFile) {
+    foreach ($row in (Import-Csv -Path $nameFile)) {
+        $script:names[$row.code] = [pscustomobject]@{ fluent = [string]$row.fluent; mdl2 = [string]$row.mdl2 }
+    }
+} else {
+    Write-Warning "no glyph-names.csv beside this script -- cells will be labelled by code point only"
+}
+
 function Start-Measure {
     # One memory DC with each font selected into it is all GetGlyphIndices needs, and holding the
     # bitmap keeps that DC alive for the life of the window.
@@ -182,6 +201,37 @@ function Format-Cp([int]$cp) {
     }
 }
 
+# The label a cell is called by: the Fluent table's name, but where the two tables disagree both of
+# them -- `Settings/Setting` -- because the names in `glyphs.h` are the Fluent ones and somebody
+# reading MDL2's documentation is looking at the other.
+function Get-GlyphLabel([int]$cp) {
+    $key = '{0:X4}' -f $cp
+    if (-not $script:names.ContainsKey($key)) { return '' }
+    $entry = $script:names[$key]
+    if ($entry.fluent -and $entry.mdl2 -and $entry.fluent -ne $entry.mdl2) {
+        return "$($entry.fluent)/$($entry.mdl2)"
+    }
+    if ($entry.fluent) { return $entry.fluent }
+    $entry.mdl2
+}
+
+# The colour and the words have to agree, so both read the state from here: `none` is dim, `fluent`
+# is the warning colour because only the first of -Both has it, `has` is every one of them.
+function Get-State([int]$cp) {
+    if (-not (Test-Glyph $Font $cp)) { return 'none' }
+    if (-not (Test-Both $cp)) { return 'fluent' }
+    return 'has'
+}
+
+# `U+E734 FavoriteStar`  `U+E713 Settings/Setting`  `U+E733 Blocked (仅 Fluent)`  `U+F106 PageList 无字形`
+function Describe([int]$cp) {
+    $label = Get-GlyphLabel $cp
+    $state = Get-State $cp
+    $note  = if ($state -eq 'none') { ' 无字形' } elseif ($state -eq 'fluent') { ' (仅 Fluent)' } else { '' }
+    if ($label) { return 'U+{0:X4} {1}{2}' -f $cp, $label, $note }
+    'U+{0:X4}{1}' -f $cp, $note
+}
+
 function Draw-Page([System.Drawing.Graphics]$g, [int]$page) {
     $g.Clear($script:bg)
     for ($i = 0; $i -lt $perPage; $i++) {
@@ -192,9 +242,11 @@ function Draw-Page([System.Drawing.Graphics]$g, [int]$page) {
         $box = [System.Drawing.Rectangle]::new($x, $y, $script:Cell, $script:Cell)
         if ($script:picked.Contains($cp)) { $g.FillRectangle($script:hlFill, $box) }
         if ($cp -eq $script:hover) { $g.DrawRectangle($script:hoverPen, $box) }
-        $ink = if (-not (Test-Glyph $Font $cp)) { $script:inkMissing }
-               elseif (-not (Test-Both $cp)) { $script:inkPartial }
-               else { $script:ink }
+        $ink = switch (Get-State $cp) {
+            'none'   { $script:inkMissing }
+            'fluent' { $script:inkPartial }
+            default  { $script:ink }
+        }
         $g.DrawString([string][char]$cp, $script:iconFont, $ink,
                       [System.Drawing.RectangleF]::new($x, $y, $script:Cell, $script:Cell * 0.7), $script:centre)
         $g.DrawString(('{0:X4}' -f $cp), $script:codeFont, $script:inkCode,
@@ -276,16 +328,22 @@ $pad   = Sx 8
 $line  = Sx 26
 $script:Cell  = [int][Math]::Min((Sx $Cell), [Math]::Min(
                     [Math]::Floor(([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Width - 4 * $pad) / $Cols) - $gap,
-                    [Math]::Floor(([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 6 * $line - 6 * $pad) / $Rows) - $gap))
+                    [Math]::Floor(([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 7 * $line - 6 * $pad) / $Rows) - $gap))
 $script:Cell  = [Math]::Max($script:Cell, (Sx 20))
 $script:pitch = $script:Cell + $gap
 
 $gridW = $Cols * $script:pitch
 $gridH = $Rows * $script:pitch
 $wide  = [Math]::Max($gridW, (Sx 700))        # the bottom row of buttons is wider than a small grid
-$top   = $pad + $line + $pad
+$top   = $pad + $line + $pad                  # where the grid starts, under the range row
+# The status line gets a row of its own rather than the space left of the buttons: the longest text it
+# can produce here -- `U+ED3A KeyboardBrightnessLow/KeyboardLowerBrightness` -- measures 360 at 96 dpi
+# against the 330 that space has, and a name cut in half is worse than a line of its own.
+$rowY  = $top + $gridH + $pad                 # the buttons
+$statY = $rowY + $line                        # what the cell under the pointer is
+$pickY = $statY + $line + (Sx 2)              # the literals picked so far
 
-$form.ClientSize = [System.Drawing.Size]::new($wide + 2 * $pad, $top + $gridH + $pad + $line + 4 + 2 * $line + $pad)
+$form.ClientSize = [System.Drawing.Size]::new($wide + 2 * $pad, $pickY + 2 * $line + $pad)
 
 Start-Measure
 
@@ -369,13 +427,14 @@ $cbFmt = [System.Windows.Forms.ComboBox]::new()
 $cbFmt.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 [void]$cbFmt.Items.AddRange(@('L"\uXXXX"', 'E839', '字符'))
 $cbFmt.SelectedIndex = @('literal', 'hex', 'character').IndexOf($Format.ToLower())
-$cbFmt.Location = [System.Drawing.Point]::new((Sx 64), ($top + $gridH + $pad + (Sx 2)))
+$cbFmt.Location = [System.Drawing.Point]::new((Sx 64), ($rowY + (Sx 2)))
 $cbFmt.Size = [System.Drawing.Size]::new((Sx 110), $line)
 $form.Controls.Add($cbFmt)
 
-$btnCopy  = New-Button '复制已选 (0)' (Sx 184) ($top + $gridH + $pad) (Sx 130)
-$btnClear = New-Button '清空' (Sx 322) ($top + $gridH + $pad) (Sx 62)
-$status   = New-Label '' (Sx 396) ($top + $gridH + $pad + (Sx 6))
+# As narrow as its widest label -- `复制已选 (1578)` measures 96, plus the border.
+$btnCopy  = New-Button '复制已选 (0)' (Sx 184) $rowY (Sx 112)
+$btnClear = New-Button '清空' (Sx 304) $rowY (Sx 62)
+$status   = New-Label '' $pad ($statY + (Sx 4))
 
 $tbPicks = [System.Windows.Forms.TextBox]::new()
 $tbPicks.ReadOnly = $true
@@ -384,7 +443,7 @@ $tbPicks.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
 $tbPicks.Font = [System.Drawing.Font]::new('Consolas', [float]($script:codeFont.Size),
                                            [System.Drawing.FontStyle]::Regular,
                                            [System.Drawing.GraphicsUnit]::Pixel)
-$tbPicks.Location = [System.Drawing.Point]::new($pad, ($top + $gridH + $pad + $line + (Sx 4)))
+$tbPicks.Location = [System.Drawing.Point]::new($pad, $pickY)
 $tbPicks.Size = [System.Drawing.Size]::new($wide, 2 * $line)
 $form.Controls.Add($tbPicks)
 $form.Controls.Add($panel)
@@ -405,7 +464,7 @@ $lblWhere.Location = [System.Drawing.Point]::new((Sx 600), $ty)
 $script:pages = [Math]::Max(1, [int][Math]::Ceiling(($To - $From + 1) / $perPage))
 
 # The hint is the legend: there is no room for one of its own, and this is where an eye goes anyway.
-$hint = '灰 = 没字形   橙 = 只有一种字体有   点格子复制'
+$hint = '灰: 无字形 橙: 仅 Fluent'
 
 function Update-Picks {
     $items = @($script:picked | Sort-Object)
@@ -414,14 +473,7 @@ function Update-Picks {
 }
 
 function Update-Status {
-    if ($script:hover -lt 0) {
-        $script:status.Text = $hint
-        return
-    }
-    $cp = $script:hover
-    $have = if (Test-Glyph $Font $cp) { '有' } else { '这个字体没有' }
-    $both = if (Test-Both $cp) { '两字体都有' } else { '另一字体没有' }
-    $script:status.Text = 'U+{0:X4}  {1}  ·  {2}' -f $cp, $have, $both
+    $script:status.Text = if ($script:hover -lt 0) { $hint } else { Describe $script:hover }
 }
 
 function Show-Page([int]$p) {
@@ -440,7 +492,10 @@ function Pick-Cp([int]$cp) {
     if ($script:picked.Contains($cp)) { [void]$script:picked.Remove($cp) } else { [void]$script:picked.Add($cp) }
     $script:panel.Invalidate()
     Update-Picks
-    $script:status.Text = if ($ok) { "已复制 $literal" } else { '复制失败：剪贴板正被别的程序占着' }
+    if (-not $ok) { $script:status.Text = '复制失败：剪贴板正被别的程序占着'; return }
+    # The name stays: it is what the cell was picked *for*, and the next hover may be a while.
+    $label = Get-GlyphLabel $cp
+    $script:status.Text = if ($label) { '已复制 {0}  {1}' -f $literal, $label } else { '已复制 {0}' -f $literal }
 }
 
 function Read-Cp([string]$text) {

@@ -143,11 +143,88 @@ of a lighter colour down those edges.
 
 ## Icons
 
-`namespace micula::glyph`, in `micula/glyphs.h`: Segoe Fluent Icons code points as
-`const wchar_t *`, named after the icon each one is. Draw them with `fonts.icon` (or another
-icon size), never with a text format -- that is the icon font's own format, and a text format
-draws the substitution box instead. Each also exists in Segoe MDL2 Assets, which is what makes
-the font fallback safe on Windows 10.
+`namespace micula::glyph`, in `micula/glyphs.h`: Segoe Fluent Icons code points as `Glyph`,
+named after the icon each one is.
+
+**Two classes, and the second is a question for the running machine.** Most of them are in Segoe
+MDL2 Assets at the same code point as well, and those are safe on Windows 10 through the theme's
+font fallback. The rest exist only in Segoe Fluent Icons -- the connection-animation frames,
+`SpeedHigh2`, two of the battery "unknown" glyphs -- and a font without them draws a
+substitution box.
+
+**No list can answer that at compile time**, because the font is not shipped with the program: a
+build made on Windows 11 runs on Windows 10, where the glyph is missing, and a build made on
+Windows 10 runs on Windows 11, where it is there. So the library asks at run time:
+
+| Function | Question |
+|---|---|
+| `bool HasFluentIcons()` | Is the modern icon font installed at all? Windows 11 ships it; a Windows 10 machine that installed it from Microsoft's design resources answers true, and draws these icons correctly. |
+| `bool HasGlyph(Glyph)` | Does the installed font draw that code point? The exact question -- an older Fluent Icons is missing glyphs the newest release added. Cached per code point. |
+
+`MICULA_IS_WIN11` is the first of those spelled short, which is what a page writes its fallback
+with:
+
+```cpp
+card->icon = MICULA_IS_WIN11 ? glyph::animated::Bars : glyph::kBusy;
+```
+
+`tools/glyphaudit.ps1` prints the glyphs a Windows 10 machine cannot draw, which is the list of
+fallbacks a page owes.
+
+**A code point is a `Glyph`, and not a string.** It holds the same pointer a bare
+`const wchar_t *` would, but nothing converts to it, so a code point cannot be mistaken for a
+line of words. A page that has to name one itself writes `Glyph(L"\ue713")`. That is what lets
+a constructor take an icon at all -- `Card(Icon, ...)` -- because the first of two strings is no
+longer a candidate for the icon slot: `Card(L"General", L"The first row")` is the card without
+one, which it could not have been made to mean before.
+
+`Icon`, in `micula/icon.h`, is what a control holds in an icon slot: a `Glyph`, or an
+`IconShape` that a page subclasses to draw something of its own. An `Icon` is a value -- 24
+bytes, a pointer and a share of a count, copyable -- and the shape behind it is shared, which is
+why it is the *shape* that is subclassed. A class with virtual functions kept by value drops the
+override on a copy without a word.
+
+```cpp
+struct Badge : micula::IconShape {
+    void Paint(const micula::Painter &p, const D2D1_RECT_F &box, const D2D1_COLOR_F &colour,
+               IDWriteTextFormat *) const override { ... }
+    float Width(const micula::Fonts &, IDWriteTextFormat *) const override { return 16.0f; }
+};
+card->icon = std::make_shared<Badge>();
+```
+
+A glyph is drawn at an icon format -- `fonts.icon`, `fonts.iconSmall`, `fonts.iconTiny`, never
+a text format: that is the icon font's own format, and a text format draws the substitution box
+instead. `Icon::Paint` takes the format as a parameter for the same reason it is a choice at
+all: the control owns the decision of how big its icon is, and a shape that has its own idea of
+its size ignores it.
+
+### Sets
+
+Some icons are one of several that mean the same thing at different values: a battery at a
+level, an alignment, a speed. `namespace glyph` carries those as a `Set`, which is an ordered
+table, because **the code points are not the order**. `Battery10` is `U+E83F`, which sits
+*before* `Battery0` at `U+E850`; `BatteryCharging10`, `BatterySaver9` and `BatterySaver10` sit
+far away at `EA93` to `EA95`; and `AlignLeft`/`AlignCenter`/`AlignRight` are contiguous in the
+reverse order to their meaning. So an index is a position in the table, never a base code point
+plus an offset.
+
+```cpp
+card->icon = glyph::battery::Levels;                     // a slot that will move
+card->icon.Face(percent / 10);                          // six tenths of a battery
+
+button->glyph = glyph::align::Sides[glyph::align::Side::Center];   // a slot that will not
+```
+
+`Icon` is still 24 bytes: the index lives in the one allocation a set slot makes, and a slot
+holding one glyph makes none. `Face(int)` answers false for those, so a page can tell whether it
+handed over a set at all.
+
+The families are named exactly as Microsoft names them -- `battery`, `mobBattery`,
+`verticalBattery`, `bandBattery` -- because the drawings really do differ (a heavier weight, a
+quarter turn) and the names are the only thing that says which is which. An icon that moves by
+itself will answer `AnimationWanted()`, which `Card` and `Button` forward into their own
+`Animating()`; nothing answers it yet.
 
 The header is the list, and it is the one header of the library a page is expected to add to:
 an icon that is not in it belongs there, beside the others, with the icon's own name in a

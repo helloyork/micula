@@ -88,16 +88,14 @@ std::wstring PickFolder(HWND owner, const std::wstring &start) {
 
 // One card: an icon, a title, the line under it, and -- added by the page -- the control on the right.
 // `sheet` rather than `page`, which is the row the window opens on.
-Card *Setting(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, const wchar_t *detail) {
-    Card *card = sheet->Add(new Card(title, detail));
-    card->icon = icon;
-    return card;
+Card *Setting(ScrollView *sheet, Glyph icon, const wchar_t *title, const wchar_t *detail) {
+    return sheet->Add(new Card(icon, title, detail));
 }
 
 // A card whose control is a switch, and whose own value says whether it is on. Two lines, four times
 // over: the state is what the card reads rather than a copy of it, so a switch that changes something
 // else on the page needs no other wiring.
-void ToggleCard(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, const wchar_t *detail,
+void ToggleCard(ScrollView *sheet, Glyph icon, const wchar_t *title, const wchar_t *detail,
                 bool *state) {
     Card *card = Setting(sheet, icon, title, detail);
     card->Set(new ToggleSwitch(L"", *state, [state](bool v) { *state = v; }));

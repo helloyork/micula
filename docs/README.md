@@ -14,7 +14,8 @@
 |---|---|
 | `micula/micula.h` | The one to include. Includes the others and defines `MICULA_VERSION_MAJOR`, `_MINOR`, `_PATCH` and `MICULA_VERSION_STRING`. |
 | `micula/theme.h` | Palette, fonts, metrics, animation curves, the theme mode, system queries |
-| `micula/glyphs.h` | The Segoe Fluent Icons code points, and the place a page adds the ones it needs |
+| `micula/glyphs.h` | `Glyph`, and the Segoe Fluent Icons code points -- the place a page adds the ones it needs |
+| `micula/icon.h` | `Icon`, what a control holds in its icon slot, and `IconShape`, for an icon a page draws itself |
 | `micula/layout.h` | The layout protocol: `Layout`, `Sizing`, `Want`, `Room`, and the numbers a settings page is made of |
 | `micula/widget.h` | `Widget`: the node a tree is made of, and what it says about itself |
 | `micula/view.h` | A box with children in it and nothing of its own, which is what a page is |

@@ -55,7 +55,8 @@
 
 #pragma once
 
-#include "glyphs.h"
+#include "icon.h"     // the slot a row's icon goes in
+#include "glyphs.h"   // the tick and the chevron the row draws itself
 #include "popup.h"
 #include "scroll_bar.h"
 
@@ -113,7 +114,7 @@ struct Menu : Popup {
         enum class Kind { Item, Separator, Check, Sub };
         std::wstring text;
         std::wstring shortcut;          // the keys that do the same thing, at the far end of the row
-        const wchar_t *icon = nullptr;  // a glyph, in the icon column -- or the tick, for a `Check`
+        Icon icon;                      // in the icon column -- or the tick, for a `Check`
         Kind kind = Kind::Item;
         bool checked = false;
         bool enabled = true;
@@ -198,7 +199,7 @@ struct Menu : Popup {
     // --- what a menu is made of ---------------------------------------------------------------------
     // Each of these answers the row it made, so that a page can set what the parameters do not cover: an
     // `enabled` of its own, an icon on a check row, an `onSub` it fills in later.
-    Row &Item(const std::wstring &text, const wchar_t *icon = nullptr,
+    Row &Item(const std::wstring &text, Icon icon = Icon(),
               const std::wstring &shortcut = std::wstring(), std::function<void()> onPick = nullptr,
               bool enabled = true) {
         Row r;
@@ -212,7 +213,7 @@ struct Menu : Popup {
     // A row that is a switch. `onCheck` is handed what the state *becomes* rather than what it was, so
     // that the page writes `hidden = on` and nothing in here owns the state it is showing.
     Row &Check(const std::wstring &text, bool checked, std::function<void(bool)> onCheck,
-               const wchar_t *icon = nullptr) {
+               Icon icon = Icon()) {
         Row r;
         r.text = text;
         r.icon = icon;
@@ -1097,13 +1098,12 @@ inline void MenuPanel::Paint(const Painter &p) {
         if (menu->iconColumn) {
             // A tick is the icon of a check row, in the icon column: that column is what makes a menu of
             // switches line up with a menu of commands.
-            const wchar_t *ic = r.kind == Menu::Row::Kind::Check
-                                    ? (r.checked ? glyph::kCheck : nullptr) : r.icon;
-            if (ic && *ic) {
-                const float gw = p.MeasureWidth(ic, p.font->icon);
-                p.Text(ic, { left + (Menu::kIconW - gw) * 0.5f, row.top, left + (Menu::kIconW + gw) * 0.5f,
-                             row.bottom },
-                       p.font->icon, fg);
+            const Icon ic = r.kind == Menu::Row::Kind::Check
+                                ? (r.checked ? Icon(glyph::kCheck) : Icon()) : r.icon;
+            if (ic) {
+                const float gw = ic.Width(*p.font, p.font->icon);
+                ic.Paint(p, { left + (Menu::kIconW - gw) * 0.5f, row.top,
+                              left + (Menu::kIconW + gw) * 0.5f, row.bottom }, fg, p.font->icon);
             }
             left += Menu::kIconW + Menu::kIconGap;
         }

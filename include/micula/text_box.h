@@ -4,6 +4,7 @@
 
 #include "window.h"
 #include "scroll_bar.h"
+#include "glyphs.h"   // the cross in the delete button
 
 #include <algorithm>
 #include <cmath>

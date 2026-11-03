@@ -3,6 +3,7 @@
 #pragma once
 
 #include "window.h"
+#include "glyphs.h"   // the two carets an end of the bar draws
 
 #include <algorithm>
 #include <cmath>
@@ -301,7 +302,7 @@ struct ScrollBar : Widget {
         const bool over = hover && Inside(rect, px, py) &&
                           (up ? py < TrackTop() : py >= rect.bottom - kSize);
         const bool down = over && grab == part;
-        const std::wstring g = up ? glyph::kCaretUp : glyph::kCaretDown;
+        const Glyph g = up ? glyph::kCaretUp : glyph::kCaretDown;
         const float gw = p.MeasureWidth(g, p.font->iconTiny);
         const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
         // ScrollBarButtonArrowScalePressed, about the glyph's centre.

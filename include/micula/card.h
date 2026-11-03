@@ -23,7 +23,7 @@
 // with a control beside them. It is a box of controls, and it is laid out as one: its contents run
 // from its own left edge to its right, and nothing is reserved. See `CardLayout::Arrange`.
 
-#include "window.h"   // `Painter`, which a card draws through, and the tree it stands in
+#include "icon.h"   // `Icon`, and through it the `Painter` a card draws with
 
 #include <algorithm>
 #include <functional>
@@ -60,7 +60,7 @@ struct Card : Widget {
     unsigned borderEdges = edge::kAll;
     // Space beyond the controls, for a header's disclosure arrow. It is not a replacement for Set().
     float trailingSpace = 0.0f;
-    std::wstring icon;         // optional Segoe Fluent Icons code point, drawn at the left
+    Icon         icon;         // optional, drawn at the left
     std::wstring text;         // the card's own line
     std::wstring detail;       // optional, secondary colour, under the text
     Widget *content = nullptr; // the control the card is built around, on the right
@@ -76,6 +76,18 @@ struct Card : Widget {
         SetLayout(new CardLayout());
     }
 
+    // The same card with its icon, which most rows on a settings page are.
+    //
+    // **This constructor is the reason the slot has a type of its own.** Written against a bare
+    // `const wchar_t *`, `Card(L"Clean up", L"Every week")` is a card whose *icon* is the word
+    // "Clean up" and whose line is "Every week" -- the first of two strings landing in the icon
+    // slot -- and no arrangement of overloads can fix that, because the wrong call is an exact
+    // match. A `Glyph` cannot be built from a string, so the wrong call is not a candidate.
+    Card(Icon glyph, std::wstring line, std::wstring under = std::wstring())
+        : icon(std::move(glyph)), text(std::move(line)), detail(std::move(under)) {
+        SetLayout(new CardLayout());
+    }
+
     // Whether there is anything on the card but the control: an icon, a line, a line under it, or the
     // value the control reads back as. A card that answers no is not a settings row, and what is on it
     // is placed as the contents of a box rather than as the control of a row -- see
@@ -83,6 +95,12 @@ struct Card : Widget {
     bool HasWording() const {
         return !icon.empty() || !text.empty() || !detail.empty() || (bool)value;
     }
+
+    // **A face of a set on its way to another keeps the frame loop turning.** The icon is a value
+    // in a field rather than a widget in the tree, so the control holding it is the only thing that
+    // can ask the window for the next frame -- the window walks `Widget::Animating`, and this is
+    // what puts the icon's answer into it. Everything else a card draws is still.
+    bool Animating() const override { return icon.AnimationWanted() || Widget::Animating(); }
 
     // Takes the control, adds it, and hands it back:
     //     auto *t = card->Set(new ToggleSwitch(on));
@@ -170,8 +188,8 @@ struct Card : Widget {
         }
 
         if (!icon.empty())
-            p.Text(icon, { rect.left + sp.cardPad, rect.top, rect.left + sp.cardPad + 20,
-                           rect.bottom }, p.font->icon, c.textPrimary);
+            icon.Paint(p, { rect.left + sp.cardPad, rect.top, rect.left + sp.cardPad + 20,
+                            rect.bottom }, c.textPrimary, p.font->icon);
 
         const Text t = Wording(*p.font, sp);
         if (t.hasValue) {

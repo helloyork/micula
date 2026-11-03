@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include "icon.h"   // `Icon`, and through it the `Painter` a pane draws with
 #include "scroll_bar.h"
 #include "window.h"
+#include "glyphs.h"   // the hamburger beside the pane's label
 
 #include <algorithm>
 #include <cmath>
@@ -24,7 +26,7 @@ namespace micula {
 //     pane->items = { { glyph::kSettings, L"General" }, NavItem::Heading(L"Pages"),
 //                     { kIconCalendar, L"Schedule" } };
 struct NavItem {
-    const wchar_t *glyph = nullptr;
+    Icon glyph;
     std::wstring label;
     bool header = false;
 
@@ -1125,10 +1127,10 @@ struct SideNav : Widget {
                 // and the glyphs do not fill their advance, so drawn from the box's own edge
                 // they sit a couple of DIPs to the left of the button above them -- which is
                 // the one thing in a rail of icons there is to line up with.
-                const float gw = p.MeasureWidth(r.item->glyph, p.font->icon);
-                p.Text(r.item->glyph,
-                       { iconX + (20.0f - gw) / 2, top, iconX + (20.0f + gw) / 2, top + rowH },
-                       p.font->icon, label);
+                const float gw = r.item->glyph.Width(*p.font, p.font->icon);
+                r.item->glyph.Paint(
+                    p, { iconX + (20.0f - gw) / 2, top, iconX + (20.0f + gw) / 2, top + rowH },
+                    label, p.font->icon);
             }
             p.Text(r.item->label,
                    { labelX, top - metric::kTextLift, box.right - 8,

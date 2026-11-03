@@ -135,10 +135,8 @@ void ReadState(const wchar_t *cmd) {
 
 // One card, which is what a page here is made of: an icon, a title, and the line under it. `sheet`
 // rather than `page`, which is the row the window opens on.
-Card *Setting(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, const wchar_t *detail) {
-    Card *card = sheet->Add(new Card(title, detail));
-    card->icon = icon;
-    return card;
+Card *Setting(ScrollView *sheet, Glyph icon, const wchar_t *title, const wchar_t *detail) {
+    return sheet->Add(new Card(icon, title, detail));
 }
 
 // The page the window opens on: the pane's own switches, which is what makes this window a playground
@@ -281,7 +279,7 @@ void PanePage(ScrollView *sheet) {
 
 // A card whose control is a switch, with On or Off beside it: two lines, five times over, and the
 // state is what the card reads when it is painted rather than a copy of it.
-void ToggleCard(ScrollView *sheet, const wchar_t *icon, const wchar_t *title, const wchar_t *detail,
+void ToggleCard(ScrollView *sheet, Glyph icon, const wchar_t *title, const wchar_t *detail,
                 bool *state) {
     Card *card = Setting(sheet, icon, title, detail);
     card->Set(new ToggleSwitch(L"", *state, [state](bool v) { *state = v; }));

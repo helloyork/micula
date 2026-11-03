@@ -160,11 +160,13 @@ page->Add(new PageTitle(L"General"));
 page->Add(new Heading(L"Choices"));
 page->Add(new CheckBox(L"Show a notification when done", notify, onChange));
 
-auto *card = page->Add(new Card(L"Quality", L"Segmented - a few words, side by side"));
-card->icon = glyph::kView;
+auto *card = page->Add(new Card(glyph::kView, L"Quality", L"Segmented - a few words, side by side"));
 card->Set(new Segmented({ L"Auto", L"High", L"Low" }, quality, onChange));
 card->value = [&] { return kQuality[quality]; };   // what the control reads back as
 ```
+
+The icon goes in the constructor when there is one, and nowhere else: an icon is a `Glyph`,
+which no string converts to, so the two-string `Card` can never be the one with an icon.
 
 A `PageTitle`, a `Heading`, a `Label` and a `Card` are widgets, so what a page used to draw in `PaintPage()` -- its
 headings, its card backgrounds, its lines of detail -- is placed, measured, ordered and reported like
