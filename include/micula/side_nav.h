@@ -295,13 +295,19 @@ struct SideNav : Widget {
     // difference is the index, which a heading does not have. See `Widget::AccessibleItems`.
     int AccessibleType() const override { return UIA_ListControlTypeId; }
     int AccessibleItems() const override {
-        Build();
-        return (int)rows.size();
+        // **Its own copy of the rows, never the frame's.** A screen reader asks from the thread
+        // UIAutomationCore made for it, and `Build` writes a member: a list shared with the frame would
+        // be one the frame cleared and refilled under it, which is a crash rather than a wrong answer.
+        // See `RowsInto`.
+        std::vector<Row> local;
+        RowsInto(local);
+        return (int)local.size();
     }
     bool AccessibleItem(int i, Item &out) const override {
-        Build();
-        if (i < 0 || i >= (int)rows.size()) return false;
-        const Row &r = rows[i];
+        std::vector<Row> local;
+        RowsInto(local);
+        if (i < 0 || i >= (int)local.size()) return false;
+        const Row &r = local[i];
         if (!r.item) return false;
         out.name = r.item->label.c_str();
         out.type = r.item->header ? UIA_TextControlTypeId : UIA_ListItemControlTypeId;
@@ -345,16 +351,14 @@ struct SideNav : Widget {
         int index = -1;      // its place among the rows that can be chosen; -1 for a heading
         bool pinned = false; // a footer row: stacked from the bottom and never scrolled
     };
-    // Worked out on demand rather than kept: it is a dozen float adds, and both the item list
-    // and the rectangle change under it -- a pane that survives a layout is handed a new
-    // `rect` by every one of them.
-    mutable std::vector<Row> rows;
-    // How tall the scrolling rows are, from the top of the band down. In the rows' own
-    // coordinates and not the pane's, so that the offset can be taken off it: this is what the
-    // scroll range is worked out from.
-    mutable float contentH = 0.0f;
-    void Build() const {
-        rows.clear();
+    // **The rows are worked out from the state that is current, into a list the caller owns.** A dozen
+    // float adds, and both the item list and the rectangle change under them -- a pane that survives a
+    // layout is handed a new `rect` by every one of them -- so they are never older than the question.
+    // Which list they are written into is the caller's business because of *who* asks: a client of the
+    // accessibility tree asks from a thread of its own, and a list it shared with `Build` would be one
+    // the frame cleared and refilled while it was reading. Returns the height of the scrolling rows.
+    float RowsInto(std::vector<Row> &out) const {
+        out.clear();
         const D2D1_RECT_F band = Band();
         const float frac = wide.value;
         // The rows are laid out in their own coordinates -- zero at the top of the band, going
@@ -370,10 +374,12 @@ struct SideNav : Widget {
             // alternative is the empty band this used to leave behind -- which reads as a bug in
             // the layout rather than as a group that is not being labelled.
             if (it.header) y += kGroupGap * frac;
-            rows.push_back({ &it, band.top - scrolled + y, it.header ? -1 : index++, false });
+            out.push_back({ &it, band.top - scrolled + y, it.header ? -1 : index++, false });
             y += it.header ? (rowH + kRowGap) * frac : (rowH + kRowGap);
         }
-        contentH = y;
+        // The footer is stacked from the band's bottom and is never scrolled, so it is outside the
+        // range rather than part of it -- this is where the height stops.
+        const float itemsH = y;
         // The footer is stacked up from the bottom, so that the two lists cannot push each
         // other around as one of them grows -- and so that it stands still while the rows above
         // it are scrolled past: it is where Settings lives. It begins a `kRowGap` below the band
@@ -382,10 +388,20 @@ struct SideNav : Widget {
         // missing out of the middle of it, and the second footer row is what made that obvious.
         float fy = band.bottom + kRowGap;
         for (const NavItem &it : footer) {
-            rows.push_back({ &it, fy, it.header ? -1 : index++, true });
+            out.push_back({ &it, fy, it.header ? -1 : index++, true });
             fy += rowH + kRowGap;
         }
+        return itemsH;
     }
+    // The frame's own copy of the rows, and the height of the scrolling ones. **Written only by the
+    // thread that owns the window**: Paint, Tick and every question about where a row is read it, and
+    // the accessibility side has its own -- see `RowsInto`.
+    mutable std::vector<Row> rows;
+    // How tall the scrolling rows are, from the top of the band down. In the rows' own
+    // coordinates and not the pane's, so that the offset can be taken off it: this is what the
+    // scroll range is worked out from.
+    mutable float contentH = 0.0f;
+    void Build() const { contentH = RowsInto(rows); }
     // The band the rows scroll in: under the button when there is one, and above the footer when
     // there is one. Both of those are the pane's own and are drawn whole, wherever the scroll has
     // got to -- the button is a door and the footer is where Settings lives, and a pane whose

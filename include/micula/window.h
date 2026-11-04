@@ -876,6 +876,22 @@ private:
 struct Surface {
     HWND hwnd = nullptr;
     UINT dpi  = 96;
+    // **Whether the caller is the thread that owns this surface** -- the one that made the window and
+    // pumps its frames, which is the only thread the tree and the widgets in it belong to. Asked by the
+    // accessibility tree, which UIAutomationCore calls from a thread of its own: see `InvokeSync`, and
+    // `UiaElement::OnFrame`, which is what puts a call back where it belongs.
+    //
+    // **A surface with no window has no other thread either**, and says so: a provider is asked directly
+    // by a check that never made a window (see the examples' `--check`), on the thread that would have
+    // owned it. There is nothing to marshal to there, and answering "not available" to every question
+    // would be a lie about the tree rather than a fact about a thread.
+    bool OnUiThread() const {
+        if (!hwnd) return true;
+        return GetWindowThreadProcessId(hwnd, nullptr) == GetCurrentThreadId();
+    }
+    // **A call brought to this surface's own thread, and waited for.** See the note where it is defined,
+    // and `UiaElement::OnFrame`, which is its only caller. False when the call could not be made at all.
+    bool InvokeSync(std::function<void()> fn);
     // The palette and the fonts are the process's, and these are references into them: a menu has the
     // same colours and the same text formats as the window it opens over, without asking that window
     // for them -- it may have no window to ask.
@@ -3065,10 +3081,21 @@ inline void Widget::Remove(Widget *child) {
     }
     for (size_t i = 0; i < children.size(); i++) {
         if (children[i].get() != child) continue;
+        // **What the surface was holding on this subtree goes with it**, and it goes first, while the
+        // subtree is still there to be asked: the field the keyboard was in, the control the pointer has
+        // hold of, the row the pointer is over. Each of those is a pointer the surface keeps past this
+        // call, and the next frame reads it -- the caret, the drag, the tip that follows the pointer --
+        // so a subtree taken out with one of them still set is one the frame reads after it is gone. A
+        // layer that leaves does the same for the same reason: see DropGoneIn.
+        Surface *w = surface();
+        if (w) {
+            if (w->focused && child->Holds(w->focused)) w->SetFocusTo(nullptr);
+            if (w->capture && child->Holds(w->capture)) w->capture = nullptr;
+            if (w->hovered && child->Holds(w->hovered)) w->hovered = nullptr;
+        }
         // Deferred while a message is being dispatched, and that is the whole of it: a control is
         // allowed to take itself out from inside its own callback, and the closure running that
         // callback lives in the block this would free. See Surface::retired.
-        Surface *w = surface();
         if (w && w->dispatchDepth > 0) {
             w->retired.emplace_back(std::move(children[i]));
             children.erase(children.begin() + i);
@@ -4155,8 +4182,14 @@ struct UiaElement : IRawElementProviderSimple,
     // ---- IRawElementProviderSimple ----------------------------------------------------------
     // ServerSideProvider, and *not* UseComThreading. That flag is a promise that the provider may
     // be called from any thread, and this one may not: it walks the widget list and calls a
-    // control's action, and a control belongs to the thread that made its window. Without the
-    // flag, UIA marshals every call to that thread, which is where the widgets are.
+    // control's action, and a control belongs to the thread that made its window.
+    //
+    // **And the calls are not marshalled for us either**, which is the part that took measuring: the
+    // enumeration says an apartment-threaded provider is called back "on their own STA thread", and
+    // what actually happens is that UIAutomationCore runs `Navigate` and the property reads on a thread
+    // it made itself, while only what a *client* asks for -- a pattern's Invoke, a focus request -- comes
+    // back on the window's thread. So every method below that touches the tree or a widget brings itself
+    // home first: see `OnFrame`, at the bottom of this class.
     HRESULT STDMETHODCALLTYPE get_ProviderOptions(ProviderOptions *out) override {
         if (!out) return E_INVALIDARG;
         *out = ProviderOptions_ServerSideProvider;
@@ -4164,6 +4197,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID id, IUnknown **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return GetPatternProvider(id, out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         Widget *w = Target();
@@ -4192,6 +4226,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID id, VARIANT *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return GetPropertyValue(id, out); });
         if (!out) return E_INVALIDARG;
         VariantInit(out);
         UiaRect box = {};
@@ -4284,6 +4319,7 @@ struct UiaElement : IRawElementProviderSimple,
     // ---- IRawElementProviderFragment --------------------------------------------------------
     HRESULT STDMETHODCALLTYPE Navigate(NavigateDirection dir,
                                        IRawElementProviderFragment **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return Navigate(dir, out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         // An item: the widget it is an item of is its parent, and the items beside it are its siblings.
@@ -4336,6 +4372,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE GetRuntimeId(SAFEARRAY **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return GetRuntimeId(out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         // Two numbers and no pointer. A runtime id has to be unique within the window, which the
@@ -4366,6 +4403,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_BoundingRectangle(out); });
         if (!out) return E_INVALIDARG;
         *out = {};
         const double s = win->scale();
@@ -4397,6 +4435,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE SetFocus() override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return SetFocus(); });
         Widget *w = Target();
         if (!w || !w->Focusable()) return S_OK;
         win->showFocusRing = true;
@@ -4414,6 +4453,7 @@ struct UiaElement : IRawElementProviderSimple,
     // ---- IRawElementProviderFragmentRoot ----------------------------------------------------
     HRESULT STDMETHODCALLTYPE ElementProviderFromPoint(double x, double y,
                                                        IRawElementProviderFragment **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return ElementProviderFromPoint(x, y, out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         // What makes "hover and identify" work, and it asks the window's own hit test rather than
@@ -4428,6 +4468,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE GetFocus(IRawElementProviderFragment **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return GetFocus(out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         if (win->focused) *out = new UiaElement(win, win->focused->uid);
@@ -4439,6 +4480,7 @@ struct UiaElement : IRawElementProviderSimple,
     // switches a switch. A disabled control still answers and says it cannot, which is what a
     // client draws a greyed item from -- silence would look like a control without the pattern.
     HRESULT STDMETHODCALLTYPE Invoke() override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return Invoke(); });
         Widget *w = Target();
         if (!w || !w->AccessibleActionable()) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -4448,6 +4490,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE Toggle() override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return Toggle(); });
         Widget *w = Target();
         if (!w || w->AccessibleToggle() < 0) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -4460,6 +4503,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE get_ToggleState(ToggleState *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_ToggleState(out); });
         if (!out) return E_INVALIDARG;
         Widget *w = Target();
         const int state = w ? w->AccessibleToggle() : -1;
@@ -4477,6 +4521,7 @@ struct UiaElement : IRawElementProviderSimple,
     // it is why the refusals are refusals rather than silence: a client that is told no can offer the
     // control as read-only, and one that is told nothing can only guess.
     HRESULT STDMETHODCALLTYPE SetValue(LPCWSTR value) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return SetValue(value); });
         if (!value) return E_INVALIDARG;
         Widget *w = Target();
         if (!w || IsItem()) return UIA_E_ELEMENTNOTAVAILABLE;
@@ -4487,6 +4532,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_Value(BSTR *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_Value(out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         Widget *w = Target();
@@ -4500,6 +4546,7 @@ struct UiaElement : IRawElementProviderSimple,
     // is a value a client reads and does not write, and a slider is the other thing. False here means
     // the write above it will be taken, which is what a client decides what to offer from.
     HRESULT STDMETHODCALLTYPE get_IsReadOnly(BOOL *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_IsReadOnly(out); });
         if (!out) return E_INVALIDARG;
         Widget *w = Target();
         *out = (w && w->AccessibleWritable()) ? FALSE : TRUE;
@@ -4507,6 +4554,7 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
     HRESULT STDMETHODCALLTYPE SetValue(double value) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return SetValue(value); });
         Widget *w = Target();
         if (!w || IsItem()) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -4516,6 +4564,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_Value(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_Value(out); });
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
         Widget *w = Target();
@@ -4524,6 +4573,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_Minimum(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_Minimum(out); });
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
         Widget *w = Target();
@@ -4532,6 +4582,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_Maximum(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_Maximum(out); });
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
         Widget *w = Target();
@@ -4542,6 +4593,7 @@ struct UiaElement : IRawElementProviderSimple,
     // A small change is one step of the control's own -- a slider's arrow key -- and a large one is
     // what a page of the same control would move, which for a slider with a step is five of them.
     HRESULT STDMETHODCALLTYPE get_SmallChange(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_SmallChange(out); });
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
         Widget *w = Target();
@@ -4550,6 +4602,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_LargeChange(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_LargeChange(out); });
         if (!out) return E_INVALIDARG;
         float v = 0.0f, lo = 0.0f, hi = 0.0f, step = 0.0f;
         Widget *w = Target();
@@ -4564,6 +4617,7 @@ struct UiaElement : IRawElementProviderSimple,
     HRESULT STDMETHODCALLTYPE Expand() override { return SetExpanded(true); }
     HRESULT STDMETHODCALLTYPE Collapse() override { return SetExpanded(false); }
     HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(ExpandCollapseState *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_ExpandCollapseState(out); });
         if (!out) return E_INVALIDARG;
         Widget *w = Target();
         const int state = w ? w->AccessibleExpanded() : -1;
@@ -4577,6 +4631,7 @@ struct UiaElement : IRawElementProviderSimple,
     // "half way down" from the percent and decides whether there is more to say at all from the view
     // size. A page scrolls one way, so the horizontal numbers are the "no scrolling" ones.
     HRESULT STDMETHODCALLTYPE Scroll(ScrollAmount horizontal, ScrollAmount vertical) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return Scroll(horizontal, vertical); });
         Widget *w = Target();
         if (!w || IsItem() || !w->AccessibleWritable()) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -4603,6 +4658,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetScrollPercent(double horizontal, double vertical) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return SetScrollPercent(horizontal, vertical); });
         Widget *w = Target();
         if (!w || IsItem() || !w->AccessibleWritable()) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -4621,6 +4677,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_VerticalScrollPercent(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_VerticalScrollPercent(out); });
         if (!out) return E_INVALIDARG;
         float at = 0.0f, view = 1.0f;
         bool can = false;
@@ -4638,6 +4695,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_VerticalViewSize(double *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_VerticalViewSize(out); });
         if (!out) return E_INVALIDARG;
         *out = 100.0;
         float at = 0.0f, view = 1.0f;
@@ -4652,6 +4710,7 @@ struct UiaElement : IRawElementProviderSimple,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE get_VerticallyScrollable(BOOL *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_VerticallyScrollable(out); });
         if (!out) return E_INVALIDARG;
         *out = FALSE;
         float at = 0.0f, view = 1.0f;
@@ -4666,6 +4725,7 @@ struct UiaElement : IRawElementProviderSimple,
     // list, the cells of a segmented control, the items of a pane. Choosing is `Select`, which goes
     // through the control's own path, and `RemoveFromSelection` has nothing to do -- see below.
     HRESULT STDMETHODCALLTYPE GetSelection(SAFEARRAY **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return GetSelection(out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         Widget *w = Target();
@@ -4705,6 +4765,7 @@ struct UiaElement : IRawElementProviderSimple,
     // **Choosing a row from outside**, through the control's own path: the index is the page's own and
     // not the item's place in the sequence, which is what `Item::index` carries for exactly this.
     HRESULT STDMETHODCALLTYPE Select() override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return Select(); });
         Widget *w = Target();
         Widget::Item it;
         if (!w || !Item(&it)) return UIA_E_ELEMENTNOTAVAILABLE;
@@ -4722,6 +4783,7 @@ struct UiaElement : IRawElementProviderSimple,
     // rather than ignored, because a client that gets an answer can stop offering it.
     HRESULT STDMETHODCALLTYPE RemoveFromSelection() override { return UIA_E_NOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE get_IsSelected(BOOL *out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_IsSelected(out); });
         if (!out) return E_INVALIDARG;
         Widget::Item it;
         if (!Item(&it)) return UIA_E_ELEMENTNOTAVAILABLE;
@@ -4731,6 +4793,7 @@ struct UiaElement : IRawElementProviderSimple,
     // The widget the item belongs to, which is what a client asks when it wants to know what the
     // choice is one of.
     HRESULT STDMETHODCALLTYPE get_SelectionContainer(IRawElementProviderSimple **out) override {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return get_SelectionContainer(out); });
         if (!out) return E_INVALIDARG;
         *out = nullptr;
         if (!Target()) return UIA_E_ELEMENTNOTAVAILABLE;
@@ -4739,6 +4802,27 @@ struct UiaElement : IRawElementProviderSimple,
     }
 
 private:
+    // **A call put back on the thread that owns the window, and answered there.** The one line at the
+    // top of every provider method above is this: on the frame thread it is a comparison and the call
+    // runs where it already is; off it, the same method is called again from where it belongs.
+    //
+    // It is here because the platform does not do it for us -- see the note on `get_ProviderOptions`.
+    // A walk of the widget list from the thread UIAutomationCore made is a walk through a `children`
+    // vector the page may be reallocating, and a read of a widget there is a read of a string or a
+    // cached row table the frame is writing. Both are the same bug wearing two hats.
+    //
+    // **Waiting, not posting.** The caller is asking a question and wants the answer, so a marshal that
+    // returned before the call ran would be one that returned nothing. `Surface::InvokeSync` is the
+    // other half, and a window that goes away under it is a call that comes back rather than one that
+    // blocks a thread forever.
+    template <class F>
+    HRESULT OnFrame(F &&fn) const {
+        if (!win) return UIA_E_ELEMENTNOTAVAILABLE;
+        if (win->OnUiThread()) return fn();
+        HRESULT out = UIA_E_ELEMENTNOTAVAILABLE;
+        if (!win->InvokeSync([&] { out = fn(); })) return UIA_E_ELEMENTNOTAVAILABLE;
+        return out;
+    }
     // The widget this element is for, resolved now: null for the root, and null for a widget the
     // page has since laid out again -- which every caller has to expect and answer for.
     Widget *Target() const { return widget ? win->UiaFind(widget) : nullptr; }
@@ -4779,6 +4863,7 @@ private:
     static bool BoxIsEmpty(const D2D1_RECT_F &r) { return r.right <= r.left || r.bottom <= r.top; }
     // Both of a control that opens and closes, which is one write with two names.
     HRESULT SetExpanded(bool open) {
+        if (win && !win->OnUiThread()) return OnFrame([&] { return SetExpanded(open); });
         Widget *w = Target();
         if (!w || IsItem() || w->AccessibleExpanded() < 0) return UIA_E_ELEMENTNOTAVAILABLE;
         if (!w->enabled) return UIA_E_ELEMENTNOTENABLED;
@@ -5589,6 +5674,71 @@ inline bool Post(Window *w, std::function<void()> fn) {
         return true;
     delete envelope;
     return false;
+}
+
+namespace detail {
+// **A call waiting to be run on a thread that is not the one it came in on.** Two owners -- the caller
+// that is waiting, and the envelope the window will run -- and whoever lets go last frees it. The event
+// goes with it, which is why neither side may touch the handle after its own `Release`.
+struct Marshalled {
+    std::function<void()> fn;
+    HANDLE done = nullptr;
+    std::atomic<int> owners{ 2 };
+    void Release() {
+        if (owners.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (done) CloseHandle(done);
+            delete this;
+        }
+    }
+};
+}  // namespace detail
+
+// **A call brought to the thread that owns the surface, and waited for.**
+//
+// A UI Automation provider is not called on the thread that made the window: UIAutomationCore runs
+// `Navigate` and the property reads on a thread it made itself, and only what a *client* asks for comes
+// back marshalled. That is written down where it was measured -- see `get_ProviderOptions` and
+// `UiaElement::OnFrame` -- and this is what that note does about it: the call runs on the frame thread
+// and the caller waits for the answer, which is the behaviour the enumeration describes for an
+// apartment-threaded provider and does not give to one handed over as a plain pointer.
+//
+// **What it must not become is a deadlock.** The envelope is an ordinary posted message, so a frame
+// thread inside a modal loop of its own -- a dialog, a menu -- still runs it, because that loop pumps.
+// A window destroyed instead of pumping drains its envelopes (see `DrainInvokes`), and that drain is
+// what lets a waiting caller go rather than wait for a window that is no longer there. The timeout is
+// the last line of that: an answer that never comes is dropped, not waited on forever.
+inline bool Surface::InvokeSync(std::function<void()> fn) {
+    if (OnUiThread()) { fn(); return true; }
+    if (!hwnd) return false;
+    auto *call = new detail::Marshalled{ std::move(fn), CreateEventW(nullptr, TRUE, FALSE, nullptr) };
+    if (!call->done) { delete call; return false; }
+    // The envelope holds one reference to the call and the caller holds the other. The envelope's own
+    // destruction is what signals: after the call ran, or in the drain, whichever comes first.
+    struct Signal {
+        detail::Marshalled *call = nullptr;
+        explicit Signal(detail::Marshalled *c) : call(c) {}
+        Signal(const Signal &) = delete;
+        Signal &operator=(const Signal &) = delete;
+        ~Signal() {
+            SetEvent(call->done);
+            call->Release();
+        }
+    };
+    // **The envelope owns the only reference to the signal**, and that is the whole of how this
+    // returns: the message handler deletes the envelope once the call has run, its death is what sets
+    // the event, and a `DrainInvokes` that deletes it instead sets the same event without a call. A
+    // second copy held here would outlive the call and hold the event unsignalled until the timeout --
+    // which is five seconds per provider call, and a client that gives up on the tree long before.
+    auto *envelope = new std::function<void()>(
+        [guard = std::make_shared<Signal>(call), call] { call->fn(); });
+    if (!PostMessageW(hwnd, InvokeMessage(), reinterpret_cast<WPARAM>(envelope), 0)) {
+        delete envelope;   // signals, and lets go of the envelope's half
+        call->Release();   // and of the caller's
+        return false;
+    }
+    const DWORD waited = WaitForSingleObject(call->done, 5000);
+    call->Release();
+    return waited == WAIT_OBJECT_0;
 }
 
 // A place to post from, one turn at a time.
