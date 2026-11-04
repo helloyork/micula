@@ -39,6 +39,26 @@ struct Label : Widget {
     Label(std::wstring s, TextRole r = TextRole::Body)
         : text(std::move(s)), role(r) {}
 
+    // **A label's width is its own words, so changing the words changes the box.** `Measure` asks the
+    // font what `text` comes to and the layout hands back exactly that, which is what lets a label sit
+    // in a row without a width of its own. It also means a repaint on its own is not enough: the box
+    // would stay the width of the *old* words, and `Painter::Text` draws with
+    // `D2D1_DRAW_TEXT_OPTIONS_CLIP`, so longer words come out cut at the old edge instead of
+    // overflowing it -- a readout that shows `4` and then, dragged to `4.1`, shows `4.` and a gap.
+    //
+    // `TextBox` puts the same choice the other way round and says so: its box does not depend on what
+    // is in it, so its text is `Dirty` plus `Invalidate`. Here it is `InvalidateLayout` plus
+    // `Invalidate`, because here the box *is* the text. This setter is the way that cannot be
+    // forgotten; assigning `text` directly is still allowed -- it is a field -- and owes the same
+    // pair. `role` and `wrap` are the box too (a role is another font, and `wrap` is Fill rather than
+    // Content), so changing either owes an `InvalidateLayout` as well.
+    void SetText(std::wstring s) {
+        if (s == text) return;
+        text = std::move(s);
+        InvalidateLayout();
+        Invalidate();
+    }
+
     micula::Want Measure(const Room &room) const override {
         const Fonts *f = room.fonts;
         IDWriteTextFormat *fmt = FormatOf(*f, role);
