@@ -34,10 +34,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
 |---|---|
 | `bool Create(int dipW, int dipH, bool canResize, HICON icon)` | Registers the window class, creates the window centered on its monitor with a client area of `dipW` x `dipH` DIPs, applies the theme, calls `Layout()` and shows it with `showCommand`. `canResize` adds the resize border and the maximize button. `icon` may be null. Returns false if the window could not be created. |
 | `int Run()` | Runs the message loop until the window is destroyed. Returns the `WM_QUIT` exit code: 0, or the value passed to `PostQuitMessage`. Releases the window's Direct2D resources before returning. |
+| `void Close()` | Asks the window to close, which is what the title bar's close button does -- `WM_CLOSE` is posted, so it runs after the message being handled now. |
 | `int showCommand` | How `Create` shows the window. Default `SW_SHOW`. With `SW_HIDE` the window stays hidden until the program shows it. |
 
-Esc and the title bar's close button post `WM_CLOSE`. To ask before closing, handle
-`WM_CLOSE` in `OnAppMessage` and return true to keep the window open.
+Esc does nothing to the window by default, and the title bar's close button asks to close it.
+Both are the same question -- `WM_CLOSE` -- so a page that has to confirm before closing
+handles it in `OnAppMessage` and returns true to keep the window open. `Close()` is that
+question asked from code, and is what a page that wants Esc to mean "go away" writes:
+
+```cpp
+void OnCancel() override { Close(); }
+```
 
 Frames are run only while something asks for them, and only while the window is somewhere
 it can be seen. A hidden, minimised or cloaked window gets none at all -- an animation still
@@ -429,7 +436,7 @@ All virtual. `ClassName()` and `Title()` must be overridden.
 | `void Layout()` | nothing | In `Create`, on resize and on DPI change. Call it yourself when the page changes shape -- and not when it scrolls: that is `ContentTransform()`. Start with `ClearWidgets()`. |
 | `void PaintPage(const Painter &p)` | nothing | Every paint, before the controls. Draws what is not a control: headings, card backgrounds, labels. |
 | `void OnDefaultAction()` | nothing | Enter, when no control has focus. |
-| `void OnCancel()` | posts `WM_CLOSE` | Esc. |
+| `void OnCancel()` | nothing | Esc, after the top layer has declined it. A page that wants Esc to close the window overrides it as `{ Close(); }`. |
 | `void OnTick(float dt)` | nothing | Every animation frame. `dt` is seconds since the last frame, at most 0.1. |
 | `bool AnimationWanted() const` | `false` | Before every frame. Return true to keep frames coming for an animation of the page's own. |
 | `bool OnAppMessage(UINT m, WPARAM wp, LPARAM lp)` | `false` | Messages the window does not consume. Return true if handled. See [Messages](#messages). |
@@ -584,7 +591,7 @@ for it to know that this program had an opinion.
 | Left button up | The captured control gets `OnRelease`, then `OnClick` if the pointer is still over it. |
 | Capture lost | `WM_CAPTURECHANGED` or `WM_CANCELMODE` -- alt-tab, a system modal, another application taking the mouse: the drag in progress gets `OnRelease` and no `OnClick`, and the capture is cleared. A button's release goes to whoever holds the capture, so a drag that loses it is ended here rather than never ending. |
 | Wheel | The control under the pointer gets `OnWheel`. If it returns false, a control floating over the page -- one with a `z` -- is offered it. If none takes it, the page gets `OnAppMessage(WM_MOUSEWHEEL, wp, lp)` with `lp` holding the pointer in client pixels, and only when the pointer is over the page: the clip's width, from the caption bar down. A wheel over the pane's rail or the caption bar is taken and scrolls nothing. |
-| Key down | The focused control's `OnKey` first. If it returns false: Tab and Shift+Tab move focus, Space activates the focused control (`OnActivate()`), Enter activates it or calls `OnDefaultAction()`, Esc calls `OnCancel()`. |
+| Key down | The focused control's `OnKey` first. If it returns false: Tab and Shift+Tab move focus, Space activates the focused control (`OnActivate()`), Enter activates it or calls `OnDefaultAction()`, Esc offers the top layer its `escape` and otherwise calls `OnCancel()`, which does nothing unless the page has overridden it. |
 | Characters | `WM_CHAR` and `WM_IME_CHAR` go to the focused control's `OnChar`. Control characters are dropped. |
 | `WM_TIMER` | Offered to the timers this window is running, by id -- see `Timer` in [Widgets](widget.md#timers). An id none of them took is a page's own, and reaches `OnAppMessage`. |
 | Deactivation | Every control gets `Dismiss()`, `hover` is cleared, and a drag in progress gets its `OnRelease`. |

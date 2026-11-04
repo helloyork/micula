@@ -45,6 +45,12 @@ library can be: a minor version may break.
 
 ### Changed
 
+- **Esc no longer closes a window.** It reaches the page's `OnCancel()`, which does nothing unless
+  the page overrides it: a window that disappears because Esc was pressed in the middle of typing
+  is not what a desktop program does, and most pages want Esc for something of their own. The few
+  that do want it write `void OnCancel() override { Close(); }`, and `Window::Close()` is new --
+  the same question the title bar's close button asks, so a page no longer posts `WM_CLOSE` to
+  `hwnd` itself. A layer's Esc is unchanged, and dialogs and flyouts still close on it.
 - **An icon is a type, not a string.** The constants in `glyphs.h` are `Glyph` now -- still one
   pointer, still `constexpr`, so nothing got heavier -- and nothing converts to one from a
   `const wchar_t *`. The slots that hold an icon (`Card::icon`, `Button::glyph`,

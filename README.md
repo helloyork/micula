@@ -44,7 +44,7 @@ struct Hello : micula::Window {
         auto *sw = Add(new micula::ToggleSwitch(L"Enabled", on, [this](bool v) { on = v; }));
         sw->rect = micula::Rect(24, 56, 280, 32);
         auto *ok = Add(new micula::Button(L"Close", micula::ButtonStyle::Accent,
-                                          [this] { PostMessageW(hwnd, WM_CLOSE, 0, 0); }));
+                                          [this] { Close(); }));
         ok->rect = micula::Rect(24, 104, 120, 32);
     }
 };

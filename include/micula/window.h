@@ -1504,7 +1504,14 @@ struct Window : Surface {
     // of the widget they were added to (see docs/layout.md). `PaintPage` is gone the same way --
     // what a page used to draw there is widgets now, a `Heading` and a `Card` among them.
     virtual void OnDefaultAction() {}              // Enter
-    virtual void OnCancel() { PostMessageW(hwnd, WM_CLOSE, 0, 0); }   // Esc
+    // Esc, once the layers above the page have declined it (`Layer::escape`). **Nothing by
+    // default**: a window that vanishes because somebody pressed Esc in the middle of typing is
+    // not what a desktop program does, and most pages want Esc to mean something of their own --
+    // put a search field back, step out of a selection -- or nothing at all. A page that *is* one
+    // of the few where Esc means "go away" says so, and `Close()` is the whole of what it says:
+    //
+    //     void OnCancel() override { Close(); }
+    virtual void OnCancel() {}
     virtual bool OnAppMessage(UINT, WPARAM, LPARAM) { return false; }
     // The smallest the window may be dragged to, in DIPs. Zero means no limit.
     //
@@ -1516,6 +1523,13 @@ struct Window : Surface {
 
     // --- lifetime ---------------------------------------------------------------
     bool Create(int dipW, int dipH, bool canResize, HICON icon);
+
+    // **Asks the window to close**, which is exactly what the caption's x does: `WM_CLOSE` is
+    // posted rather than sent, so the close happens after the message being handled right now has
+    // returned -- a control's own callback can end the window without its handler dying under it.
+    // The close is a question, not a verdict: a page that has to ask first answers `WM_CLOSE` in
+    // `OnAppMessage` and returns true.
+    void Close();
 
     // The window has been destroyed, and this is the last thing it does about it. For a page that
     // made a window of its own and has to drop it: deleting a window inside its own message is not
@@ -3388,6 +3402,10 @@ inline bool Window::ImeCharPosition(IMECHARPOSITION *at) {
         at->rcDocument.bottom = corners[1].y;
     }
     return true;
+}
+
+inline void Window::Close() {
+    if (hwnd) PostMessageW(hwnd, WM_CLOSE, 0, 0);
 }
 
 inline bool Window::Create(int dipW, int dipH, bool canResize, HICON icon) {
@@ -5495,8 +5513,10 @@ inline LRESULT CALLBACK Window::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case VK_ESCAPE:
-            // A layer first: Esc is how a dialog and a flyout are closed, and the page's cancel
-            // -- usually "close the window" -- is what is left when there is no layer to take it.
+            // A layer first: Esc is how a dialog and a flyout are closed, and those say so with
+            // `Layer::escape`. Below them there is only the page's own `OnCancel`, which does
+            // nothing unless the page wrote something -- Esc is not a quit in this library, and a
+            // page that wants it to be one writes `void OnCancel() override { Close(); }`.
             if (Layer *top = self->TopLayer()) {
                 if (top->Escape()) {
                     self->Invalidate();

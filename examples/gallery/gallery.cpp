@@ -144,7 +144,10 @@ struct Page {
         d->AddButton(L"关闭", 1, ButtonStyle::Accent);
         d->onResult = [this](int r) {
             if (r != 1) return;
-            if (Surface *w = quit->surface()) PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
+            // The page keeps no pointer to its window -- `--dump` builds it into an object that is
+            // never created as one -- so it gets there through the tree the button is in. `Close`
+            // posts, so the window is still here for the rest of this callback.
+            if (Window *w = dynamic_cast<Window *>(quit->surface())) w->Close();
         };
         return d;
     }
