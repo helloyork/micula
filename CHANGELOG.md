@@ -6,6 +6,8 @@ library can be: a minor version may break.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-22
+
 ### Added
 
 - ImageView displays a static file image centered at its original aspect ratio, with fixed layout dimensions and an optional decode-width limit.
