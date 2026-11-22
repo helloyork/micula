@@ -222,24 +222,22 @@ because where the chosen row is on screen is the one thing about an open list th
 animation's to decide -- it is on the control from the first frame, and the two edges open outward
 from it.
 
-**The room decides the panel's height, and the choice only decides what sits in it.** The panel is the
-whole number of rows the room holds -- its own height, not the rows the choice happened to leave above
-and below itself, because a choice near either end of the list leaves nothing below it and a panel made
-of that is a panel one row tall with the list scrolling inside it. The chosen row is still on the
-control's line every time the list opens, and because the height is whole rows and one height for the
-whole list, every notch of a wheel lands with a row on that line as well; the choice is where the list
-is scrolled to, and a placement that could not be reached would be a view clamped off the row it chose.
-What gives way when the room runs out is still the number of rows rather than the line: a placement
-worked out from a larger room than the layout really gives is a panel the layout clamps, and a clamp
-takes the chosen row off the control by exactly what it clamped.
+**A short list is shown whole.** Its panel moves to keep the choice over the control until the
+page clamps an edge. When the panel is pinned there, the accent mark glides between its rows.
 
-A notch of the wheel moves the choice one row and takes the view with it, by exactly that row:
-the panel stays where the choice put it and the rows travel under the mark, so the option that
-arrives at the control's line is the choice. That is the difference between a dial and a list
-that walks its highlight down the page, and it is why a step is the same placement as opening
--- one is glided and the other is placed, and nothing else about the two differs. The view
-follows the choice even where it has to leave the row it was scrolled to: a choice that has
-been made and cannot be seen on the control has not been made.
+**A list too tall for the page grows in whole rows from the control.** Space above and below the
+control is rounded down independently, stopping at the page margins. This fixes the viewport's
+capacity independently of the selection; reaching either end of the list does not shrink it.
+The height includes the panel's two four-DIP margins. Combining the fractional space on both
+sides into one extra row would force a fractional clamp and move the choice off the control.
+The scroll offset is also a whole number of rows. While it can move, the chosen row stays on
+the control. At either scroll limit, the panel stays fixed and the mark glides through the
+remaining visible rows. Opening places the mark immediately.
+
+A notch of the wheel moves the choice one row. A short panel slides under the stationary mark
+while the room permits it; once an edge pins the panel, the mark glides to the new row instead.
+A long list also adjusts its scroll offset in whole rows to keep the choice on the control.
+A step uses the same placement as opening: one is glided and the other is placed.
 
 The list's scroll bar moves the view and leaves the choice alone: choosing is what clicking
 a row is for. The accent mark goes with its row, out of the panel if the bar has taken the

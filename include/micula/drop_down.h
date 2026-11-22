@@ -350,10 +350,9 @@ struct DropDown : Widget {
         if (placedOwed && flyout->panel && Height(flyout->panel->rect) > 0.0f) {
             placedOwed = false;
             scroll->ScrollTo(placedView, placedGlides);
-            // **Exactly**, not on its way: the list is travelling to where the placement put it, the
-            // mark is already there, and this is the frame a list opens on -- a mark gliding from
-            // wherever the last one left it is a first frame showing something else.
-            flyout->PlaceMarker(true);
+            // Opening places the mark immediately. A subsequent choice must
+            // keep its glide when the room has clamped the panel in place.
+            flyout->PlaceMarker(!placedGlides);
             return;
         }
         // **The mark is on its row unless the panel was placed for the row.** A placement is only true
@@ -380,10 +379,10 @@ struct DropDown : Widget {
         flyout->PlaceMarker(true);
     }
 
-    // The mark is the panel's own line again: called wherever the choice has placed the panel, so that
-    // a mark left following the list -- a dragged thumb -- is back on the row the panel is placed for.
+    // Return the mark to the selected row in the requested viewport. Its slot
+    // differs from the panel's anchor slot when scrolling has reached an end.
     void Settle() {
-        if (flyout) flyout->markerLine = flyout->panelLine;
+        if (flyout) flyout->markerLine = kPad + RowH() * (float(selected) - placedView / RowH() + .5f);
     }
 
     // --- input -------------------------------------------------------------------------------------
@@ -697,31 +696,29 @@ inline void DropDown::Press(bool glide) {
     const float roomTop = FlyoutLayout::kGap + kPad;
     const float roomBottom = Height(root->rect) - FlyoutLayout::kGap - kPad;
     const float line = anchor - rowH / 2.0f;             // where the chosen row's own top edge has to be
-    const float fitAbove = (std::floor)((line - roomTop) / rowH);
-    // **The panel is as tall as the room allows, in whole rows, and that is not a question about the
-    // choice.** A panel that was as tall as the rows the choice happened to leave above and below it came
-    // out three rows tall whenever the choice was near either end -- there was nothing under it, so there
-    // was nothing for the panel to be but the three rows that were left. What the choice decides is where
-    // the list *sits* in the panel, never how much of the panel there is. One height for the whole list is
-    // also what keeps every notch of a wheel landing on a row: the same panel, whole rows, one row a step.
-    const float rowsFit = (std::floor)((roomBottom - roomTop) / rowH);
-    const float rows = std::clamp(rowsFit, 1.0f, (float)n);
-    // **And the choice still comes out on the control.** As far down the panel as it may sit is what the
-    // room over the control allows -- past that the panel's top edge leaves the page -- and the view may
-    // not begin before the list's first row, which is the other side of the same line. Both are whole
-    // rows, so the chosen row lands on the control's own line every time the list opens.
-    float above = (std::min)((std::min)(fitAbove, rows - 1.0f), (float)selected);
-    const float earliest = (float)selected - ((float)n - rows);
-    if (above < earliest) above = earliest;
-    const float below = rows - 1.0f - above;
-    // **The view is the placement, not a second opinion about it.** The chosen row's own row inside the
-    // panel is the one the rows above it leave it, so the view shows the list from exactly there: the
-    // panel is placed once and does not move while the choice walks it, and every step is the rows
-    // travelling under a mark that stays on the control -- which is the whole of what the alignment
-    // buys. A view that moved only when it had to would leave the chosen row on some other row of the
-    // panel, and the panel would have to move to put it back on the control: the popup then slides a row
-    // at a time until the room clamps it, and the choice is off the control by what it was clamped.
-    const float viewRows = (float)selected - above;
+    float above, below;
+    float viewRows = 0.0f;
+    if (float(n) * rowH <= roomBottom - roomTop) {
+        // Show a short list whole. It slides with the choice until the page
+        // pins an edge; then the mark travels between the stationary rows.
+        above = float(selected);
+        below = float(n - 1 - selected);
+    } else {
+        // Grow whole rows independently on each side of the control. Taking
+        // floor(total room / rowH) first can add a row across the two fractional
+        // remainders, forcing a fractional-row clamp and losing the alignment.
+        const float aligned = std::clamp(line, roomTop, (std::max)(roomTop, roomBottom - rowH));
+        const float fitAbove = (std::max)(0.0f, std::floor((aligned - roomTop) / rowH));
+        const float fitBelow = (std::max)(0.0f, std::floor((roomBottom - aligned - rowH) / rowH));
+        above = fitAbove;
+        below = fitBelow;
+        // Keep the viewport's capacity even at the list ends. Only its scroll
+        // is clamped: spare rows show earlier/later options rather than vanish.
+        const float rows = above + 1.0f + below;
+        viewRows = std::clamp(float(selected) - above, 0.0f, float(n) - rows);
+    }
+    // The panel's anchor slot and the selected row are independent. At a list
+    // end, the viewport stays put and the mark travels away from that slot.
     // Placed rather than glided when the list opens, so that the frame it opens on is a list already
     // showing the chosen row -- and **before** the scroll, not after: the column's rectangle is what the
     // scroll writes, and `PlaceSubtree` copies a rectangle into `drawn`, so placing after it is placing

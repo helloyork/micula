@@ -71,8 +71,8 @@ struct Flyout : Layer {
     // Where the **marker** goes, which is the panel's line until the list inside the panel is scrolled.
     // `panelLine` is where the choice has *settled*, and it is what the panel is placed from; this is
     // the line the chosen row is on *now*, so a list scrolled under the mark takes the mark with it.
-    // The two are the same whenever nothing is scrolling, which is every frame but the ones a wheel is
-    // travelling for. See `Flyout::marker` for why the mark is not inside the panel.
+    // They also differ when the list ends prevent further scrolling: the panel
+    // stays anchored while the mark walks its remaining visible rows.
     float markerLine = 0.0f;
     // **The marker**: the one child a flyout may have that is not the panel, and it is placed at the
     // panel's own line rather than at the panel. A drop-down puts its accent mark on it -- the row the
@@ -93,7 +93,7 @@ struct Flyout : Layer {
     // this the second: the answer is rounded *down*, and one row is the least that is still a row.
     float rowH = 0.0f;
     float rowPad = 0.0f;
-    // **The rows the panel is being told to show** above and below the chosen one. Written by the
+    // **The rows the panel is being told to show** above and below its anchor slot. Written by the
     // control, which is the only thing that knows how many rows are in the list: the count it puts back
     // is the panel's height, because the chosen row has to come out on the anchor line whatever the room
     // says -- so the edges are what give way, not the alignment. Negative is "nobody has said", which is
@@ -281,7 +281,7 @@ inline void FlyoutLayout::Arrange(const Room &room, const D2D1_RECT_F &box) {
     float height = (std::min)(wantH, f->linedUp ? fitAll : (up ? fitAbove : fitBelow));
     if (f->linedUp && f->rowsAbove >= 0.0f) {
         // **Rows above and below, and the alignment under them**: the panel is as tall as the rows it was
-        // told to show, so that the chosen one lands on the anchor line -- see `Flyout::rowsAbove`.
+        // told to show, with a stable slot on the anchor line -- see `Flyout::rowsAbove`.
         height = 2.0f * f->rowPad + f->rowH * (f->rowsAbove + 1.0f + f->rowsBelow);
     } else if (f->rowH > 0.0f && height > 2.0f * f->rowPad) {
         const float rows = std::floor((height - 2.0f * f->rowPad) / f->rowH);

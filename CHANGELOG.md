@@ -68,6 +68,8 @@ library can be: a minor version may break.
 
 - SideNav rows display pressed feedback for touch input without requiring hover.
 
+- DropDown preserves whole-row viewport capacity at both list ends and animates marker movement when scrolling is clamped.
+
 - File-font loading compiles with both Microsoft and MinGW DirectWrite headers.
 - UIA bounds follow moving clip containers, and cached Value providers report unavailable elements.
 - **A text field no longer flashes light as it takes or loses the caret.** `Mix` interpolates a
