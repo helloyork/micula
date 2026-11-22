@@ -8,6 +8,8 @@ library can be: a minor version may break.
 
 ### Added
 
+- ImageView displays a static file image centered at its original aspect ratio, with fixed layout dimensions and an optional decode-width limit.
+
 - `CardGroup` and `CardExpander` compose existing cards with coordinated corners, configurable
   gutters, clipped batch transitions and retained content, keyboard navigation and UIA support.
 - `StackLayout::maxWidth` optionally centres a bounded content column. The `micula-cards` example

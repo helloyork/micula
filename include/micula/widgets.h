@@ -50,6 +50,7 @@
 #include "check_box.h"
 #include "dialog.h"
 #include "drop_down.h"
+#include "image_view.h"
 #include "navigation_view.h"
 #include "progress_bar.h"
 #include "progress_ring.h"

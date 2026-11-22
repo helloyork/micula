@@ -19,7 +19,7 @@ machine with nothing installed.
 ## Controls
 
 Button, CheckBox, ToggleSwitch, Segmented, Slider, ScrollBar, DropDown, SideNav,
-TextBox, ProgressBar, ProgressRing.
+TextBox, ProgressBar, ProgressRing, ImageView.
 
 `CardGroup` joins existing cards with coordinated corners, spacing and clipped row transitions; `CardExpander` reveals a group below
 a card header. `StackLayout::maxWidth` optionally centres a bounded content column. See

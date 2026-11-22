@@ -312,3 +312,19 @@ In `micula/theme.h`.
 | `bool SystemUsesDarkTheme()` | The apps theme setting (AppsUseLightTheme). |
 | `D2D1_COLOR_F SystemAccent(bool dark)` | The accent shade Windows uses in that theme. `#0078D4` if unavailable. |
 | `bool SystemAutoHidesScrollBars()` | False when "Always show scrollbars" is on. |
+
+## Images (Windows)
+
+Add a static image to a layout with `ImageView`:
+
+```cpp
+auto *preview = page->Add(new micula::ImageView(L"preview.png", 240.0f, 135.0f, 512));
+preview->SetSource(L"another.png");
+```
+
+The width and height are in DIPs. The image fits inside the arranged rectangle
+at its original aspect ratio. The optional last argument limits the decoded
+width in pixels (zero keeps the original resolution). A missing or unreadable
+file leaves the rectangle empty. Animated files display their first frame.
+Call `SetSource` with a different path to display another image. COM must be
+initialized on the window's thread before images are loaded.

@@ -910,14 +910,20 @@ struct Surface {
     IDCompositionTarget  *compTarget = nullptr;
     IDCompositionVisual  *compVisual = nullptr;
     ID2D1SolidColorBrush *brush = nullptr;
-    // Pictures from disk keyed by path, and the caption's icon. Device-bound, so they live next to the
+    // A picture from disk, decoded once and scaled on the way in to `maxW` pixels
+    // wide. Null when the file is not there, which callers draw around rather than
+    // treat as an error: a preview that has not been generated yet is a normal state,
+    // not a fault. Needs COM initialised on this thread, because WIC is COM.
+    ID2D1Bitmap1 *Image(const std::wstring &path, UINT maxW);
+
+    // Pictures from disk keyed by path and decode width, and the caption's icon. Device-bound, so they live next to the
     // surface that owns them and go with it in `ReleaseDevice` -- a bitmap that outlives its target is
     // a crash rather than a blank tile.
     //
     // A failed load caches a null. A page that shows a grid of pictures asks for all of them on every
     // paint, and a missing file would otherwise be a failed decode per picture per frame of every
     // resize.
-    std::map<std::wstring, ID2D1Bitmap1 *> images;
+    std::map<std::pair<std::wstring, UINT>, ID2D1Bitmap1 *> images;
     ID2D1Bitmap1 *iconBitmap = nullptr;
 
     // The tree, and the one widget a page builds into: the client area, which is WinUI's
@@ -1694,11 +1700,6 @@ struct Window : Surface {
     }
 #endif
     void EnsureIconBitmap();
-    // A picture from disk, decoded once and scaled on the way in to `maxW` pixels
-    // wide. Null when the file is not there, which callers draw around rather than
-    // treat as an error: a preview that has not been generated yet is a normal state,
-    // not a fault. Needs COM initialised on this thread, because WIC is COM.
-    ID2D1Bitmap1 *Image(const std::wstring &path, UINT maxW);
     LRESULT CaptionHitTest(POINT screen) const;
     // The pointer moved: the widget under it hears about it, and so does any widget whose watched
     // region outside itself contains it (see Widget::ExternalRegion). Returns true when something
@@ -1888,7 +1889,7 @@ inline void Surface::Resize() {
 }
 
 inline void Surface::ReleaseImages() {
-    for (std::map<std::wstring, ID2D1Bitmap1 *>::iterator it = images.begin();
+    for (std::map<std::pair<std::wstring, UINT>, ID2D1Bitmap1 *>::iterator it = images.begin();
          it != images.end(); ++it)
         if (it->second) it->second->Release();
     images.clear();
@@ -2089,11 +2090,10 @@ inline void Window::EnsureIconBitmap() {
 // forty pixels wide. An IWICBitmapScaler in the chain decodes straight into the size
 // that will be drawn, so what reaches the GPU is the thumbnail rather than the
 // wallpaper.
-inline ID2D1Bitmap1 *Window::Image(const std::wstring &path, UINT maxW) {
-    const std::map<std::wstring, ID2D1Bitmap1 *>::iterator hit = images.find(path);
-    if (hit != images.end()) return hit->second;
-    images[path] = nullptr;              // remembered even if everything below fails
+inline ID2D1Bitmap1 *Surface::Image(const std::wstring &path, UINT maxW) {
     if (!dc || path.empty()) return nullptr;
+    auto [entry, inserted] = images.try_emplace({path, maxW}, nullptr);
+    if (!inserted) return entry->second;
 
     IWICImagingFactory *wic = nullptr;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
@@ -2131,7 +2131,7 @@ inline ID2D1Bitmap1 *Window::Image(const std::wstring &path, UINT maxW) {
     if (dec)    dec->Release();
     wic->Release();
 
-    images[path] = out;
+    entry->second = out;
     return out;
 }
 
