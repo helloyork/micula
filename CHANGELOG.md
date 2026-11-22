@@ -10,6 +10,8 @@ library can be: a minor version may break.
 
 - ImageView displays a static file image centered at its original aspect ratio, with fixed layout dimensions and an optional decode-width limit.
 
+- App exposes Step, WantsFrame, WaitFrame, Finish and ExitCode for integration with external event loops.
+
 - `CardGroup` and `CardExpander` compose existing cards with coordinated corners, configurable
   gutters, clipped batch transitions and retained content, keyboard navigation and UIA support.
 - `StackLayout::maxWidth` optionally centres a bounded content column. The `micula-cards` example

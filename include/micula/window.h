@@ -973,6 +973,16 @@ struct Surface {
                cloaked == 0;
     }
 
+    // **Does this surface want a frame?** An arrangement it owes, a control on its way somewhere and a
+    // page that asked for the timer are all the same answer to a loop, and this is where that answer
+    // is written down once: `App::Moving` turns frames with it, `App::WantsFrame` answers a loop that
+    // is not `Run` with it, and `Invalidate` follows it to decide whether to set an update region at
+    // all. A surface nobody can see wants none -- which is why an animation in a minimised window
+    // costs nothing, and why scrolling a control out of the viewport stops the frames it was using.
+    bool WantsFrame() const {
+        return Visible() && (layoutDirty || Animating() || AnimationWanted());
+    }
+
     // ---- input ------------------------------------------------------------------------------------
     // Three hands and one path. What a press, a move and a release *do* -- which widget is under them,
     // whether it takes the focus, what the widget's own callbacks are -- is written once and reached
@@ -3635,6 +3645,45 @@ struct App {
     void Quit(int code = 0);
     bool Running() const { return running; }
 
+    // ---- turning the loop from somewhere else ----------------------------------------------------
+    //
+    // `Run` is these in a loop. A program whose loop belongs to something else -- an event subsystem
+    // with handles of its own to wait on, which is what SCL2EventSubsystem is -- turns them itself:
+    //
+    //     bool drew = false;
+    //     while (app.Step(false, &drew)) {          // never waits
+    //         if (drew) {
+    //             app.WaitFrame();                  // paced: one refresh after the frame
+    //         } else {
+    //             // Idle. A loop with handles of its own folds them into this one wait, and takes
+    //             // the compositor clock into it as well when a frame is due (see WaitFrame).
+    //             MsgWaitForMultipleObjectsEx(0, nullptr, app.WantsFrame() ? 16 : INFINITE,
+    //                                         QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    //         }
+    //     }
+    //     app.Finish();
+    //     return app.ExitCode();
+    //
+    // **`Step(false)` does not wait**, which is the whole reason the loop is split: a turn that
+    // blocked in `GetMessage` here would never let the caller wait on anything else. `Step(true)` is
+    // what `Run` asks for, and it waits there while nothing wants a frame -- the state a settings
+    // window is in for all but a few seconds of its life.
+    //
+    // `drew` reports whether the turn painted, and that is the only thing that says the next wait of
+    // your own has to end one display refresh later. Passing null is fine.
+    bool Step(bool wait, bool *drew = nullptr);
+    // Whether a frame is due: asked before deciding how long a wait of your own may be.
+    bool WantsFrame() const;
+    // Waits out the rest of one display refresh, paced from the compositor's clock where there is
+    // one. `Step` starts that clock and does not wait on it; a caller that already waits on handles
+    // should fold `DCompositionWaitForCompositorClock` into that wait instead of calling this.
+    void WaitFrame();
+    // Every surface's pump ends and the loop's own resources go. `Run` does this on the way out; a
+    // caller that turns `Step` does it when it stops, before the surfaces go.
+    void Finish();
+    // What `Run` would return: the code the `WM_QUIT` carried.
+    int ExitCode() const { return exitCode; }
+
 private:
     // Surface is the other half of this: the loop is written in terms of what a surface knows about
     // itself -- the clocks, the `animOn` flag, the dispatch guard -- and none of that is worth a
@@ -3642,10 +3691,24 @@ private:
     friend struct Surface;
 
     bool running = false;
+    // Whether the surfaces have been brought up to the loop -- clocks, caret timers, IME put aside.
+    // Kept apart from `running`, which `Quit` clears at once: a quit that is still queued must not
+    // make the next turn start the pumps over.
+    bool prepared = false;
+    int  exitCode = 0;
+
+    // The pacing state, which used to be locals of `Run`. See `Step` and `WaitFrame`.
+    HANDLE pace = nullptr;
+    LARGE_INTEGER paceMark = {};
+    LONGLONG period = 0;
+    bool paced = false;
 
     // Any surface that wants frames, with each one's own `animOn` kept in step: it is what
     // Invalidate() asks before deciding whether to set an update region. See Surface::Invalidate.
     bool Moving();
+    // Every message that is queued, each in the guard of the surface it is for. False when a WM_QUIT
+    // was among them, which is how a loop ends.
+    bool Drain();
     // One message, inside the guard of the window it is for -- found from this list rather than from
     // the window's user data, which is not this library's to read: see the note on the definition.
     void PumpMessage(MSG *msg);
@@ -3655,6 +3718,8 @@ inline App::~App() {
     // The App is usually a local in wWinMain and the windows are usually locals after it, so it is
     // the App that goes first. Nothing else would notice that a pointer it kept had died.
     for (Surface *w : surfaces) w->app = nullptr;
+    // A driver that stopped without `Finish` still gets the waitable timer back.
+    if (pace) CloseHandle(pace);
 }
 
 inline void App::Add(Surface &w) {
@@ -3713,8 +3778,11 @@ inline bool App::Moving() {
         // the loop turns for, or the change waits for whatever else happens to paint. Which can be two
         // seconds: a dragged scroll bar leaves the view where it was, because a bar that is already out
         // is not animating, and the scroll is applied when the bar's auto-hide timer next comes up.
-        const bool on = w->Visible() &&
-                        (w->layoutDirty || w->Animating() || w->AnimationWanted());
+        //
+        // The question itself lives on the surface (see `Surface::WantsFrame`), because a loop that is
+        // not this one asks it too -- `App::WantsFrame` is the same answer without the side effects
+        // below.
+        const bool on = w->WantsFrame();
         // A surface that is *starting* to move picks its clock up here, which is where the one-window
         // loop did it for its window and only its window. Without it, that surface's first frame
         // carries however long it spent sitting still while another one kept the loop awake -- and
@@ -3729,6 +3797,15 @@ inline bool App::Moving() {
         if (on) any = true;
     }
     return any;
+}
+
+// The same question without the side effects: `Moving` also keeps every surface's `animOn` in step,
+// which is what `Invalidate` reads, and a loop that only wants to know how long it may wait must not
+// change that.
+inline bool App::WantsFrame() const {
+    for (const Surface *w : surfaces)
+        if (w->WantsFrame()) return true;
+    return false;
 }
 
 // One message, inside the guard of the window it is for.
@@ -3758,6 +3835,22 @@ inline void App::PumpMessage(MSG *msg) {
     // callback is standing on, which is the crash Surface::retired exists to prevent.
     Surface::Dispatch frame(target);
     DispatchMessageW(msg);
+}
+
+// Every message that is queued, each in its own surface's guard. False when a WM_QUIT was among
+// them -- the code it carries is the program's, and that is how a loop ends.
+inline bool App::Drain() {
+    MSG msg = {};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) {
+            exitCode = (int)msg.wParam;
+            running = false;
+            return false;
+        }
+        TranslateMessage(&msg);
+        PumpMessage(&msg);
+    }
+    return true;
 }
 
 inline Window::~Window() {
@@ -3862,114 +3955,169 @@ inline int Surface::Run() {
     return solo.Run();
 }
 
-// The loop, which is the loop it always was with three things changed. The frame decision is made
-// for every surface rather than for one, so a surface that did not start the loop animates anyway. A
-// message is dispatched inside *its own* surface's guard. And the loop ends when the last surface in
-// the list is gone rather than when WM_DESTROY arrives from any of them.
-inline int App::Run() {
-    if (surfaces.empty()) return 0;
-    running = true;
-    for (Surface *w : surfaces) w->BeginPump();
-    const frameclock::Fn clock = frameclock::Resolve();
-    // Only created where it is needed. Null on a pre-1803 build too, where the wait
-    // falls back to Sleep for the same remainder.
-    HANDLE pace = clock ? nullptr
-                        : CreateWaitableTimerExW(nullptr, nullptr,
-                                                 CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                                                 TIMER_ALL_ACCESS);
-    LARGE_INTEGER paceMark = {};
-    LONGLONG period = 0;
-    bool started = false;
-    bool alive = true;
-    MSG msg = {};
-    int exitCode = 0;
-    while (alive) {
-        // A frame for each surface, one after another, and each surface's own clock for it: the
-        // frequency is the process's and is asked for once, here, rather than per surface.
-        LARGE_INTEGER freq = {};
-        QueryPerformanceFrequency(&freq);
-        const LONGLONG qpcFreq = freq.QuadPart;
-        // A surface nobody can see runs no frames. Something animating in it -- an indeterminate
-        // progress bar is the one that never stops -- would otherwise paint the whole frame at the
-        // display's rate into a surface nobody is looking at, and a minimised window is where that
-        // is pure waste: there is not even a "later" for it, the frames are simply thrown away.
-        //
-        // Nothing is lost when it does run again: animOn is cleared here and the clock is picked up
-        // when it comes back on, so an animation resumes where it was rather than jumping forward
-        // by however long the surface spent out of sight. See Visible.
-        const bool moving = Moving();
-        if (!moving) {
-            if (GetMessageW(&msg, nullptr, 0, 0) <= 0) { exitCode = (int)msg.wParam; break; }
+// **One turn of the loop**, which is the loop it always was with three things changed: the frame
+// decision is made for every surface rather than for one, so a surface that did not start the loop
+// animates anyway; a message is dispatched inside *its own* surface's guard; and the loop ends when
+// the last surface in the list is gone rather than when WM_DESTROY arrives from any of them.
+//
+// What a caller can own is taken out of it: the loop's own setup on the first turn, and the wait for
+// the next refresh (`WaitFrame`). What is left here is one turn -- drain, arrange, paint -- which is
+// the same turn whether `Run` is turning it or somebody else's loop is. See the note on `Step`.
+inline bool App::Step(bool wait, bool *drew) {
+    if (drew) *drew = false;
+    // A loop whose last surface went is over, even if nobody posted WM_QUIT for it.
+    if (surfaces.empty()) {
+        running = false;
+        return false;
+    }
+    // **The first turn is where `Run` used to set the loop up.** Every surface that was here before
+    // the loop started needs its clocks, its caret timer and its IME put aside; one that joins later
+    // gets the same from `Add`, which keys off `running`.
+    if (!prepared) {
+        prepared = true;
+        running = true;
+        for (Surface *w : surfaces) w->BeginPump();
+    }
+    // A surface nobody can see runs no frames. Something animating in it -- an indeterminate
+    // progress bar is the one that never stops -- would otherwise paint the whole frame at the
+    // display's rate into a surface nobody is looking at, and a minimised window is where that is
+    // pure waste: there is not even a "later" for it, the frames are simply thrown away.
+    //
+    // Nothing is lost when it does run again: animOn is cleared here and the clock is picked up when
+    // it comes back on, so an animation resumes where it was rather than jumping forward by however
+    // long the surface spent out of sight. See Visible.
+    const bool moving = Moving();
+    if (!moving) {
+        if (wait) {
+            // One message, and it does not matter which: a repaint of a surface that is not
+            // animating, a timer coming due, a keystroke. This is where an idle window blocks.
+            MSG msg = {};
+            if (GetMessageW(&msg, nullptr, 0, 0) <= 0) {
+                exitCode = (int)msg.wParam;
+                running = false;
+                return false;
+            }
             TranslateMessage(&msg);
             PumpMessage(&msg);
-            // The clocks are only picked up again here: a surface that sat idle for a minute must not
-            // hand the first frame a minute's worth of dt. Every one, because any of them can be the
-            // next to start moving.
-            for (Surface *w : surfaces) QueryPerformanceCounter(&w->qpcLast);
-            // And the stretch is over, which is the rest of what `started` means: it is what asks
-            // the monitor for its rate, and a rate asked for once per process is the rate of
-            // whichever monitor the first animation happened to be on.
-            started = false;
-            continue;
+        } else if (!Drain()) {
+            // A quit was among what was queued: the loop is over here, and the caller can stop.
+            return false;
         }
-        if (!started) {
-            started = true;
-            QueryPerformanceCounter(&paceMark);
-            // Asked once per stretch of animation rather than per frame: a surface dragged to a
-            // monitor with a different rate mid-animation is paced at the old rate for the rest of a
-            // transition that lasts a fraction of a second. The slowest rate of the surfaces that are
-            // moving is the one taken, because the wait below is one wait for all of them -- one on a
-            // faster display simply gets a couple of frames it did not need.
-            if (!clock) {
-                period = 0;
-                for (Surface *w : surfaces) {
-                    if (!w->animOn) continue;
-                    const LONGLONG rate = frameclock::RefreshPeriod(w->hwnd);
-                    period = period == 0 ? rate : (std::min)(period, rate);
-                }
+        // **The clocks are picked up again here and nowhere else**: a surface that sat idle for a
+        // minute must not hand the first frame a minute's worth of dt. Every one of them, because any
+        // can be the next to start moving -- and the stretch of animation the pacing belonged to is
+        // over, so the next one asks the monitor for its rate again.
+        for (Surface *w : surfaces) QueryPerformanceCounter(&w->qpcLast);
+        paced = false;
+        return true;
+    }
+    // Moving: take everything that is queued before drawing, because a frame is about to be drawn
+    // either way and a message that arrives during it belongs to the next turn.
+    if (!Drain()) return false;
+    // A stretch of animation begins here, and its pace is set from where it begins rather than from
+    // where the first frame ends: the frame's own time is part of the refresh it is drawn in.
+    if (!paced) {
+        paced = true;
+        QueryPerformanceCounter(&paceMark);
+        // Asked once per stretch of animation rather than per frame: a surface dragged to a monitor
+        // with a different rate mid-animation is paced at the old rate for the rest of a transition
+        // that lasts a fraction of a second. The slowest rate of the surfaces that are moving is the
+        // one taken, because the wait below is one wait for all of them -- one on a faster display
+        // simply gets a couple of frames it did not need.
+        if (!frameclock::Resolve()) {
+            period = 0;
+            for (Surface *w : surfaces) {
+                if (!w->animOn) continue;
+                const LONGLONG rate = frameclock::RefreshPeriod(w->hwnd);
+                period = period == 0 ? rate : (std::min)(period, rate);
             }
-        }
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) { exitCode = (int)msg.wParam; alive = false; break; }
-            TranslateMessage(&msg);
-            PumpMessage(&msg);
-        }
-        if (!alive) break;
-        for (Surface *w : surfaces) {
-            if (!w->animOn) continue;
-            { Surface::Dispatch frame(w); w->Frame(); }
-            w->Paint();
-            // Painted outside WM_PAINT, so the update region has to be cleared by hand or the next
-            // PeekMessage hands back a WM_PAINT for a surface that was just drawn.
-            ValidateRect(w->hwnd, nullptr);
-        }
-        if (clock) {
-            clock(0, nullptr, 32);
-        } else {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            const LONGLONG spent = (now.QuadPart - paceMark.QuadPart) * 10000000LL / qpcFreq;
-            const LONGLONG left = period - spent;
-            if (left > 0) {
-                LARGE_INTEGER due;
-                due.QuadPart = -left;                 // relative, 100 ns
-                if (pace && SetWaitableTimer(pace, &due, 0, nullptr, nullptr, FALSE))
-                    WaitForSingleObject(pace, 32);    // the same backstop as the clock's
-                else
-                    Sleep((DWORD)((left + 9999) / 10000));
-            }
-            QueryPerformanceCounter(&paceMark);
         }
     }
+    // **A frame for each surface, one after another**, each painted outside WM_PAINT -- so the
+    // update region has to be cleared by hand or the next PeekMessage hands back a WM_PAINT for a
+    // surface that was just drawn. By index rather than by iterator: a frame runs the page's own
+    // `OnTick`, and a page is allowed to add a window from one.
+    bool painted = false;
+    for (size_t i = 0; i < surfaces.size(); i++) {
+        Surface *w = surfaces[i];
+        if (!w->animOn) continue;
+        { Surface::Dispatch frame(w); w->Frame(); }
+        w->Paint();
+        ValidateRect(w->hwnd, nullptr);
+        painted = true;
+    }
+    if (drew) *drew = painted;
+    return true;
+}
+
+// The rest of one display refresh, which is what makes frames land one refresh apart.
+//
+// `DCompositionWaitForCompositorClock` is the same clock the window's visual is being composed
+// against. Windows 10 has no such function -- see `frameclock` -- so there the remainder is waited
+// out on a high-resolution waitable timer. Not Sleep(1): Present() returns in 0.1 ms, so a 1 ms
+// yield paces nothing and the window draws as fast as the GPU will queue frames.
+inline void App::WaitFrame() {
+    // Called without a turn that drew: nothing is being paced, and waiting here would be a sleep in
+    // the middle of somebody else's loop.
+    if (!paced) return;
+    if (const frameclock::Fn clock = frameclock::Resolve()) {
+        clock(0, nullptr, 32);   // the timeout is a backstop, not a cadence
+        return;
+    }
+    if (!pace) {
+        // Null on a pre-1803 build, where the wait falls back to Sleep for the same remainder.
+        pace = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                      TIMER_ALL_ACCESS);
+    }
+    LARGE_INTEGER freq = {};
+    LARGE_INTEGER now = {};
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    const LONGLONG spent = (now.QuadPart - paceMark.QuadPart) * 10000000LL / freq.QuadPart;
+    const LONGLONG left = period - spent;
+    if (left > 0) {
+        LARGE_INTEGER due;
+        due.QuadPart = -left;                 // relative, 100 ns
+        if (pace && SetWaitableTimer(pace, &due, 0, nullptr, nullptr, FALSE))
+            WaitForSingleObject(pace, 32);    // the same backstop as the clock's
+        else
+            Sleep((DWORD)((left + 9999) / 10000));
+    }
+    QueryPerformanceCounter(&paceMark);
+}
+
+// The tail of the loop. Called by `Run`; a caller that turns `Step` calls it when it stops, while the
+// surfaces are still there.
+inline void App::Finish() {
     // Usually the loop ends because the last window went, before the WM_QUIT that was posted for it
-    // has been read -- and then `msg` is whatever was being dispatched, an Alt+F4 keystroke for one.
-    // The exit code is the quit message's, so take it from the queue.
-    MSG quit;
+    // has been read -- and then the message being dispatched was whatever was last, an Alt+F4
+    // keystroke for one. The exit code is the quit message's, so take it from the queue.
+    MSG quit = {};
     if (PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) exitCode = (int)quit.wParam;
     // Whatever is left is going back to a page that is about to be its owner again, so it tidies up
     // after itself -- see EndPump. The waitable timer is the loop's own and goes here.
     for (Surface *w : surfaces) w->EndPump();
-    if (pace) CloseHandle(pace);
+    if (pace) {
+        CloseHandle(pace);
+        pace = nullptr;
+    }
+    paceMark = {};
+    period = 0;
+    paced = false;
+    prepared = false;
+    running = false;
+}
+
+// `Run` is one turn, the wait for the refresh it drew, and the tidy-up -- which is all it ever was,
+// now in pieces a loop that is not this one can call in the same order. See `Step`.
+inline int App::Run() {
+    if (surfaces.empty()) return 0;
+    for (;;) {
+        bool drew = false;
+        if (!Step(true, &drew)) break;
+        if (drew) WaitFrame();
+    }
+    Finish();
     return exitCode;
 }
 

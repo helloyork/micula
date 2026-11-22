@@ -94,6 +94,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, wchar_t *, int) {
 | `int Run()` | Runs until there is nothing left to run. Returns the exit code of the `WM_QUIT` that ended it. |
 | `void Quit(int code = 0)` | Ends the loop where it stands. |
 | `bool Running() const` | Whether `Run` is on the stack. |
+| `bool Step(bool wait, bool *drew = nullptr)` | Processes one loop iteration. `wait` allows blocking while idle; false never waits. `drew` receives whether a frame was painted. Returns false when the loop ends. |
+| `bool WantsFrame() const` | Whether any visible surface needs a frame. |
+| `void WaitFrame()` | Waits for the next display refresh after an iteration that painted a frame. |
+| `void Finish()` | Ends the surfaces' pumps and releases the loop's resources. Called automatically by `Run`. |
+| `int ExitCode() const` | What `Run` would return: the code a `WM_QUIT` carried. |
 
 On `Surface`, two things go with it:
 
@@ -123,6 +128,27 @@ is where a page hears about it, and the usual shape is a `Post` to the window th
 its caret timer start there, and `WM_DESTROY` hands back its device. The tail of
 `Run()` does that only for the surfaces still standing when the loop ends, which is the other way out
 -- a window a page opens and closes all day would otherwise take a D3D device with it every time.
+
+### Turning the loop from somewhere else
+
+An external event loop can call `Step(false)` without blocking:
+
+```cpp
+bool drew = false;
+while (app.Step(false, &drew)) {          // never waits
+    if (drew) {
+        app.WaitFrame();                  // paced: one refresh after the frame
+    } else {
+        MsgWaitForMultipleObjectsEx(0, nullptr, app.WantsFrame() ? 16 : INFINITE,
+                                    QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+}
+app.Finish();
+return app.ExitCode();
+```
+
+Call `Finish` after ending an externally driven loop, before destroying its surfaces.
+`ExitCode` remains available after cleanup. All calls belong to the window's thread.
 
 ## Popups
 
