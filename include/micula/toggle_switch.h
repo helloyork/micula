@@ -88,11 +88,15 @@ struct ToggleSwitch : Widget {
     // How far from the knob's centre a press still counts as taking hold of it: the knob
     // itself, and a little for a hand. A press anywhere else is a click.
     static constexpr float kGrab = 10.0f;
+    // Pointer updates can repeat a coordinate or jitter during a tap. Only travel
+    // beyond this DIP distance turns a knob press into a drag, on every host.
+    static constexpr float kDragSlop = 4.0f;
 
     bool dragging = false;
-    bool moved = false;      // the drag changed the state, so the release is not a click too
+    bool moved = false;      // crossed drag slop, so release is not a click as well
     float grabAt = 0.0f;     // the knob's position when it was taken hold of
     float grabX = 0.0f;      // and where the pointer was, so it does not jump under the hand
+    float grabY = 0.0f;
 
     bool TracksPointer() const override { return dragging; }
     bool Dragging() const override { return dragging; }
@@ -125,9 +129,12 @@ struct ToggleSwitch : Widget {
         dragging = true;
         grabAt = knob.value;
         grabX = x;
+        grabY = y;
     }
-    void OnDrag(float x, float /*y*/) override {
+    void OnDrag(float x, float y) override {
         if (!dragging) return;
+        if (!moved && std::fabs(x - grabX) <= kDragSlop &&
+                      std::fabs(y - grabY) <= kDragSlop) return;
         moved = true;          // a hand that moved is not a click, whatever the knob did
         // Followed by the distance the pointer moved rather than jumped to where it is, so
         // that a knob taken hold of by its edge stays where it was taken hold of.

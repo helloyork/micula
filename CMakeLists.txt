@@ -128,3 +128,11 @@ write_basic_package_version_file(
     COMPATIBILITY SameMinorVersion)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/micula-config-version.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/micula)
+
+option(MICULA_BUILD_TESTS "Build control regression checks" OFF)
+if(MICULA_BUILD_TESTS)
+    enable_testing()
+    add_executable(micula-toggle-switch-test tests/toggle_switch.cpp)
+    target_link_libraries(micula-toggle-switch-test PRIVATE micula::micula)
+    add_test(NAME micula-toggle-switch COMMAND micula-toggle-switch-test)
+endif()

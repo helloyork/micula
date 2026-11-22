@@ -64,6 +64,8 @@ library can be: a minor version may break.
 
 ### Fixed
 
+- ToggleSwitch knob taps tolerate stationary and jittery pointer updates without suppressing clicks.
+
 - File-font loading compiles with both Microsoft and MinGW DirectWrite headers.
 - UIA bounds follow moving clip containers, and cached Value providers report unavailable elements.
 - **A text field no longer flashes light as it takes or loses the caret.** `Mix` interpolates a
