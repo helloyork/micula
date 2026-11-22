@@ -635,10 +635,10 @@ struct SideNav : Widget {
         }
         return -1;
     }
-    // The row under the pointer, or -1 when the pointer is elsewhere -- on the button, on a
-    // heading, or off the pane.
+    // The hovered or pressed row, or -1 over the button, a heading or off the pane.
+    // Touch has a press without a hover and must still light the row before selection.
     int HotRow() const {
-        if (!hover || !enabled) return -1;
+        if ((!hover && !pressed) || !enabled) return -1;
         const D2D1_POINT_2F at = Cursor();
         return RowAt(at.x, at.y);
     }
@@ -1030,6 +1030,7 @@ struct SideNav : Widget {
     void Paint(const Painter &p) override {
         const Palette &c = *p.pal;
         Build();
+        const int downRow = pressed ? HotRow() : -1;
         const float w    = Width();
         const float frac = wide.value;
         const D2D1_RECT_F band = Band();
@@ -1121,7 +1122,7 @@ struct SideNav : Widget {
             const float hoverNow = r.index < (int)hot.size() ? hot[r.index] : 0.0f;
             const bool chosen = r.index == selected;
             const bool lit = hoverNow > 0.0f;
-            const bool down = pressed && lit;
+            const bool down = r.index == downRow;
             const float fill = (std::max)(chosen ? 1.0f : 0.0f, hoverNow);
             if (fill > 0.0f) {
                 // **The pane fills with the subtle family, and its pressed state is the next step of
